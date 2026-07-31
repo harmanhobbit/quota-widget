@@ -35,7 +35,7 @@
 </script>
 
 <main>
-  <header data-tauri-drag-region>
+  <header data-tauri-drag-region onmousedown={() => invoke('note_drag')}>
     <span class="title" data-tauri-drag-region>Quota Widget</span>
     <span class="spacer" data-tauri-drag-region></span>
     {#if view === 'popup'}

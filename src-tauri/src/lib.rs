@@ -23,6 +23,11 @@ pub struct AppState {
     pub refresh: Notify,
     /// In-flight built-in Claude sign-in (PKCE verifier + state).
     pub oauth_pending: std::sync::Mutex<Option<oauth::PendingLogin>>,
+    /// Mirror of config.hide_on_blur, readable from the sync event loop.
+    pub hide_on_blur: std::sync::atomic::AtomicBool,
+    /// Millis timestamp of the last title-bar press — blur events within the
+    /// grace window are drag-induced (tauri#10767), not click-away.
+    pub last_drag_ms: std::sync::atomic::AtomicI64,
 }
 
 impl AppState {
@@ -75,6 +80,7 @@ async fn set_config(
     config: Config,
 ) -> Result<(), String> {
     config.save(&state.config_dir).map_err(|e| e.to_string())?;
+    state.hide_on_blur.store(config.hide_on_blur, std::sync::atomic::Ordering::Relaxed);
     *state.config.write().await = config.clone();
     // Apply autostart immediately.
     let autolaunch = app.autolaunch();
@@ -167,6 +173,15 @@ fn hide_window(window: tauri::Window) {
     let _ = window.hide();
 }
 
+/// Fired by the frontend on a title-bar mousedown, just before the native
+/// drag begins — arms the blur grace period.
+#[tauri::command]
+fn note_drag(state: tauri::State<'_, Arc<AppState>>) {
+    state
+        .last_drag_ms
+        .store(chrono::Utc::now().timestamp_millis(), std::sync::atomic::Ordering::Relaxed);
+}
+
 #[tauri::command]
 fn quit(app: tauri::AppHandle) {
     app.exit(0);
@@ -180,6 +195,8 @@ pub fn run() {
     let config = Config::load(&config_dir);
     let state = Arc::new(AppState {
         config_dir,
+        hide_on_blur: std::sync::atomic::AtomicBool::new(config.hide_on_blur),
+        last_drag_ms: std::sync::atomic::AtomicI64::new(0),
         config: RwLock::new(config),
         snapshots: RwLock::new(HashMap::new()),
         alert_engine: Mutex::new(AlertEngine::default()),
@@ -211,6 +228,7 @@ pub fn run() {
             claude_oauth_start,
             claude_oauth_finish,
             hide_window,
+            note_drag,
             quit,
         ])
         .setup(move |app| {
@@ -219,15 +237,29 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            use tauri::Manager;
             match event {
                 // Close button hides to tray; the app lives on.
                 WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
                     let _ = window.hide();
                 }
-                // Clicking elsewhere dismisses the popup.
+                // Click-away dismiss (opt-in), suppressed right after a
+                // title-bar press: starting a native drag on Windows drops
+                // focus momentarily (tauri#10767) and must not hide the window.
                 WindowEvent::Focused(false) => {
-                    let _ = window.hide();
+                    let Some(state) = window.app_handle().try_state::<Arc<AppState>>() else {
+                        return;
+                    };
+                    use std::sync::atomic::Ordering::Relaxed;
+                    if !state.hide_on_blur.load(Relaxed) {
+                        return;
+                    }
+                    let since_drag = chrono::Utc::now().timestamp_millis()
+                        - state.last_drag_ms.load(Relaxed);
+                    if since_drag > 2_000 {
+                        let _ = window.hide();
+                    }
                 }
                 _ => {}
             }

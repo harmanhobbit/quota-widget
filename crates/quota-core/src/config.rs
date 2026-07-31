@@ -50,6 +50,12 @@ pub struct Config {
     pub thresholds: Thresholds,
     pub alerts: AlertToggles,
     pub autostart: bool,
+    /// Hide the popup when it loses focus (click-away dismiss). Off by
+    /// default: on Windows, starting a title-bar drag briefly drops focus,
+    /// so this fights window dragging (tauri#10767) — the poller grants a
+    /// grace period after a drag press, but Esc/✕/tray remain the reliable
+    /// ways to dismiss.
+    pub hide_on_blur: bool,
     pub providers: BTreeMap<String, ProviderConfig>,
 }
 
@@ -66,6 +72,7 @@ impl Default for Config {
             thresholds: Thresholds::default(),
             alerts: AlertToggles::default(),
             autostart: false,
+            hide_on_blur: false,
             providers,
         }
     }
