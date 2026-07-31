@@ -1,0 +1,106 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+/// One rate-limit window of a provider (e.g. Claude's rolling 5-hour window).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageWindow {
+    pub label: String,
+    /// 0.0–100.0. May exceed 100 if the provider reports overage.
+    pub used_pct: f64,
+    pub resets_at: Option<DateTime<Utc>>,
+}
+
+/// Credit balance for pay-per-use providers (OpenRouter, Hermes Portal).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Credits {
+    pub balance: f64,
+    /// Display unit, e.g. "USD" or "credits".
+    pub unit: String,
+    pub used: Option<f64>,
+    pub granted: Option<f64>,
+    /// Estimated tokens remaining at the configured per-token price, if set.
+    pub est_tokens_remaining: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, thiserror::Error)]
+#[serde(tag = "kind", content = "detail")]
+pub enum FetchError {
+    /// Provider is enabled but has no usable credentials yet. Detail is a fix hint.
+    #[error("not configured: {0}")]
+    NotConfigured(String),
+    /// Credentials exist but were rejected. Detail is a fix hint.
+    #[error("auth expired: {0}")]
+    AuthExpired(String),
+    #[error("network error: {0}")]
+    Network(String),
+    #[error("unexpected response: {0}")]
+    Parse(String),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum Status {
+    Ok,
+    Warn,
+    Critical,
+    /// Fetch failed; last data (if any) is stale.
+    Stale,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UsageSnapshot {
+    pub provider_id: String,
+    pub provider_name: String,
+    pub windows: Vec<UsageWindow>,
+    pub credits: Option<Credits>,
+    pub fetched_at: DateTime<Utc>,
+    pub error: Option<FetchError>,
+}
+
+impl UsageSnapshot {
+    pub fn ok(id: &str, name: &str, windows: Vec<UsageWindow>, credits: Option<Credits>) -> Self {
+        Self {
+            provider_id: id.into(),
+            provider_name: name.into(),
+            windows,
+            credits,
+            fetched_at: Utc::now(),
+            error: None,
+        }
+    }
+
+    pub fn failed(id: &str, name: &str, err: FetchError) -> Self {
+        Self {
+            provider_id: id.into(),
+            provider_name: name.into(),
+            windows: vec![],
+            credits: None,
+            fetched_at: Utc::now(),
+            error: Some(err),
+        }
+    }
+
+    /// Worst status across this snapshot's windows/credits for the given thresholds.
+    pub fn status(&self, warn_pct: f64, critical_pct: f64, low_balance_warn: Option<f64>) -> Status {
+        if self.error.is_some() {
+            return Status::Stale;
+        }
+        let mut worst = Status::Ok;
+        for w in &self.windows {
+            let s = if w.used_pct >= critical_pct {
+                Status::Critical
+            } else if w.used_pct >= warn_pct {
+                Status::Warn
+            } else {
+                Status::Ok
+            };
+            worst = worst.max(s);
+        }
+        if let (Some(c), Some(thr)) = (&self.credits, low_balance_warn) {
+            if c.balance <= thr {
+                worst = worst.max(Status::Warn);
+            }
+        }
+        worst
+    }
+}

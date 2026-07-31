@@ -1,0 +1,41 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Core tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p quota-core
+
+  build:
+    name: Portable EXE (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - run: npm ci
+      - run: npm run tauri build
+      - name: Upload portable EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: quota-widget-portable
+          path: target/release/quota-widget.exe
+      - name: Upload NSIS installer (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: quota-widget-installer
+          path: target/release/bundle/nsis/*.exe

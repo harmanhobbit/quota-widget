@@ -1,0 +1,29 @@
+[package]
+name = "quota-widget"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "System-tray widget showing AI provider usage and credits"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+quota-core = { path = "../crates/quota-core" }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-opener = "2"
+dirs = "6"
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[lib]
+name = "quota_widget_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]

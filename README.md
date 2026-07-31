@@ -1,0 +1,98 @@
+# Quota Widget
+
+A Windows 11 system-tray widget that watches your AI provider allowances in one
+place: Claude's rolling 5-hour window and weekly cap, Codex's weekly allowance,
+Hermes Portal credits, and OpenRouter credits. It collapses to the tray and pops
+up as a compact always-on-top window.
+
+Built with Tauri 2 (Rust) + Svelte 5. The portable EXE is self-contained —
+Windows 11 ships the WebView2 runtime it renders with.
+
+## How it works
+
+- A tray icon shows worst-case status at a glance: 🟢 ok, 🟡 past your warn
+  threshold, 🔴 past critical, ⚪ grey when data is stale or auth failed.
+- **Left-click** the tray icon to toggle the popup near the tray. **Esc**,
+  clicking elsewhere, or the ✕ button hides it again — the app keeps running.
+- **Right-click** for Open / Refresh now / Settings / Quit.
+- A background poller (default every 60 s) refreshes all enabled providers and
+  fires alerts when usage *crosses* a threshold (edge-triggered — you get one
+  toast at 80%, not one per poll). Toast, tray color, and auto-popup are each
+  independently toggleable, globally and per provider.
+
+## Provider setup
+
+| Provider | What you need | Notes |
+|---|---|---|
+| **Claude** | Claude Code installed and logged in (`claude`) | Reads the OAuth token from `%USERPROFILE%\.claude\.credentials.json` on every poll and calls the same usage endpoint Claude Code's `/usage` uses. Shows the 5-hour window, weekly cap, and any per-model weekly caps the API reports. Unofficial endpoint — may change. |
+| **Codex** | Codex CLI installed and logged in (`codex`) | Reads `%USERPROFILE%\.codex\auth.json` and calls the ChatGPT backend usage endpoint. Renders whatever rate-limit windows the response contains (weekly today; adapts automatically if OpenAI reshapes it). Unofficial endpoint. |
+| **OpenRouter** | An API key from [openrouter.ai/keys](https://openrouter.ai/keys) | Official `GET /api/v1/credits` API. Shows balance and usage in USD. |
+| **Hermes Portal** | A logged-in session cookie + the balance endpoint URL | Nous Research has no public balance API yet. In your browser, open [portal.nousresearch.com](https://portal.nousresearch.com) → DevTools → Network, find the request the dashboard makes for your balance, then paste its URL into Settings → Hermes "Balance endpoint" and its `Cookie` request header into the cookie field. Optionally set a per-token price to see an estimated-tokens-remaining figure. Expect to re-paste the cookie when it expires. |
+
+Secrets (API key, cookie) are stored in the **Windows Credential Manager**, not
+on disk. On Linux dev runs they fall back to a `0600` `secrets.json` in the
+config dir. Config lives at `%APPDATA%\quota-widget\config.json`
+(`~/.config/quota-widget/` on Linux).
+
+## Building
+
+### CI (recommended)
+
+Push to GitHub — `.github/workflows/windows-build.yml` runs the core test suite
+on Linux and produces two artifacts on a Windows runner:
+
+- `quota-widget-portable` — the single portable `quota-widget.exe`
+- `quota-widget-installer` — an NSIS installer, if you'd rather have Start Menu
+  integration and an uninstaller
+
+### Locally
+
+```sh
+npm install
+npm run gen-icons          # regenerate src-tauri/icons (already committed)
+cargo test -p quota-core   # pure-Rust core: parsers, alert engine, config
+npm run tauri dev          # run the app (needs OS webview libs — see below)
+npm run tauri build        # produce the exe (run this on Windows)
+```
+
+- **On Windows**: install Rust + Node, then the two commands above just work.
+- **On Linux** (dev runs): install the Tauri prerequisites first:
+  `sudo apt install libwebkit2gtk-4.1-dev build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`
+- **Cross-compiling Windows EXEs from Linux** is possible but officially
+  experimental: `cargo install cargo-xwin`, add the `x86_64-pc-windows-msvc`
+  target, install `nsis` + `lld`, then
+  `npm run tauri build -- --runner cargo-xwin --target x86_64-pc-windows-msvc`.
+  Prefer the CI route.
+
+## Deployment
+
+Copy `quota-widget.exe` anywhere and run it. First run: right-click the tray
+icon → Settings, enable the providers you use, paste any keys, set thresholds,
+and optionally enable **Start with Windows** (registers a `HKCU` run entry via
+the autostart plugin — no admin rights needed). Updating = replacing the EXE.
+
+## Architecture
+
+```
+crates/quota-core   pure Rust, no UI deps — fully unit-tested
+  model.rs          UsageSnapshot / UsageWindow / Credits / FetchError
+  config.rs         config persistence + per-provider overrides
+  alerts.rs         edge-triggered alert engine
+  providers/        one adapter per provider behind a common trait
+src-tauri           the Tauri shell
+  tray.rs           runtime-generated status icons, menu, popup placement
+  poller.rs         poll loop → state → tray/toasts/events
+  secrets.rs        Credential Manager (Windows) / 0600 file (elsewhere)
+src/                Svelte popup + settings UI
+```
+
+## Known limitations
+
+- Claude and Codex usage endpoints are the CLIs' private APIs; a provider-side
+  change can break those cards until this widget is updated. The cards degrade
+  to a labelled error state rather than crashing.
+- The Hermes adapter scans responses leniently for balance-like fields, but the
+  portal may change shape; the endpoint URL is user-configurable for that
+  reason.
+- The Claude "weekly" window's reset cadence is whatever the API reports —
+  observed in the wild resetting more often than every 7 days.
