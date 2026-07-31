@@ -45,6 +45,22 @@ on Linux and produces two artifacts on a Windows runner:
 - `quota-widget-installer` — an NSIS installer, if you'd rather have Start Menu
   integration and an uninstaller
 
+### NixOS / Nix
+
+The repo is a flake (Linux only; verified build):
+
+```sh
+nix run github:harmanhobbit/quota-widget   # or nix build / nix profile install
+```
+
+In a device flake, either add the overlay
+(`nixpkgs.overlays = [ quota-widget.overlays.default ];` →
+`environment.systemPackages = [ pkgs.quota-widget ];`) or take
+`quota-widget.packages.${system}.default` directly. The package wraps the
+binary with `libayatana-appindicator` (dlopened by the tray) and puts
+`ssh` on PATH for the Hermes remote source. Bumping npm deps later means
+refreshing `npmDeps.hash` in `nix/package.nix`.
+
 ### Locally
 
 ```sh

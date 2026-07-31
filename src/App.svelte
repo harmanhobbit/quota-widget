@@ -1,13 +1,41 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { LogicalSize } from '@tauri-apps/api/dpi';
   import ProviderCard from './lib/ProviderCard.svelte';
   import Settings from './lib/Settings.svelte';
 
   let view = $state('popup'); // 'popup' | 'settings'
   let snapshots = $state([]);
   let refreshing = $state(false);
+  let headerEl = $state(null);
+  let cardsEl = $state(null);
+
+  const SETTINGS_HEIGHT = 560;
+
+  // The popup shrinks to exactly fit the usage meters; settings gets a fixed
+  // comfortable height (still user-resizable from there).
+  async function fitToContent() {
+    try {
+      const win = getCurrentWindow();
+      if (view === 'popup' && headerEl && cardsEl) {
+        const h = Math.min(680, Math.max(120, headerEl.offsetHeight + cardsEl.scrollHeight + 2));
+        await win.setSize(new LogicalSize(window.innerWidth, h));
+      } else if (view === 'settings') {
+        await win.setSize(new LogicalSize(window.innerWidth, SETTINGS_HEIGHT));
+      }
+    } catch {
+      // sizing is cosmetic — never let it break the UI
+    }
+  }
+
+  $effect(() => {
+    void view;
+    void snapshots;
+    tick().then(fitToContent);
+  });
 
   onMount(() => {
     invoke('get_snapshots').then((s) => (snapshots = s));
@@ -35,7 +63,7 @@
 </script>
 
 <main>
-  <header data-tauri-drag-region onmousedown={() => invoke('note_drag')}>
+  <header data-tauri-drag-region bind:this={headerEl} onmousedown={() => invoke('note_drag')}>
     <span class="title" data-tauri-drag-region>Quota Widget</span>
     <span class="spacer" data-tauri-drag-region></span>
     {#if view === 'popup'}
@@ -48,7 +76,7 @@
   </header>
 
   {#if view === 'popup'}
-    <div class="cards">
+    <div class="cards" bind:this={cardsEl}>
       {#if snapshots.length === 0}
         <p class="empty">
           No providers enabled yet — open <button class="link" onclick={() => (view = 'settings')}>Settings</button> to add one.
