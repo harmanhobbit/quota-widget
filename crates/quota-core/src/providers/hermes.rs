@@ -1,18 +1,31 @@
-//! Hermes Portal (Nous Research). There is no public balance API (open feature
-//! request on the hermes-agent repo), so this adapter calls a portal endpoint
-//! with a pasted session cookie and scans the JSON leniently for balance-like
-//! fields. The endpoint is configurable in settings (`endpoint`) because it
-//! must be discovered from the portal dashboard's own network traffic and may
-//! change. If a per-token price is configured (`token_price`), the card also
-//! shows an estimated-tokens-remaining figure.
+//! Hermes Portal (Nous Research) credits.
+//!
+//! Preferred source: the hermes-agent login in `~/.hermes/auth.json`
+//! (`providers.nous.access_token`), used against the portal's own billing API:
+//! `GET {portal}/api/billing/state` → `balanceUsd`, `monthlyCap`, …
+//! (contract confirmed from hermes-agent's client code and test fixtures).
+//!
+//! IMPORTANT: we only ever use the *access* token, never hermes's refresh
+//! token. The portal rotates refresh tokens and treats reuse as token theft,
+//! revoking the whole session chain — hermes-agent's own source documents
+//! this failure mode. Access tokens are short-lived (~1 h) and refreshed by
+//! hermes's keepalive, so a stale token here means "run hermes", not "refresh
+//! it ourselves".
+//!
+//! Fallback source: a pasted portal session cookie against a user-configured
+//! endpoint (`endpoint` setting), parsed leniently — kept for machines without
+//! hermes-agent installed. The `source` setting forces one path:
+//! `"auto"` (default) | `"hermes"` | `"cookie"`.
 
 use super::{as_f64, network_err, Provider, ProviderCtx};
-use crate::model::{Credits, FetchError, UsageSnapshot};
+use crate::model::{Credits, FetchError, UsageSnapshot, UsageWindow};
+use chrono::{DateTime, Utc};
 use serde_json::Value;
+use std::path::Path;
 
 pub struct Hermes;
 
-const DEFAULT_ENDPOINT: &str = "https://portal.nousresearch.com/api/user/credits";
+const DEFAULT_PORTAL: &str = "https://portal.nousresearch.com";
 
 #[async_trait::async_trait]
 impl Provider for Hermes {
@@ -24,16 +37,123 @@ impl Provider for Hermes {
     }
 
     async fn fetch(&self, ctx: &ProviderCtx) -> Result<UsageSnapshot, FetchError> {
+        let source = ctx
+            .config
+            .provider_setting("hermes", "source")
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "auto".into());
+        let token_price =
+            ctx.config.provider_setting("hermes", "token_price").and_then(|v| as_f64(&v));
+
+        if source != "cookie" {
+            match read_hermes_auth(&ctx.home) {
+                Some(auth) => return self.fetch_billing(ctx, &auth, token_price).await,
+                None if source == "hermes" => {
+                    return Err(FetchError::NotConfigured(
+                        "no hermes-agent login found (~/.hermes/auth.json) — run `hermes` and sign in"
+                            .into(),
+                    ))
+                }
+                None => {} // auto: fall through to cookie
+            }
+        }
+        self.fetch_cookie(ctx, token_price).await
+    }
+}
+
+pub struct NousAuth {
+    pub access_token: String,
+    pub portal_base: String,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// Read the hermes-agent Nous login. Returns None when the file or token is
+/// absent (not an error — cookie mode may still be configured).
+pub fn read_hermes_auth(home: &Path) -> Option<NousAuth> {
+    let text = std::fs::read_to_string(home.join(".hermes").join("auth.json")).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    let nous = &v["providers"]["nous"];
+    let access = nous["access_token"].as_str()?.to_string();
+    if access.is_empty() {
+        return None;
+    }
+    Some(NousAuth {
+        access_token: access,
+        portal_base: nous["portal_base_url"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(DEFAULT_PORTAL)
+            .trim_end_matches('/')
+            .to_string(),
+        expires_at: nous["expires_at"]
+            .as_str()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc)),
+    })
+}
+
+impl Hermes {
+    async fn fetch_billing(
+        &self,
+        ctx: &ProviderCtx,
+        auth: &NousAuth,
+        token_price: Option<f64>,
+    ) -> Result<UsageSnapshot, FetchError> {
+        const STALE_HINT: &str =
+            "hermes-agent token expired — run any `hermes` command (or keep hermes running) to refresh it";
+        if let Some(exp) = auth.expires_at {
+            if exp < Utc::now() + chrono::Duration::seconds(30) {
+                return Err(FetchError::AuthExpired(STALE_HINT.into()));
+            }
+        }
+        let url = format!("{}/api/billing/state", auth.portal_base);
+        let resp = ctx
+            .http
+            .get(&url)
+            .bearer_auth(&auth.access_token)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(network_err)?;
+        match resp.status().as_u16() {
+            200..=299 => {}
+            401 | 403 => return Err(FetchError::AuthExpired(STALE_HINT.into())),
+            s => return Err(FetchError::Network(format!("HTTP {s} from {url}"))),
+        }
+        let body: Value = resp.json().await.map_err(network_err)?;
+        let (credits, mut windows) = parse_billing_state(&body, token_price)
+            .ok_or_else(|| FetchError::Parse("billing state response missing balanceUsd".into()))?;
+
+        // Subscription allowance (tier, monthly credits, cycle reset) — best
+        // effort; a failure here still leaves a valid balance card.
+        let sub_url = format!("{}/api/billing/subscription", auth.portal_base);
+        if let Ok(resp) = ctx.http.get(&sub_url).bearer_auth(&auth.access_token).send().await {
+            if resp.status().is_success() {
+                if let Ok(sub) = resp.json::<Value>().await {
+                    windows.extend(parse_subscription(&sub));
+                }
+            }
+        }
+        Ok(UsageSnapshot::ok(self.id(), self.name(), windows, Some(credits)))
+    }
+
+    async fn fetch_cookie(
+        &self,
+        ctx: &ProviderCtx,
+        token_price: Option<f64>,
+    ) -> Result<UsageSnapshot, FetchError> {
         let cookie = ctx.secrets.get("hermes").filter(|c| !c.is_empty()).ok_or_else(|| {
             FetchError::NotConfigured(
-                "paste your portal.nousresearch.com session cookie in Settings".into(),
+                "run hermes-agent on this machine (its login is reused automatically) \
+                 or paste a portal session cookie in Settings"
+                    .into(),
             )
         })?;
         let endpoint = ctx
             .config
             .provider_setting("hermes", "endpoint")
             .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string());
+            .unwrap_or_else(|| format!("{DEFAULT_PORTAL}/api/billing/state"));
 
         let resp = ctx
             .http
@@ -50,47 +170,98 @@ impl Provider for Hermes {
                     "session cookie expired — log in to the portal and re-paste it".into(),
                 ))
             }
-            s => {
-                return Err(FetchError::Network(format!(
-                    "HTTP {s} from {endpoint} — the portal endpoint may have changed; \
-                     capture the current one via browser DevTools and set it in Settings"
-                )))
-            }
+            s => return Err(FetchError::Network(format!("HTTP {s} from {endpoint}"))),
         }
         let body: Value = resp.json().await.map_err(network_err)?;
-        let token_price = ctx.config.provider_setting("hermes", "token_price").and_then(|v| as_f64(&v));
-        let credits = parse_credits(&body, token_price).ok_or_else(|| {
-            FetchError::Parse(
-                "no balance-like field found in response — the endpoint shape may have changed"
-                    .into(),
-            )
-        })?;
-        Ok(UsageSnapshot::ok(self.id(), self.name(), vec![], Some(credits)))
+        let parsed = parse_billing_state(&body, token_price)
+            .or_else(|| parse_lenient(&body, token_price))
+            .ok_or_else(|| {
+                FetchError::Parse(
+                    "no balance-like field found in response — check the endpoint in Settings".into(),
+                )
+            })?;
+        Ok(UsageSnapshot::ok(self.id(), self.name(), parsed.1, Some(parsed.0)))
     }
 }
 
-/// Field names that plausibly hold the remaining balance / usage, in priority
-/// order. Matched case-insensitively against every key in the JSON tree.
-const BALANCE_KEYS: &[&str] =
-    &["credits_remaining", "creditsremaining", "remaining_credits", "credit_balance", "balance", "credits"];
-const USED_KEYS: &[&str] = &["credits_used", "creditsused", "used_credits", "usage", "used"];
-
-fn parse_credits(body: &Value, token_price: Option<f64>) -> Option<Credits> {
-    let balance = find_numeric(body, BALANCE_KEYS)?;
-    let used = find_numeric(body, USED_KEYS);
-    let est_tokens_remaining = token_price.filter(|p| *p > 0.0).map(|p| balance / p);
-    Some(Credits { balance, unit: "credits".into(), used, granted: None, est_tokens_remaining })
-}
-
-/// Depth-first search for the first numeric value whose key matches `keys`
-/// (earlier entries in `keys` win over later ones at any depth).
-fn find_numeric(v: &Value, keys: &[&str]) -> Option<f64> {
-    for key in keys {
-        if let Some(n) = find_by_key(v, key) {
-            return Some(n);
+/// Parse the portal's `/api/billing/state` shape (camelCase, money as strings):
+/// `{"balanceUsd": "142.5", "monthlyCap": {"limitUsd": "1000", "spentThisMonthUsd": "180"}, …}`
+fn parse_billing_state(body: &Value, token_price: Option<f64>) -> Option<(Credits, Vec<UsageWindow>)> {
+    let balance = body.get("balanceUsd").and_then(as_f64)?;
+    let mut windows = Vec::new();
+    let mut used = None;
+    if let Some(cap) = body.get("monthlyCap").filter(|c| c.is_object()) {
+        let spent = cap.get("spentThisMonthUsd").and_then(as_f64);
+        used = spent;
+        if let (Some(limit), Some(spent)) = (cap.get("limitUsd").and_then(as_f64), spent) {
+            if limit > 0.0 {
+                windows.push(UsageWindow {
+                    label: "Monthly cap".into(),
+                    used_pct: spent / limit * 100.0,
+                    resets_at: None,
+                });
+            }
         }
     }
-    None
+    Some((make_credits(balance, used, token_price), windows))
+}
+
+/// Parse `/api/billing/subscription`:
+/// `{"current": {"tierName": "Plus", "monthlyCredits": "22", "creditsRemaining": "3.5",
+///   "cycleEndsAt": "2026-08-01T20:29:04.000Z", …}, …}`
+fn parse_subscription(body: &Value) -> Vec<UsageWindow> {
+    let cur = &body["current"];
+    let (Some(monthly), Some(remaining)) = (
+        cur.get("monthlyCredits").and_then(as_f64),
+        cur.get("creditsRemaining").and_then(as_f64),
+    ) else {
+        return vec![];
+    };
+    if monthly <= 0.0 {
+        return vec![];
+    }
+    let tier = cur["tierName"].as_str().unwrap_or("subscription");
+    vec![UsageWindow {
+        label: format!("Monthly allowance ({tier})"),
+        used_pct: ((monthly - remaining) / monthly * 100.0).clamp(0.0, 100.0),
+        resets_at: cur["cycleEndsAt"]
+            .as_str()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc)),
+    }]
+}
+
+fn make_credits(balance: f64, used: Option<f64>, token_price: Option<f64>) -> Credits {
+    Credits {
+        balance,
+        unit: "USD".into(),
+        used,
+        granted: None,
+        est_tokens_remaining: token_price.filter(|p| *p > 0.0).map(|p| balance / p),
+    }
+}
+
+// ---- lenient fallback for unknown cookie-mode endpoints ---------------------
+
+const BALANCE_KEYS: &[&str] = &[
+    "balanceusd",
+    "credits_remaining",
+    "creditsremaining",
+    "remaining_credits",
+    "credit_balance",
+    "balance",
+    "credits",
+];
+const USED_KEYS: &[&str] = &["credits_used", "creditsused", "used_credits", "usage", "used"];
+
+fn parse_lenient(body: &Value, token_price: Option<f64>) -> Option<(Credits, Vec<UsageWindow>)> {
+    let balance = find_numeric(body, BALANCE_KEYS)?;
+    let used = find_numeric(body, USED_KEYS);
+    Some((make_credits(balance, used, token_price), vec![]))
+}
+
+fn find_numeric(v: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter().find_map(|key| find_by_key(v, key))
 }
 
 fn find_by_key(v: &Value, key: &str) -> Option<f64> {
@@ -114,27 +285,86 @@ fn find_by_key(v: &Value, key: &str) -> Option<f64> {
 mod tests {
     use super::*;
 
+    /// Shape from hermes-agent's own test fixtures for /api/billing/state.
     #[test]
-    fn finds_nested_balance_and_estimates_tokens() {
+    fn parses_portal_billing_state() {
+        let body = serde_json::json!({
+            "org": {"id": "o1", "slug": "acme", "name": "Acme", "role": "OWNER"},
+            "balanceUsd": "142.5",
+            "cliBillingEnabled": true,
+            "monthlyCap": {"limitUsd": "1000", "spentThisMonthUsd": "180", "isDefaultCeiling": true},
+            "autoReload": {"enabled": true, "thresholdUsd": "20"}
+        });
+        let (c, w) = parse_billing_state(&body, Some(0.000002)).unwrap();
+        assert_eq!(c.balance, 142.5);
+        assert_eq!(c.used, Some(180.0));
+        assert!((c.est_tokens_remaining.unwrap() - 71_250_000.0).abs() < 1.0);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].label, "Monthly cap");
+        assert!((w[0].used_pct - 18.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn billing_state_without_cap_has_no_windows() {
+        let body = serde_json::json!({"balanceUsd": "9.75", "monthlyCap": null});
+        let (c, w) = parse_billing_state(&body, None).unwrap();
+        assert_eq!(c.balance, 9.75);
+        assert!(w.is_empty());
+    }
+
+    #[test]
+    fn lenient_fallback_finds_nested_balance() {
         let body = serde_json::json!({
             "user": {"plan": "hermes-pro"},
             "billing": {"credits_remaining": 1234.5, "credits_used": 765.5}
         });
-        let c = parse_credits(&body, Some(0.000002)).unwrap();
+        let (c, _) = parse_lenient(&body, None).unwrap();
         assert_eq!(c.balance, 1234.5);
         assert_eq!(c.used, Some(765.5));
-        assert!((c.est_tokens_remaining.unwrap() - 617_250_000.0).abs() < 1.0);
+    }
+
+    /// Shape captured live from the portal on 2026-07-31.
+    #[test]
+    fn parses_subscription_allowance() {
+        let body = serde_json::json!({
+            "current": {
+                "tierName": "Free",
+                "monthlyCredits": "0.1",
+                "creditsRemaining": "0",
+                "cycleEndsAt": "2026-08-01T20:29:04.000Z"
+            }
+        });
+        let w = parse_subscription(&body);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].label, "Monthly allowance (Free)");
+        assert_eq!(w[0].used_pct, 100.0);
+        assert!(w[0].resets_at.is_some());
+        // zero-allowance tiers and missing fields produce no window
+        assert!(parse_subscription(&serde_json::json!({"current": {"monthlyCredits": "0", "creditsRemaining": "0"}})).is_empty());
+        assert!(parse_subscription(&serde_json::json!({})).is_empty());
     }
 
     #[test]
-    fn priority_order_prefers_specific_keys() {
-        // "balance" exists, but "credits_remaining" is more specific and wins.
-        let body = serde_json::json!({"balance": 1.0, "credits_remaining": 42.0});
-        assert_eq!(parse_credits(&body, None).unwrap().balance, 42.0);
-    }
-
-    #[test]
-    fn no_balance_field_is_none() {
-        assert!(parse_credits(&serde_json::json!({"ok": true}), None).is_none());
+    fn reads_hermes_auth_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".hermes")).unwrap();
+        std::fs::write(
+            dir.path().join(".hermes/auth.json"),
+            serde_json::json!({
+                "providers": {"nous": {
+                    "access_token": "tok",
+                    "portal_base_url": "https://portal.nousresearch.com/",
+                    "expires_at": "2026-07-31T14:30:17+00:00"
+                }}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let auth = read_hermes_auth(dir.path()).unwrap();
+        assert_eq!(auth.access_token, "tok");
+        assert_eq!(auth.portal_base, "https://portal.nousresearch.com");
+        assert!(auth.expires_at.is_some());
+        // absent file → None
+        assert!(read_hermes_auth(Path::new("/nonexistent")).is_none());
     }
 }

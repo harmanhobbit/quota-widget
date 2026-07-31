@@ -8,7 +8,7 @@
     { id: 'claude', name: 'Claude', secret: null, note: 'Uses the Claude Code CLI login if present, or the built-in browser sign-in below.' },
     { id: 'codex', name: 'Codex', secret: null, note: 'Uses the Codex CLI login on this machine (run `codex` once to sign in).' },
     { id: 'openrouter', name: 'OpenRouter', secret: 'API key', note: 'Create a key at openrouter.ai/keys.' },
-    { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Unofficial: paste the Cookie header from a logged-in portal.nousresearch.com request (browser DevTools → Network). May break if the portal changes.' },
+    { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Auto-detects a hermes-agent login (~/.hermes/auth.json) and uses the portal billing API. Cookie paste below is only a fallback for machines without hermes-agent.' },
   ];
 
   let config = $state(null);
