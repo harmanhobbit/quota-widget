@@ -1,3 +1,4 @@
+mod oauth;
 mod poller;
 mod secrets;
 mod tray;
@@ -20,13 +21,23 @@ pub struct AppState {
     pub alert_engine: Mutex<AlertEngine>,
     /// Poked to trigger an immediate poll cycle.
     pub refresh: Notify,
+    /// In-flight built-in Claude sign-in (PKCE verifier + state).
+    pub oauth_pending: std::sync::Mutex<Option<oauth::PendingLogin>>,
 }
 
 impl AppState {
     fn provider_ctx(&self, config: Config) -> ProviderCtx {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let secrets = secrets::load_all(&self.config_dir);
-        ProviderCtx::new(home, secrets, config)
+        let mut ctx = ProviderCtx::new(home, secrets, config);
+        // Adapters that rotate tokens (Claude OAuth refresh) persist them here.
+        let dir = self.config_dir.clone();
+        ctx.on_secret_update = Some(std::sync::Arc::new(move |key: &str, value: &str| {
+            if let Err(e) = secrets::set(&dir, key, value) {
+                eprintln!("failed to persist rotated secret {key}: {e}");
+            }
+        }));
+        ctx
     }
 }
 
@@ -116,6 +127,41 @@ async fn test_provider(
     Err(format!("unknown provider: {provider}"))
 }
 
+/// Begin the built-in Claude sign-in: opens the browser and returns the URL
+/// (shown in the UI as a copyable fallback).
+#[tauri::command]
+fn claude_oauth_start(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
+    let (url, pending) = oauth::start();
+    *state.oauth_pending.lock().unwrap() = Some(pending);
+    if let Err(e) = tauri_plugin_opener::open_url(&url, None::<&str>) {
+        eprintln!("browser open failed: {e}"); // URL is still shown in the UI
+    }
+    Ok(url)
+}
+
+/// Complete the sign-in with the pasted `code#state` string.
+#[tauri::command]
+async fn claude_oauth_finish(
+    state: tauri::State<'_, Arc<AppState>>,
+    code: String,
+) -> Result<(), String> {
+    let pending = state
+        .oauth_pending
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or_else(|| "no sign-in in progress — click Sign in first".to_string())?;
+    let http = reqwest::Client::new();
+    let tokens = oauth::finish(&http, &pending, &code).await?;
+    secrets::set(
+        &state.config_dir,
+        quota_core::providers::claude::OAUTH_SECRET_KEY,
+        &tokens.to_secret_json(),
+    )?;
+    state.refresh.notify_one();
+    Ok(())
+}
+
 #[tauri::command]
 fn hide_window(window: tauri::Window) {
     let _ = window.hide();
@@ -138,6 +184,7 @@ pub fn run() {
         snapshots: RwLock::new(HashMap::new()),
         alert_engine: Mutex::new(AlertEngine::default()),
         refresh: Notify::new(),
+        oauth_pending: std::sync::Mutex::new(None),
     });
 
     tauri::Builder::default()
@@ -161,6 +208,8 @@ pub fn run() {
             clear_secret,
             refresh_now,
             test_provider,
+            claude_oauth_start,
+            claude_oauth_finish,
             hide_window,
             quit,
         ])

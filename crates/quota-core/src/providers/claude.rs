@@ -1,7 +1,18 @@
 //! Claude (Pro/Max subscription) usage via the OAuth endpoint Claude Code's
-//! own `/usage` command uses. Token is read from the Claude Code credential
-//! file on every poll, so CLI-side refreshes are picked up automatically.
-//! These are unofficial endpoints and may change without notice.
+//! own `/usage` command uses. These are unofficial endpoints and may change.
+//!
+//! Auth sources, controlled by the `auth_mode` provider setting:
+//! - `"cli"`   — only the Claude Code credential file (`~/.claude/.credentials.json`)
+//! - `"oauth"` — only the widget's own sign-in (tokens stored under the
+//!               `claude_oauth` secret by the host app's PKCE flow)
+//! - `"auto"` (default) — a fresh CLI token wins; otherwise the widget's own
+//!               stored login; otherwise a last-resort refresh with the CLI's
+//!               refresh token.
+//!
+//! Anthropic rotates refresh tokens on use, so whenever *we* perform a refresh
+//! the rotated pair is persisted to our own `claude_oauth` secret — never back
+//! into Claude Code's file. That keeps the CLI's login untouched and means we
+//! refresh at most once per expiry, not once per poll.
 
 use super::{as_f64, network_err, parse_timestamp, Provider, ProviderCtx};
 use crate::model::{FetchError, UsageSnapshot, UsageWindow};
@@ -10,13 +21,73 @@ use serde_json::Value;
 
 pub struct Claude;
 
+pub const OAUTH_SECRET_KEY: &str = "claude_oauth";
+
 const USAGE_URLS: &[&str] = &[
     "https://claude.ai/api/oauth/usage",
     "https://api.anthropic.com/api/oauth/usage",
 ];
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 /// Claude Code's public OAuth client id.
-const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+pub const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    Auto,
+    Cli,
+    Oauth,
+}
+
+pub fn auth_mode(ctx: &ProviderCtx) -> AuthMode {
+    match ctx
+        .config
+        .provider_setting("claude", "auth_mode")
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .as_deref()
+    {
+        Some("cli") => AuthMode::Cli,
+        Some("oauth") => AuthMode::Oauth,
+        _ => AuthMode::Auto,
+    }
+}
+
+/// A usable token set from either source.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenSet {
+    pub access: String,
+    pub refresh: Option<String>,
+    /// epoch millis; 0 = unknown (treat as valid, let the API reject it)
+    pub expires_at_ms: i64,
+}
+
+impl TokenSet {
+    pub fn expired(&self, now_ms: i64) -> bool {
+        self.expires_at_ms > 0 && self.expires_at_ms < now_ms + 60_000
+    }
+
+    pub fn to_secret_json(&self) -> String {
+        serde_json::json!({
+            "accessToken": self.access,
+            "refreshToken": self.refresh,
+            "expiresAt": self.expires_at_ms,
+        })
+        .to_string()
+    }
+}
+
+/// Parse either our own stored secret or Claude Code's `claudeAiOauth` object —
+/// both use accessToken/refreshToken/expiresAt.
+pub fn parse_token_set(v: &Value) -> Option<TokenSet> {
+    let access = v["accessToken"].as_str()?.to_string();
+    if access.is_empty() {
+        return None;
+    }
+    Some(TokenSet {
+        access,
+        refresh: v["refreshToken"].as_str().map(String::from),
+        expires_at_ms: v["expiresAt"].as_i64().unwrap_or(0),
+    })
+}
 
 #[async_trait::async_trait]
 impl Provider for Claude {
@@ -51,15 +122,35 @@ impl Provider for Claude {
                     return Ok(UsageSnapshot::ok(self.id(), self.name(), windows, None));
                 }
                 Ok(r) if r.status().as_u16() == 401 || r.status().as_u16() == 403 => {
-                    return Err(FetchError::AuthExpired(
-                        "token rejected — run `claude` once to refresh the login".into(),
-                    ));
+                    return Err(FetchError::AuthExpired(reauth_hint(auth_mode(ctx))));
                 }
                 Ok(r) => last_err = Some(FetchError::Network(format!("{url}: HTTP {}", r.status()))),
                 Err(e) => last_err = Some(network_err(e)),
             }
         }
         Err(last_err.unwrap_or_else(|| FetchError::Network("no usage URL configured".into())))
+    }
+}
+
+fn reauth_hint(mode: AuthMode) -> String {
+    match mode {
+        AuthMode::Cli => "token rejected — run `claude` once to refresh the login".into(),
+        AuthMode::Oauth => "token rejected — sign in again in Settings → Claude".into(),
+        AuthMode::Auto => {
+            "token rejected — sign in via Settings → Claude (or run `claude` if you use the CLI)"
+                .into()
+        }
+    }
+}
+
+fn notconf_hint(mode: AuthMode) -> String {
+    match mode {
+        AuthMode::Cli => "no Claude Code login found — install Claude Code and run `claude`".into(),
+        AuthMode::Oauth => "not signed in — use Settings → Claude → Sign in".into(),
+        AuthMode::Auto => {
+            "no Claude login found — sign in via Settings → Claude (or run `claude` if you use the CLI)"
+                .into()
+        }
     }
 }
 
@@ -71,41 +162,63 @@ impl Claude {
         }
     }
 
-    /// Read Claude Code's credential file; refresh in memory if expired.
-    async fn access_token(&self, ctx: &ProviderCtx) -> Result<String, FetchError> {
+    fn cli_tokens(&self, ctx: &ProviderCtx) -> Option<TokenSet> {
         let path = ctx.home.join(".claude").join(".credentials.json");
-        let text = std::fs::read_to_string(&path).map_err(|_| {
-            FetchError::NotConfigured(format!(
-                "no Claude Code login found ({}) — install Claude Code and run `claude`",
-                path.display()
-            ))
-        })?;
-        let creds: Value = serde_json::from_str(&text)
-            .map_err(|e| FetchError::Parse(format!("credentials file: {e}")))?;
-        let oauth = &creds["claudeAiOauth"];
-        let access = oauth["accessToken"].as_str().unwrap_or_default();
-        if access.is_empty() {
-            return Err(FetchError::NotConfigured(
-                "credential file has no accessToken — run `claude` to log in".into(),
-            ));
-        }
-        let expires_ms = oauth["expiresAt"].as_i64().unwrap_or(0);
-        let now_ms = Utc::now().timestamp_millis();
-        if expires_ms > 0 && expires_ms < now_ms + 60_000 {
-            if let Some(refresh) = oauth["refreshToken"].as_str() {
-                if let Ok(tok) = self.refresh(ctx, refresh).await {
-                    return Ok(tok);
-                }
-            }
-            return Err(FetchError::AuthExpired(
-                "token expired — run `claude` once to refresh the login".into(),
-            ));
-        }
-        Ok(access.to_string())
+        let text = std::fs::read_to_string(&path).ok()?;
+        let creds: Value = serde_json::from_str(&text).ok()?;
+        parse_token_set(&creds["claudeAiOauth"])
     }
 
-    /// Best-effort in-memory refresh; never writes back to the CLI's file.
-    async fn refresh(&self, ctx: &ProviderCtx, refresh_token: &str) -> Result<String, FetchError> {
+    fn stored_tokens(&self, ctx: &ProviderCtx) -> Option<TokenSet> {
+        let raw = ctx.secrets.get(OAUTH_SECRET_KEY)?;
+        parse_token_set(&serde_json::from_str(raw).ok()?)
+    }
+
+    async fn access_token(&self, ctx: &ProviderCtx) -> Result<String, FetchError> {
+        let mode = auth_mode(ctx);
+        let now_ms = Utc::now().timestamp_millis();
+
+        // 1. A fresh token from the Claude Code CLI file (kept current by the
+        //    CLI itself whenever the user runs it).
+        let cli = if mode != AuthMode::Oauth { self.cli_tokens(ctx) } else { None };
+        if let Some(t) = &cli {
+            if !t.expired(now_ms) {
+                return Ok(t.access.clone());
+            }
+        }
+
+        // 2. Our own stored login, refreshed (and re-persisted) as needed.
+        if mode != AuthMode::Cli {
+            if let Some(t) = self.stored_tokens(ctx) {
+                if !t.expired(now_ms) {
+                    return Ok(t.access);
+                }
+                if let Some(refresh) = &t.refresh {
+                    if let Ok(fresh) = self.refresh(ctx, refresh).await {
+                        ctx.persist_secret(OAUTH_SECRET_KEY, &fresh.to_secret_json());
+                        return Ok(fresh.access);
+                    }
+                }
+                return Err(FetchError::AuthExpired(reauth_hint(mode)));
+            }
+        }
+
+        // 3. Last resort: refresh with the CLI's refresh token. The rotated
+        //    pair is stored under our secret, not written back to the CLI file.
+        if let Some(t) = cli {
+            if let Some(refresh) = &t.refresh {
+                if let Ok(fresh) = self.refresh(ctx, refresh).await {
+                    ctx.persist_secret(OAUTH_SECRET_KEY, &fresh.to_secret_json());
+                    return Ok(fresh.access);
+                }
+            }
+            return Err(FetchError::AuthExpired(reauth_hint(mode)));
+        }
+
+        Err(FetchError::NotConfigured(notconf_hint(mode)))
+    }
+
+    async fn refresh(&self, ctx: &ProviderCtx, refresh_token: &str) -> Result<TokenSet, FetchError> {
         let resp = ctx
             .http
             .post(TOKEN_URL)
@@ -121,10 +234,21 @@ impl Claude {
             return Err(FetchError::AuthExpired(format!("refresh failed: HTTP {}", resp.status())));
         }
         let body: Value = resp.json().await.map_err(network_err)?;
-        body["access_token"]
+        let access = body["access_token"]
             .as_str()
             .map(String::from)
-            .ok_or_else(|| FetchError::Parse("refresh response missing access_token".into()))
+            .ok_or_else(|| FetchError::Parse("refresh response missing access_token".into()))?;
+        let expires_at_ms = body["expires_in"]
+            .as_i64()
+            .map(|s| Utc::now().timestamp_millis() + s * 1000)
+            .unwrap_or(0);
+        Ok(TokenSet {
+            access,
+            // Anthropic rotates refresh tokens; fall back to the one we used
+            // if the response doesn't include a new one.
+            refresh: body["refresh_token"].as_str().map(String::from).or_else(|| Some(refresh_token.into())),
+            expires_at_ms,
+        })
     }
 }
 
@@ -166,6 +290,8 @@ fn label_for(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use std::collections::HashMap;
 
     #[test]
     fn parses_five_hour_and_weekly() {
@@ -193,5 +319,84 @@ mod tests {
     fn unknown_shape_yields_empty() {
         assert!(parse_usage(&serde_json::json!({"error": "nope"})).is_empty());
         assert!(parse_usage(&serde_json::json!([1, 2, 3])).is_empty());
+    }
+
+    #[test]
+    fn token_set_round_trip_and_expiry() {
+        let t = TokenSet { access: "a".into(), refresh: Some("r".into()), expires_at_ms: 1000 };
+        let parsed = parse_token_set(&serde_json::from_str(&t.to_secret_json()).unwrap()).unwrap();
+        assert_eq!(parsed, t);
+        assert!(t.expired(1_000_000));
+        assert!(!t.expired(-100_000));
+        // unknown expiry is treated as valid
+        let t2 = TokenSet { access: "a".into(), refresh: None, expires_at_ms: 0 };
+        assert!(!t2.expired(i64::MAX - 60_000));
+    }
+
+    #[test]
+    fn auth_mode_from_settings() {
+        let mk = |mode: Option<&str>| {
+            let mut cfg = Config::default();
+            if let Some(m) = mode {
+                cfg.providers
+                    .get_mut("claude")
+                    .unwrap()
+                    .settings
+                    .insert("auth_mode".into(), m.into());
+            }
+            ProviderCtx::new(std::env::temp_dir(), HashMap::new(), cfg)
+        };
+        assert_eq!(auth_mode(&mk(None)), AuthMode::Auto);
+        assert_eq!(auth_mode(&mk(Some("cli"))), AuthMode::Cli);
+        assert_eq!(auth_mode(&mk(Some("oauth"))), AuthMode::Oauth);
+        assert_eq!(auth_mode(&mk(Some("bogus"))), AuthMode::Auto);
+    }
+
+    #[tokio::test]
+    async fn oauth_mode_without_secret_is_not_configured() {
+        let mut cfg = Config::default();
+        cfg.providers
+            .get_mut("claude")
+            .unwrap()
+            .settings
+            .insert("auth_mode".into(), "oauth".into());
+        // home dir with a CLI credential file that must be IGNORED in oauth mode
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"cli-token","expiresAt":9999999999999}}"#,
+        )
+        .unwrap();
+        let ctx = ProviderCtx::new(dir.path().into(), HashMap::new(), cfg);
+        let err = Claude.access_token(&ctx).await.unwrap_err();
+        assert!(matches!(err, FetchError::NotConfigured(_)));
+    }
+
+    #[tokio::test]
+    async fn auto_mode_prefers_fresh_cli_then_stored_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"cli-token","expiresAt":9999999999999}}"#,
+        )
+        .unwrap();
+        let mut secrets = HashMap::new();
+        secrets.insert(
+            OAUTH_SECRET_KEY.to_string(),
+            r#"{"accessToken":"widget-token","expiresAt":9999999999999}"#.to_string(),
+        );
+        // fresh CLI token wins
+        let ctx = ProviderCtx::new(dir.path().into(), secrets.clone(), Config::default());
+        assert_eq!(Claude.access_token(&ctx).await.unwrap(), "cli-token");
+        // expired CLI token without refresh → stored secret wins
+        std::fs::write(
+            dir.path().join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"cli-token","expiresAt":1}}"#,
+        )
+        .unwrap();
+        let ctx = ProviderCtx::new(dir.path().into(), secrets, Config::default());
+        assert_eq!(Claude.access_token(&ctx).await.unwrap(), "widget-token");
     }
 }

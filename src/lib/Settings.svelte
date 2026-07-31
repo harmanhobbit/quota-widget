@@ -5,7 +5,7 @@
   let { onclose } = $props();
 
   const PROVIDERS = [
-    { id: 'claude', name: 'Claude', secret: null, note: 'Uses the Claude Code login on this machine (run `claude` once to sign in).' },
+    { id: 'claude', name: 'Claude', secret: null, note: 'Uses the Claude Code CLI login if present, or the built-in browser sign-in below.' },
     { id: 'codex', name: 'Codex', secret: null, note: 'Uses the Codex CLI login on this machine (run `codex` once to sign in).' },
     { id: 'openrouter', name: 'OpenRouter', secret: 'API key', note: 'Create a key at openrouter.ai/keys.' },
     { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Unofficial: paste the Cookie header from a logged-in portal.nousresearch.com request (browser DevTools → Network). May break if the portal changes.' },
@@ -16,6 +16,7 @@
   let secretStored = $state({});
   let testResults = $state({});
   let saved = $state(false);
+  let oauth = $state({ url: '', code: '', status: '', signedIn: false });
 
   onMount(async () => {
     const cfg = await invoke('get_config');
@@ -28,7 +29,30 @@
     for (const p of PROVIDERS) {
       if (p.secret) secretStored[p.id] = await invoke('has_secret', { provider: p.id });
     }
+    oauth.signedIn = await invoke('has_secret', { provider: 'claude_oauth' });
   });
+
+  async function oauthStart() {
+    oauth.status = '';
+    oauth.url = await invoke('claude_oauth_start');
+  }
+
+  async function oauthFinish() {
+    try {
+      await invoke('claude_oauth_finish', { code: oauth.code });
+      oauth.status = 'ok';
+      oauth.signedIn = true;
+      oauth.url = '';
+      oauth.code = '';
+    } catch (e) {
+      oauth.status = String(e);
+    }
+  }
+
+  async function oauthClear() {
+    await invoke('clear_secret', { provider: 'claude_oauth' });
+    oauth.signedIn = false;
+  }
 
   async function save() {
     for (const [id, value] of Object.entries(secretInputs)) {
@@ -101,6 +125,41 @@
                 <button class="small" onclick={() => clearSecret(p.id)}>Clear</button>
               {/if}
             </div>
+          {/if}
+          {#if p.id === 'claude'}
+            <div class="row">
+              <label class="inline">Sign-in method
+                <select bind:value={config.providers['claude'].settings.auth_mode}>
+                  <option value={undefined}>Auto (CLI, then built-in)</option>
+                  <option value="cli">Claude Code CLI only</option>
+                  <option value="oauth">Built-in sign-in only</option>
+                </select>
+              </label>
+            </div>
+            {#if config.providers['claude'].settings.auth_mode !== 'cli'}
+              <div class="row">
+                {#if oauth.signedIn}
+                  <span class="test good">Built-in sign-in active ✓</span>
+                  <button class="small" onclick={oauthClear}>Sign out</button>
+                {:else}
+                  <button class="small" onclick={oauthStart}>Sign in with Claude…</button>
+                {/if}
+              </div>
+              {#if oauth.url}
+                <p class="note">
+                  A browser window opened (or open this link yourself):
+                  <span class="wrap">{oauth.url}</span><br />
+                  Authorize, then paste the code shown:
+                </p>
+                <div class="row">
+                  <input type="text" placeholder="Paste code (looks like abc123#xyz789)" bind:value={oauth.code} />
+                  <button class="small" onclick={oauthFinish}>Finish</button>
+                </div>
+              {/if}
+              {#if oauth.status && oauth.status !== 'ok'}
+                <p class="test bad">{oauth.status}</p>
+              {/if}
+            {/if}
           {/if}
           {#if p.id === 'hermes'}
             <div class="row">

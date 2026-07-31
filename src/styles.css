@@ -288,6 +288,20 @@ input.num {
   flex: none;
 }
 
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+
+.wrap {
+  word-break: break-all;
+  user-select: text;
+}
+
 .test {
   font-size: 12px;
   margin: 4px 0 4px 24px;

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-const PROVIDERS: &[&str] = &["claude", "codex", "openrouter", "hermes"];
+const PROVIDERS: &[&str] = &["claude", "codex", "openrouter", "hermes", "claude_oauth"];
 
 #[cfg(windows)]
 mod backend {

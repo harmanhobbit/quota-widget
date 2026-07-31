@@ -18,6 +18,9 @@ pub struct ProviderCtx {
     pub home: PathBuf,
     pub secrets: HashMap<String, String>,
     pub config: Config,
+    /// Called when an adapter rotates a stored credential (e.g. an OAuth
+    /// refresh) so the host can persist it. Key is the secret name.
+    pub on_secret_update: Option<std::sync::Arc<dyn Fn(&str, &str) + Send + Sync>>,
 }
 
 impl ProviderCtx {
@@ -27,7 +30,13 @@ impl ProviderCtx {
             .user_agent("quota-widget/0.1")
             .build()
             .expect("reqwest client");
-        Self { http, home, secrets, config }
+        Self { http, home, secrets, config, on_secret_update: None }
+    }
+
+    pub fn persist_secret(&self, key: &str, value: &str) {
+        if let Some(f) = &self.on_secret_update {
+            f(key, value);
+        }
     }
 }
 
