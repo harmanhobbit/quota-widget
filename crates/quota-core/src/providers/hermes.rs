@@ -50,12 +50,21 @@ impl Provider for Hermes {
         let mut expired_hint: Option<String> = None;
 
         if matches!(source.as_str(), "auto" | "hermes") {
-            if let Some(auth) = read_hermes_auth(&ctx.home) {
+            if let Some(mut auth) = read_hermes_auth(&ctx.home) {
+                if !auth.is_fresh() {
+                    // Ask the local hermes CLI to refresh its own login (it
+                    // persists the rotated tokens safely), then re-read.
+                    if run_local_refresh(ctx).await {
+                        if let Some(a) = read_hermes_auth(&ctx.home) {
+                            auth = a;
+                        }
+                    }
+                }
                 if auth.is_fresh() {
                     return self.fetch_billing(ctx, &auth, token_price).await;
                 }
                 expired_hint = Some(
-                    "hermes-agent token expired — run any `hermes` command (or keep hermes running) to refresh it"
+                    "hermes-agent token expired and auto-refresh failed — run `hermes auth status nous` by hand"
                         .into(),
                 );
             } else if source == "hermes" {
@@ -67,14 +76,14 @@ impl Provider for Hermes {
         }
 
         if matches!(source.as_str(), "auto" | "remote") {
-            match read_remote_auth(ctx).await {
+            match remote_fresh_auth(ctx).await {
                 Ok(Some(auth)) if auth.is_fresh() => {
                     return self.fetch_billing(ctx, &auth, token_price).await
                 }
                 Ok(Some(_)) => {
                     let host = remote_host(ctx).unwrap_or_default();
                     expired_hint = Some(format!(
-                        "hermes token on {host} expired — keep hermes running there so its keepalive refreshes it"
+                        "hermes token on {host} expired and auto-refresh failed — run `hermes auth status nous` there"
                     ));
                 }
                 Ok(None) if source == "remote" => {
@@ -109,31 +118,45 @@ fn remote_host(ctx: &ProviderCtx) -> Option<String> {
         .and_then(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from))
 }
 
-/// Fetch the hermes auth file from a remote machine over SSH (BatchMode — the
-/// user's existing keys/agent must authenticate; we never prompt). Returns
-/// Ok(None) when no remote host is configured.
-async fn read_remote_auth(ctx: &ProviderCtx) -> Result<Option<NousAuth>, FetchError> {
-    let Some(host) = remote_host(ctx) else { return Ok(None) };
-    let path = ctx
-        .config
-        .provider_setting("hermes", "ssh_auth_path")
+/// The refresh command run (locally or over SSH) when the token is stale.
+/// `hermes auth status nous` is lightweight, non-interactive, exits promptly,
+/// and hermes itself performs the rotation-safe refresh + persistence. PATH is
+/// widened because non-interactive SSH shells often lack ~/.local/bin.
+/// Overridable via the `refresh_cmd` provider setting (e.g. Nix store paths).
+const DEFAULT_REFRESH_CMD: &str = "PATH=\"$HOME/.local/bin:$HOME/bin:$PATH\" hermes auth status nous";
+const REFRESH_TIMEOUT: Duration = std::time::Duration::from_secs(45);
+
+use std::time::Duration;
+
+fn refresh_cmd(ctx: &ProviderCtx) -> String {
+    ctx.config
+        .provider_setting("hermes", "refresh_cmd")
         .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_else(|| ".hermes/auth.json".into());
+        .unwrap_or_else(|| DEFAULT_REFRESH_CMD.into())
+}
+
+/// Run a command on the remote host over SSH (BatchMode — the user's existing
+/// keys/agent must authenticate; we never prompt).
+async fn run_ssh(ctx: &ProviderCtx, host: &str, remote_cmd: &str) -> Result<Vec<u8>, FetchError> {
     let program = ctx
         .config
         .provider_setting("hermes", "ssh_program")
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_else(|| "ssh".into());
-
     let mut cmd = tokio::process::Command::new(&program);
-    cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", &host])
-        .arg(format!("cat {path}"))
+    cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host])
+        .arg(remote_cmd)
         .stdin(std::process::Stdio::null());
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — no console flash
-    let out = cmd.output().await.map_err(|e| {
-        FetchError::Network(format!("could not run `{program}`: {e} — is the OpenSSH client installed?"))
-    })?;
+    let out = tokio::time::timeout(REFRESH_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| FetchError::Network(format!("ssh {host}: timed out")))?
+        .map_err(|e| {
+            FetchError::Network(format!(
+                "could not run `{program}`: {e} — is the OpenSSH client installed?"
+            ))
+        })?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(FetchError::Network(format!(
@@ -141,10 +164,62 @@ async fn read_remote_auth(ctx: &ProviderCtx) -> Result<Option<NousAuth>, FetchEr
             stderr.lines().last().unwrap_or("failed").trim()
         )));
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    parse_hermes_auth(&text)
-        .map(Some)
+    Ok(out.stdout)
+}
+
+fn remote_auth_path(ctx: &ProviderCtx) -> String {
+    ctx.config
+        .provider_setting("hermes", "ssh_auth_path")
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| ".hermes/auth.json".into())
+}
+
+async fn read_remote(ctx: &ProviderCtx, host: &str) -> Result<NousAuth, FetchError> {
+    let path = remote_auth_path(ctx);
+    let bytes = run_ssh(ctx, host, &format!("cat {path}")).await?;
+    parse_hermes_auth(&String::from_utf8_lossy(&bytes))
         .ok_or_else(|| FetchError::Parse(format!("no Nous login in {host}:{path}")))
+}
+
+/// Fetch the hermes auth file from the remote machine; when it's stale, ask
+/// the remote hermes CLI to refresh it and re-read once. Returns Ok(None)
+/// when no remote host is configured. The returned auth may still be stale —
+/// the caller checks `is_fresh()`.
+async fn remote_fresh_auth(ctx: &ProviderCtx) -> Result<Option<NousAuth>, FetchError> {
+    let Some(host) = remote_host(ctx) else { return Ok(None) };
+    let auth = read_remote(ctx, &host).await?;
+    if auth.is_fresh() {
+        return Ok(Some(auth));
+    }
+    if run_ssh(ctx, &host, &refresh_cmd(ctx)).await.is_ok() {
+        return read_remote(ctx, &host).await.map(Some);
+    }
+    Ok(Some(auth))
+}
+
+/// Ask a locally-installed hermes CLI to refresh its login. Best-effort:
+/// missing binary or failure just returns false.
+async fn run_local_refresh(ctx: &ProviderCtx) -> bool {
+    let shell_cmd = refresh_cmd(ctx);
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("cmd");
+        c.args(["/C", "hermes auth status nous"]);
+        c.creation_flags(0x0800_0000);
+        let _ = &shell_cmd; // PATH-widening form is POSIX-shell only
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new("sh");
+        c.args(["-c", &shell_cmd]);
+        c
+    };
+    cmd.stdin(std::process::Stdio::null());
+    matches!(
+        tokio::time::timeout(REFRESH_TIMEOUT, cmd.output()).await,
+        Ok(Ok(out)) if out.status.success()
+    )
 }
 
 pub struct NousAuth {
@@ -445,17 +520,10 @@ mod tests {
         assert!(parse_subscription(&serde_json::json!({})).is_empty());
     }
 
-    #[tokio::test]
-    async fn remote_auth_via_stub_ssh() {
+    fn stub_ctx(dir: &std::path::Path, script: &str) -> ProviderCtx {
         use crate::config::Config;
-        let dir = tempfile::tempdir().unwrap();
-        // Stub "ssh" that ignores its args and prints an auth.json.
-        let stub = dir.path().join("fake-ssh.sh");
-        std::fs::write(
-            &stub,
-            "#!/bin/sh\necho '{\"providers\":{\"nous\":{\"access_token\":\"remote-tok\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}}}'\n",
-        )
-        .unwrap();
+        let stub = dir.join("fake-ssh.sh");
+        std::fs::write(&stub, script).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -465,8 +533,35 @@ mod tests {
         let settings = &mut cfg.providers.get_mut("hermes").unwrap().settings;
         settings.insert("ssh_host".into(), "ian@server".into());
         settings.insert("ssh_program".into(), stub.to_string_lossy().into_owned().into());
-        let ctx = ProviderCtx::new(dir.path().into(), Default::default(), cfg);
-        let auth = read_remote_auth(&ctx).await.unwrap().unwrap();
+        ProviderCtx::new(dir.into(), Default::default(), cfg)
+    }
+
+    const FRESH: &str = r#"{\"providers\":{\"nous\":{\"access_token\":\"remote-tok\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}}}"#;
+    const STALE: &str = r#"{\"providers\":{\"nous\":{\"access_token\":\"old-tok\",\"expires_at\":\"2000-01-01T00:00:00+00:00\"}}}"#;
+
+    #[tokio::test]
+    async fn remote_auth_via_stub_ssh() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = stub_ctx(dir.path(), &format!("#!/bin/sh\necho \"{FRESH}\"\n"));
+        let auth = remote_fresh_auth(&ctx).await.unwrap().unwrap();
+        assert_eq!(auth.access_token, "remote-tok");
+        assert!(auth.is_fresh());
+    }
+
+    /// Stale token → the adapter runs the refresh command on the "remote"
+    /// (stub records it), then re-reads and gets the fresh token.
+    #[tokio::test]
+    async fn remote_auth_stale_triggers_refresh_and_reread() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("refreshed");
+        // $6 is the remote command: `cat .hermes/auth.json` or the refresh cmd.
+        let script = format!(
+            "#!/bin/sh\ncase \"$6\" in\n  'cat .hermes/auth.json')\n    if [ -f {m} ]; then echo \"{FRESH}\"; else echo \"{STALE}\"; fi ;;\n  *) touch {m} ;;\nesac\n",
+            m = marker.display()
+        );
+        let ctx = stub_ctx(dir.path(), &script);
+        let auth = remote_fresh_auth(&ctx).await.unwrap().unwrap();
+        assert!(marker.exists(), "refresh command was not invoked");
         assert_eq!(auth.access_token, "remote-tok");
         assert!(auth.is_fresh());
     }
@@ -475,14 +570,14 @@ mod tests {
     async fn remote_auth_unconfigured_is_none_and_failure_is_network() {
         use crate::config::Config;
         let ctx = ProviderCtx::new(std::env::temp_dir(), Default::default(), Config::default());
-        assert!(read_remote_auth(&ctx).await.unwrap().is_none());
+        assert!(remote_fresh_auth(&ctx).await.unwrap().is_none());
 
         let mut cfg = Config::default();
         let settings = &mut cfg.providers.get_mut("hermes").unwrap().settings;
         settings.insert("ssh_host".into(), "ian@server".into());
         settings.insert("ssh_program".into(), "/nonexistent/ssh".into());
         let ctx = ProviderCtx::new(std::env::temp_dir(), Default::default(), cfg);
-        assert!(matches!(read_remote_auth(&ctx).await, Err(FetchError::Network(_))));
+        assert!(matches!(remote_fresh_auth(&ctx).await, Err(FetchError::Network(_))));
     }
 
     #[test]

@@ -127,15 +127,13 @@
             </div>
           {/if}
           {#if p.id === 'claude'}
-            <div class="row">
-              <label class="inline">Sign-in method
-                <select bind:value={config.providers['claude'].settings.auth_mode}>
-                  <option value={undefined}>Auto (CLI, then built-in)</option>
-                  <option value="cli">Claude Code CLI only</option>
-                  <option value="oauth">Built-in sign-in only</option>
-                </select>
-              </label>
-            </div>
+            <label class="field">Sign-in method
+              <select bind:value={config.providers['claude'].settings.auth_mode}>
+                <option value={undefined}>Auto (CLI, then built-in)</option>
+                <option value="cli">Claude Code CLI only</option>
+                <option value="oauth">Built-in sign-in only</option>
+              </select>
+            </label>
             {#if config.providers['claude'].settings.auth_mode !== 'cli'}
               <div class="row">
                 {#if oauth.signedIn}
@@ -162,42 +160,40 @@
             {/if}
           {/if}
           {#if p.id === 'hermes'}
-            <div class="row">
-              <label class="inline">Source
-                <select bind:value={config.providers['hermes'].settings.source}>
-                  <option value={undefined}>Auto (local, then remote SSH, then cookie)</option>
-                  <option value="hermes">Local hermes-agent only</option>
-                  <option value="remote">Remote hermes over SSH</option>
-                  <option value="cookie">Session cookie</option>
-                </select>
-              </label>
-            </div>
+            <label class="field">Source
+              <select bind:value={config.providers['hermes'].settings.source}>
+                <option value={undefined}>Auto (local → SSH → cookie)</option>
+                <option value="hermes">Local hermes-agent</option>
+                <option value="remote">Remote over SSH</option>
+                <option value="cookie">Session cookie</option>
+              </select>
+            </label>
             {#if config.providers['hermes'].settings.source !== 'cookie' && config.providers['hermes'].settings.source !== 'hermes'}
-              <div class="row">
+              <label class="field">Remote SSH host
                 <input
                   type="text"
-                  placeholder="Remote SSH host, e.g. ian@server (key auth required)"
+                  placeholder="user@server (key auth)"
                   bind:value={config.providers['hermes'].settings.ssh_host}
                 />
-              </div>
+              </label>
             {/if}
             {#if config.providers['hermes'].settings.source === 'cookie'}
-              <div class="row">
+              <label class="field">Balance endpoint
                 <input
                   type="text"
-                  placeholder="Balance endpoint URL (default: portal billing API)"
+                  placeholder="default: portal billing API"
                   bind:value={config.providers['hermes'].settings.endpoint}
                 />
-              </div>
+              </label>
             {/if}
-            <div class="row">
+            <label class="field">Price per token (optional)
               <input
                 type="number"
                 step="any"
-                placeholder="Price per token (optional, for tokens-left estimate)"
+                placeholder="for tokens-left estimate"
                 bind:value={config.providers['hermes'].settings.token_price}
               />
-            </div>
+            </label>
           {/if}
           {#if p.id === 'openrouter' || p.id === 'hermes'}
             <div class="row">

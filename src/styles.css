@@ -295,6 +295,24 @@ select {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 6px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+/* Stacked label-above-control row: never overflows the narrow window. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.field select,
+.field input {
+  width: 100%;
+  color: var(--text);
 }
 
 .wrap {
