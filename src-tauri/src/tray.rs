@@ -49,7 +49,10 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .icon(icon_for(Status::Stale))
         .tooltip("Quota Widget — waiting for first poll")
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        // Linux appindicator trays deliver only menu interactions — raw click
+        // events never arrive — so left-click opens the menu there. On
+        // Windows/macOS left-click toggles the popup directly.
+        .show_menu_on_left_click(cfg!(target_os = "linux"))
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_popup(app, None),
             "settings" => {
