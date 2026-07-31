@@ -45,20 +45,106 @@ impl Provider for Hermes {
         let token_price =
             ctx.config.provider_setting("hermes", "token_price").and_then(|v| as_f64(&v));
 
-        if source != "cookie" {
-            match read_hermes_auth(&ctx.home) {
-                Some(auth) => return self.fetch_billing(ctx, &auth, token_price).await,
-                None if source == "hermes" => {
-                    return Err(FetchError::NotConfigured(
-                        "no hermes-agent login found (~/.hermes/auth.json) — run `hermes` and sign in"
-                            .into(),
-                    ))
+        // Auth candidates in preference order; remember expired ones so the
+        // error is "expired" (actionable) rather than "not configured".
+        let mut expired_hint: Option<String> = None;
+
+        if matches!(source.as_str(), "auto" | "hermes") {
+            if let Some(auth) = read_hermes_auth(&ctx.home) {
+                if auth.is_fresh() {
+                    return self.fetch_billing(ctx, &auth, token_price).await;
                 }
-                None => {} // auto: fall through to cookie
+                expired_hint = Some(
+                    "hermes-agent token expired — run any `hermes` command (or keep hermes running) to refresh it"
+                        .into(),
+                );
+            } else if source == "hermes" {
+                return Err(FetchError::NotConfigured(
+                    "no hermes-agent login found (~/.hermes/auth.json) — run `hermes` and sign in"
+                        .into(),
+                ));
             }
         }
-        self.fetch_cookie(ctx, token_price).await
+
+        if matches!(source.as_str(), "auto" | "remote") {
+            match read_remote_auth(ctx).await {
+                Ok(Some(auth)) if auth.is_fresh() => {
+                    return self.fetch_billing(ctx, &auth, token_price).await
+                }
+                Ok(Some(_)) => {
+                    let host = remote_host(ctx).unwrap_or_default();
+                    expired_hint = Some(format!(
+                        "hermes token on {host} expired — keep hermes running there so its keepalive refreshes it"
+                    ));
+                }
+                Ok(None) if source == "remote" => {
+                    return Err(FetchError::NotConfigured(
+                        "set the remote SSH host (user@server) in Settings → Hermes".into(),
+                    ))
+                }
+                Ok(None) => {}
+                // A configured-but-unreachable remote is a real error worth
+                // surfacing over falling back silently.
+                Err(e) if source == "remote" => return Err(e),
+                Err(e) => expired_hint = Some(e.to_string()),
+            }
+        }
+
+        if source == "cookie" || ctx.secrets.get("hermes").filter(|c| !c.is_empty()).is_some() {
+            return self.fetch_cookie(ctx, token_price).await;
+        }
+        match expired_hint {
+            Some(hint) => Err(FetchError::AuthExpired(hint)),
+            None => Err(FetchError::NotConfigured(
+                "run hermes-agent on this machine, set a remote SSH host, or paste a portal session cookie in Settings"
+                    .into(),
+            )),
+        }
     }
+}
+
+fn remote_host(ctx: &ProviderCtx) -> Option<String> {
+    ctx.config
+        .provider_setting("hermes", "ssh_host")
+        .and_then(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from))
+}
+
+/// Fetch the hermes auth file from a remote machine over SSH (BatchMode — the
+/// user's existing keys/agent must authenticate; we never prompt). Returns
+/// Ok(None) when no remote host is configured.
+async fn read_remote_auth(ctx: &ProviderCtx) -> Result<Option<NousAuth>, FetchError> {
+    let Some(host) = remote_host(ctx) else { return Ok(None) };
+    let path = ctx
+        .config
+        .provider_setting("hermes", "ssh_auth_path")
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| ".hermes/auth.json".into());
+    let program = ctx
+        .config
+        .provider_setting("hermes", "ssh_program")
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "ssh".into());
+
+    let mut cmd = tokio::process::Command::new(&program);
+    cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", &host])
+        .arg(format!("cat {path}"))
+        .stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — no console flash
+    let out = cmd.output().await.map_err(|e| {
+        FetchError::Network(format!("could not run `{program}`: {e} — is the OpenSSH client installed?"))
+    })?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(FetchError::Network(format!(
+            "ssh {host}: {}",
+            stderr.lines().last().unwrap_or("failed").trim()
+        )));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    parse_hermes_auth(&text)
+        .map(Some)
+        .ok_or_else(|| FetchError::Parse(format!("no Nous login in {host}:{path}")))
 }
 
 pub struct NousAuth {
@@ -67,11 +153,26 @@ pub struct NousAuth {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
+impl NousAuth {
+    /// Fresh enough to use (30 s of clock-skew slack). Unknown expiry is
+    /// treated as fresh — the API's 401 handles it.
+    pub fn is_fresh(&self) -> bool {
+        match self.expires_at {
+            Some(exp) => exp >= Utc::now() + chrono::Duration::seconds(30),
+            None => true,
+        }
+    }
+}
+
 /// Read the hermes-agent Nous login. Returns None when the file or token is
-/// absent (not an error — cookie mode may still be configured).
+/// absent (not an error — other sources may still be configured).
 pub fn read_hermes_auth(home: &Path) -> Option<NousAuth> {
     let text = std::fs::read_to_string(home.join(".hermes").join("auth.json")).ok()?;
-    let v: Value = serde_json::from_str(&text).ok()?;
+    parse_hermes_auth(&text)
+}
+
+pub fn parse_hermes_auth(text: &str) -> Option<NousAuth> {
+    let v: Value = serde_json::from_str(text).ok()?;
     let nous = &v["providers"]["nous"];
     let access = nous["access_token"].as_str()?.to_string();
     if access.is_empty() {
@@ -342,6 +443,46 @@ mod tests {
         // zero-allowance tiers and missing fields produce no window
         assert!(parse_subscription(&serde_json::json!({"current": {"monthlyCredits": "0", "creditsRemaining": "0"}})).is_empty());
         assert!(parse_subscription(&serde_json::json!({})).is_empty());
+    }
+
+    #[tokio::test]
+    async fn remote_auth_via_stub_ssh() {
+        use crate::config::Config;
+        let dir = tempfile::tempdir().unwrap();
+        // Stub "ssh" that ignores its args and prints an auth.json.
+        let stub = dir.path().join("fake-ssh.sh");
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\necho '{\"providers\":{\"nous\":{\"access_token\":\"remote-tok\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}}}'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut cfg = Config::default();
+        let settings = &mut cfg.providers.get_mut("hermes").unwrap().settings;
+        settings.insert("ssh_host".into(), "ian@server".into());
+        settings.insert("ssh_program".into(), stub.to_string_lossy().into_owned().into());
+        let ctx = ProviderCtx::new(dir.path().into(), Default::default(), cfg);
+        let auth = read_remote_auth(&ctx).await.unwrap().unwrap();
+        assert_eq!(auth.access_token, "remote-tok");
+        assert!(auth.is_fresh());
+    }
+
+    #[tokio::test]
+    async fn remote_auth_unconfigured_is_none_and_failure_is_network() {
+        use crate::config::Config;
+        let ctx = ProviderCtx::new(std::env::temp_dir(), Default::default(), Config::default());
+        assert!(read_remote_auth(&ctx).await.unwrap().is_none());
+
+        let mut cfg = Config::default();
+        let settings = &mut cfg.providers.get_mut("hermes").unwrap().settings;
+        settings.insert("ssh_host".into(), "ian@server".into());
+        settings.insert("ssh_program".into(), "/nonexistent/ssh".into());
+        let ctx = ProviderCtx::new(std::env::temp_dir(), Default::default(), cfg);
+        assert!(matches!(read_remote_auth(&ctx).await, Err(FetchError::Network(_))));
     }
 
     #[test]

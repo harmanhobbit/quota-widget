@@ -8,7 +8,7 @@
     { id: 'claude', name: 'Claude', secret: null, note: 'Uses the Claude Code CLI login if present, or the built-in browser sign-in below.' },
     { id: 'codex', name: 'Codex', secret: null, note: 'Uses the Codex CLI login on this machine (run `codex` once to sign in).' },
     { id: 'openrouter', name: 'OpenRouter', secret: 'API key', note: 'Create a key at openrouter.ai/keys.' },
-    { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Auto-detects a hermes-agent login (~/.hermes/auth.json) and uses the portal billing API. Cookie paste below is only a fallback for machines without hermes-agent.' },
+    { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Uses a hermes-agent login: local ~/.hermes/auth.json, or fetched from a remote machine over SSH (needs working key auth, e.g. via ssh-agent). Cookie paste is a last-resort fallback.' },
   ];
 
   let config = $state(null);
@@ -163,12 +163,33 @@
           {/if}
           {#if p.id === 'hermes'}
             <div class="row">
-              <input
-                type="text"
-                placeholder="Balance endpoint URL (from DevTools)"
-                bind:value={config.providers['hermes'].settings.endpoint}
-              />
+              <label class="inline">Source
+                <select bind:value={config.providers['hermes'].settings.source}>
+                  <option value={undefined}>Auto (local, then remote SSH, then cookie)</option>
+                  <option value="hermes">Local hermes-agent only</option>
+                  <option value="remote">Remote hermes over SSH</option>
+                  <option value="cookie">Session cookie</option>
+                </select>
+              </label>
             </div>
+            {#if config.providers['hermes'].settings.source !== 'cookie' && config.providers['hermes'].settings.source !== 'hermes'}
+              <div class="row">
+                <input
+                  type="text"
+                  placeholder="Remote SSH host, e.g. ian@server (key auth required)"
+                  bind:value={config.providers['hermes'].settings.ssh_host}
+                />
+              </div>
+            {/if}
+            {#if config.providers['hermes'].settings.source === 'cookie'}
+              <div class="row">
+                <input
+                  type="text"
+                  placeholder="Balance endpoint URL (default: portal billing API)"
+                  bind:value={config.providers['hermes'].settings.endpoint}
+                />
+              </div>
+            {/if}
             <div class="row">
               <input
                 type="number"
