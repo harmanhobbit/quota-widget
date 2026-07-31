@@ -53,6 +53,9 @@ rustPlatform.buildRustPackage rec {
 
   buildAndTestSubdir = "src-tauri";
 
+  # Serve the embedded frontend, not the vite dev-server URL.
+  buildFeatures = [ "custom-protocol" ];
+
   # quota-core's tests run in CI; the app crate has none.
   doCheck = false;
 

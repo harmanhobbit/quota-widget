@@ -60,6 +60,7 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
     // Tray icon: worst status across enabled providers (respecting per-provider
     // tray_color toggle — providers with it off can't push the icon past Ok).
     let mut worst = Status::Ok;
+    let mut worst_pct: f64 = 0.0;
     let mut tip_lines = Vec::new();
     for s in &fresh {
         let thr = cfg.effective_thresholds(&s.provider_id);
@@ -67,11 +68,16 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
         let st = s.status(thr.warn_pct, thr.critical_pct, low);
         if cfg.effective_alerts(&s.provider_id).tray_color {
             worst = worst.max(st);
+            if s.error.is_none() {
+                for w in &s.windows {
+                    worst_pct = worst_pct.max(w.used_pct);
+                }
+            }
         }
         tip_lines.push(tooltip_line(s));
     }
     let tooltip = if tip_lines.is_empty() { "Quota Widget — no providers enabled".into() } else { tip_lines.join("\n") };
-    tray::set_status(app, worst, &tooltip);
+    tray::set_status(app, worst, worst_pct / 100.0, &tooltip);
 
     // Alerts (edge-triggered in the engine; dispatch per toggles).
     let mut engine = state.alert_engine.lock().await;

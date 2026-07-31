@@ -8,33 +8,68 @@ use tauri::{AppHandle, Manager, PhysicalPosition, Runtime};
 
 pub const TRAY_ID: &str = "quota-tray";
 
-/// Filled circle on transparent background, anti-aliased at the rim.
-/// Generated in code so status recoloring needs no bundled assets.
-fn circle_icon(rgb: [u8; 3]) -> Image<'static> {
+/// The same rounded-square gauge badge as the app icon, drawn at runtime:
+/// slate background, a 270° gauge arc whose lit portion reflects the worst
+/// usage window (`fill` 0..1) in the status color, and a light center dot.
+fn badge_icon(arc_rgb: [u8; 3], fill: f64) -> Image<'static> {
     const S: usize = 32;
-    let c = (S as f64 - 1.0) / 2.0;
-    let r = c - 1.0;
+    let sf = S as f64;
+    let c = (sf - 1.0) / 2.0;
+    let half = sf * 0.44;
+    let corner = sf * 0.22;
+    let (arc_inner, arc_outer) = (sf * 0.26, sf * 0.40);
+    let bg = [0x25u8, 0x2b, 0x3a];
+    let track = [0x3au8, 0x44, 0x58];
+    let dot = [0xe8u8, 0xec, 0xf4];
+    // gauge sweeps 225° → -45° (bottom-left, over the top, to bottom-right)
+    let start = 5.0 * std::f64::consts::PI / 4.0;
+    let sweep = 3.0 * std::f64::consts::PI / 2.0;
+    let fill = fill.clamp(0.0, 1.0);
+
     let mut rgba = vec![0u8; S * S * 4];
     for y in 0..S {
         for x in 0..S {
-            let d = (((x as f64 - c).powi(2) + (y as f64 - c).powi(2)).sqrt() - r).max(0.0);
-            let alpha = (1.0 - d).clamp(0.0, 1.0);
+            let dx = x as f64 - c;
+            let dy = y as f64 - c;
+            // rounded-square coverage (signed distance, 1px anti-alias band)
+            let qx = (dx.abs() - (half - corner)).max(0.0);
+            let qy = (dy.abs() - (half - corner)).max(0.0);
+            let dist = (qx * qx + qy * qy).sqrt() - corner;
+            let cov = (0.5 - dist).clamp(0.0, 1.0);
+            if cov == 0.0 {
+                continue;
+            }
+            let mut px = bg;
+            let rad = (dx * dx + dy * dy).sqrt();
+            if rad >= arc_inner && rad <= arc_outer {
+                // angle measured clockwise from the gauge start (y axis flipped)
+                let ang = (-dy).atan2(dx);
+                let rel = (start - ang).rem_euclid(std::f64::consts::PI * 2.0);
+                if rel <= sweep {
+                    px = if rel <= sweep * fill { arc_rgb } else { track };
+                }
+            }
+            if rad < sf * 0.07 {
+                px = dot;
+            }
             let i = (y * S + x) * 4;
-            rgba[i] = rgb[0];
-            rgba[i + 1] = rgb[1];
-            rgba[i + 2] = rgb[2];
-            rgba[i + 3] = (alpha * 255.0) as u8;
+            rgba[i] = px[0];
+            rgba[i + 1] = px[1];
+            rgba[i + 2] = px[2];
+            rgba[i + 3] = (cov * 255.0) as u8;
         }
     }
     Image::new_owned(rgba, S as u32, S as u32)
 }
 
-pub fn icon_for(status: Status) -> Image<'static> {
+/// `fill` is the worst usage fraction (0..1) across enabled providers; stale
+/// state shows a full grey arc so it reads as "switched off", not "empty".
+pub fn icon_for(status: Status, fill: f64) -> Image<'static> {
     match status {
-        Status::Ok => circle_icon([0x2e, 0xb8, 0x5c]),       // green
-        Status::Warn => circle_icon([0xe6, 0xa8, 0x17]),     // amber
-        Status::Critical => circle_icon([0xd6, 0x36, 0x38]), // red
-        Status::Stale => circle_icon([0x8a, 0x8a, 0x8a]),    // grey
+        Status::Ok => badge_icon([0x4a, 0xda, 0x7c], fill),       // green
+        Status::Warn => badge_icon([0xe6, 0xa8, 0x17], fill),     // amber
+        Status::Critical => badge_icon([0xd6, 0x36, 0x38], fill), // red
+        Status::Stale => badge_icon([0x8a, 0x8a, 0x8a], 1.0),     // grey
     }
 }
 
@@ -46,7 +81,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let menu = MenuBuilder::new(app).items(&[&open, &refresh, &settings, &quit]).build()?;
 
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(icon_for(Status::Stale))
+        .icon(icon_for(Status::Stale, 1.0))
         .tooltip("Quota Widget — waiting for first poll")
         .menu(&menu)
         // Linux appindicator trays deliver only menu interactions — raw click
@@ -83,9 +118,9 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn set_status<R: Runtime>(app: &AppHandle<R>, status: Status, tooltip: &str) {
+pub fn set_status<R: Runtime>(app: &AppHandle<R>, status: Status, fill: f64, tooltip: &str) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_icon(Some(icon_for(status)));
+        let _ = tray.set_icon(Some(icon_for(status, fill)));
         let _ = tray.set_tooltip(Some(tooltip));
     }
 }
