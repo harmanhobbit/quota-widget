@@ -5,7 +5,7 @@ use crate::{tray, AppState};
 use ksni::TrayMethods;
 use quota_core::model::Status;
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::{AppHandle, Emitter, PhysicalPosition};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 
 struct QuotaTray {
     app: AppHandle,
