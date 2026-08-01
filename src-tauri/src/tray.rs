@@ -236,7 +236,7 @@ pub fn show_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<
 
 /// Show the compact tray-click summary. It is transient unless the mini
 /// window itself has been pinned; the full window is never involved.
-pub fn show_mini<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f64>>) {
+pub fn show_mini<R: Runtime>(app: &AppHandle<R>, _near: Option<PhysicalPosition<f64>>) {
     let Some(win) = app.get_webview_window("mini") else {
         return;
     };
@@ -249,11 +249,9 @@ pub fn show_mini<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f
         .map(|state| state.mini_pinned.load(std::sync::atomic::Ordering::Relaxed))
         .unwrap_or(false);
     let _ = win.set_always_on_top(pinned);
-    if pinned {
-        anchor_above_panel(&win);
-    } else if let Some(pos) = near {
-        place_near_tray(&win, pos);
-    }
+    // Use the pinned position for both states so toggling the pin changes
+    // only click-away behaviour and always-on-top, never the summary's spot.
+    anchor_above_panel(&win);
     let _ = win.show();
     let _ = win.set_focus();
 }

@@ -30,13 +30,15 @@
 
   onMount(async () => {
     const cfg = await invoke('get_config');
-    appVersion = await invoke('app_version');
     // Normalize configured accounts only. Do not recreate removed defaults.
     for (const account of Object.values(cfg.providers)) {
       account.settings ??= {};
       account.in_tray ??= true;
     }
     config = cfg;
+    // The version footer is informational only. Do not let a missing command
+    // from an older backend keep the entire Settings page on “Loading…”.
+    invoke('app_version').then((version) => (appVersion = version)).catch(() => {});
     for (const [id, account] of Object.entries(cfg.providers)) {
       const p = providerInfo(account.kind ?? id);
       if (p.secret) secretStored[id] = await invoke('has_secret', { provider: id });
