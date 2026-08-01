@@ -1,12 +1,22 @@
 # Quota Widget
 
-A Windows 11 system-tray widget that watches your AI provider allowances in one
-place: Claude's rolling 5-hour window and weekly cap, Codex's weekly allowance,
-Hermes Portal credits, and OpenRouter credits. It collapses to the tray and pops
-up as a compact always-on-top window.
+A system-tray widget for **Windows 11 and Linux** that watches your AI provider
+allowances in one place: Claude's rolling 5-hour window and weekly cap, Codex's
+weekly allowance, Hermes Portal credits, and OpenRouter credits. It collapses to
+the tray and pops up as a compact always-on-top window.
 
 Built with Tauri 2 (Rust) + Svelte 5. The portable EXE is self-contained —
-Windows 11 ships the WebView2 runtime it renders with.
+Windows 11 ships the WebView2 runtime it renders with. On Linux it's packaged as
+a Nix flake (see [Building](#nixos--nix)).
+
+Platform differences are small but real:
+
+| | Windows 11 | Linux |
+|---|---|---|
+| Tray left-click | Toggles the popup | Opens the menu (appindicator delivers only menu events) |
+| Tray hover peek | Yes | No — appindicator sends no hover events |
+| Secret storage | Credential Manager | `0600` file in the config dir |
+| Autostart | `HKCU` run entry | XDG autostart entry |
 
 ## How it works
 
@@ -16,6 +26,9 @@ Windows 11 ships the WebView2 runtime it renders with.
   keep a provider on the popup without letting it drive the tray.
 - **Left-click** the tray icon to toggle the popup near the tray. **Esc**,
   clicking elsewhere, or the ✕ button hides it again — the app keeps running.
+  Reopening always lands on the usage list, even if you left it in Settings.
+- **Hover** the tray icon (Windows) for a one-line-per-provider peek without
+  opening the popup.
 - **Right-click** for Open / Refresh now / Settings / Quit.
 - A background poller (default every 60 s) refreshes all enabled providers and
   fires alerts when usage *crosses* a threshold (edge-triggered — you get one
@@ -31,17 +44,17 @@ Windows 11 ships the WebView2 runtime it renders with.
 | **OpenRouter** | An API key from [openrouter.ai/keys](https://openrouter.ai/keys) | Official `GET /api/v1/credits` API. Shows balance and usage in USD. |
 | **Hermes Portal** | hermes-agent installed and logged in (`hermes`) — zero extra setup | Reads the Nous OAuth access token from `~/.hermes/auth.json` and calls the portal's billing API (`/api/billing/state` + `/api/billing/subscription`): purchased-credit balance in USD, monthly subscription allowance with tier name and cycle-reset countdown, and monthly-cap usage where configured. The subscription allowance is shown greyed-out and does **not** colour the card or tray while a purchased balance is still funding calls — on the Free tier that allowance is a fraction of a credit and reads 100% used permanently, which is not a quota you're actually hitting. The widget only ever uses the short-lived *access* token — never hermes's refresh token, which the portal rotates and revokes on reuse — so a stale token means "run any `hermes` command" (or keep hermes running; its keepalive refreshes it). **No hermes on this machine?** Set Settings → Hermes → Source to *Remote hermes over SSH* and enter `user@server`: the widget fetches the auth file from a machine that does run hermes (`ssh <host> cat .hermes/auth.json`, BatchMode — needs working key auth; Windows 10/11 include the OpenSSH client). Last resort: paste a portal session cookie. |
 
-Secrets (API key, cookie) are stored in the **Windows Credential Manager**, not
-on disk. On Linux dev runs they fall back to a `0600` `secrets.json` in the
+Secrets (API keys, cookies, OAuth tokens) are stored in the **Windows Credential
+Manager**, not on disk. On Linux they fall back to a `0600` `secrets.json` in the
 config dir. Config lives at `%APPDATA%\quota-widget\config.json`
-(`~/.config/quota-widget/` on Linux).
+(`~/.config/quota-widget/config.json` on Linux).
 
 ## Building
 
 ### CI (recommended)
 
-Push to GitHub — `.github/workflows/windows-build.yml` runs the core test suite
-on Linux and produces two artifacts on a Windows runner:
+Push to GitHub — `.github/workflows/build.yml` runs the core test suite on Linux
+and produces two artifacts on a Windows runner:
 
 - `quota-widget-portable` — the single portable `quota-widget.exe`
 - `quota-widget-installer` — an NSIS installer, if you'd rather have Start Menu
@@ -69,9 +82,16 @@ refreshing `npmDeps.hash` in `nix/package.nix`.
 npm install
 npm run gen-icons          # regenerate src-tauri/icons (already committed)
 cargo test -p quota-core   # pure-Rust core: parsers, alert engine, config
+npm run check-versions     # guards the single-source version (see below)
 npm run tauri dev          # run the app (needs OS webview libs — see below)
 npm run tauri build        # produce the exe (run this on Windows)
 ```
+
+**Versioning.** The workspace `Cargo.toml` is the single source of truth.
+`tauri.conf.json` omits its `version` field (Tauri falls back to Cargo.toml),
+`nix/package.nix` reads it via `lib.importTOML`, and `package.json` has no
+version at all. Bumping a release is a one-line edit to `Cargo.toml` followed by
+`cargo update -w`; `npm run check-versions` fails if a hardcoded copy reappears.
 
 - **On Windows**: install Rust + Node, then the two commands above just work.
 - **On Linux** (dev runs): install the Tauri prerequisites first:
@@ -86,8 +106,9 @@ npm run tauri build        # produce the exe (run this on Windows)
 
 Copy `quota-widget.exe` anywhere and run it. First run: right-click the tray
 icon → Settings, enable the providers you use, paste any keys, set thresholds,
-and optionally enable **Start with Windows** (registers a `HKCU` run entry via
-the autostart plugin — no admin rights needed). Updating = replacing the EXE.
+and optionally enable **Start on login** (a `HKCU` run entry on Windows, an XDG
+autostart entry on Linux — no admin rights needed either way). Updating =
+replacing the EXE; on Nix, `nix profile upgrade`.
 
 ## Architecture
 
@@ -98,10 +119,14 @@ crates/quota-core   pure Rust, no UI deps — fully unit-tested
   alerts.rs         edge-triggered alert engine
   providers/        one adapter per provider behind a common trait
 src-tauri           the Tauri shell
-  tray.rs           runtime-generated status icons, menu, popup placement
+  tray.rs           runtime-generated status icons, menu, popup + hover peek
   poller.rs         poll loop → state → tray/toasts/events
+  oauth.rs          built-in browser sign-in (PKCE)
   secrets.rs        Credential Manager (Windows) / 0600 file (elsewhere)
-src/                Svelte popup + settings UI
+src/                Svelte UI
+  App.svelte        popup shell (usage list / settings)
+  lib/              ProviderCard, Settings, HoverSummary (tray peek window)
+scripts/            icon generation, version-drift guard
 ```
 
 ## Known limitations
@@ -114,3 +139,5 @@ src/                Svelte popup + settings UI
   reason.
 - The Claude "weekly" window's reset cadence is whatever the API reports —
   observed in the wild resetting more often than every 7 days.
+- The tray hover peek is Windows-only: Linux appindicator trays deliver menu
+  events but never pointer enter/leave, so there is nothing to hook.

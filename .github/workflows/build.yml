@@ -40,9 +40,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p quota-core
+      # Catches a hardcoded version creeping back in (nix/package.nix once
+      # sat a whole release behind); needs no npm install.
+      - run: npm run check-versions
 
   build-windows:
     name: Portable EXE (Windows)
