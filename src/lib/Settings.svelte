@@ -15,15 +15,15 @@
   let secretInputs = $state({});
   let secretStored = $state({});
   let testResults = $state({});
-  let saved = $state(false);
   let oauth = $state({ url: '', code: '', status: '', signedIn: false });
 
   onMount(async () => {
     const cfg = await invoke('get_config');
     // Normalize so every provider entry exists and is directly bindable.
     for (const p of PROVIDERS) {
-      cfg.providers[p.id] ??= { enabled: false, thresholds: null, alerts: null, low_balance_warn: null, settings: {} };
+      cfg.providers[p.id] ??= { enabled: false, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, settings: {} };
       cfg.providers[p.id].settings ??= {};
+      cfg.providers[p.id].in_tray ??= true;
     }
     config = cfg;
     for (const p of PROVIDERS) {
@@ -54,7 +54,9 @@
     oauth.signedIn = false;
   }
 
-  async function save() {
+  // Write settings without leaving the panel — used by Test, which needs the
+  // pasted secret persisted before it runs.
+  async function persist() {
     for (const [id, value] of Object.entries(secretInputs)) {
       if (value) {
         await invoke('set_secret', { provider: id, value });
@@ -75,14 +77,18 @@
       }
     }
     await invoke('set_config', { config: $state.snapshot(config) });
-    saved = true;
-    setTimeout(() => (saved = false), 1500);
+  }
+
+  // Save & close: the single commit action for the panel.
+  async function save() {
+    await persist();
+    onclose();
   }
 
   async function test(id) {
     testResults[id] = { pending: true };
     // Persist any pasted secret/settings first so the test uses them.
-    await save();
+    await persist();
     const snap = await invoke('test_provider', { provider: id });
     testResults[id] = snap.error
       ? { ok: false, msg: snap.error.detail }
@@ -114,6 +120,12 @@
             <button class="small" onclick={() => test(p.id)}>Test</button>
           </label>
           <p class="note">{p.note}</p>
+          {#if config.providers[p.id].enabled}
+            <label class="row sub-toggle">
+              <input type="checkbox" bind:checked={config.providers[p.id].in_tray} />
+              Include in tray icon
+            </label>
+          {/if}
           {#if p.secret}
             <div class="row">
               <input
@@ -237,8 +249,7 @@
     </section>
 
     <div class="actions">
-      <button class="primary" onclick={save}>{saved ? 'Saved ✓' : 'Save'}</button>
-      <button onclick={onclose}>Done</button>
+      <button class="primary" onclick={save}>Save &amp; close</button>
     </div>
   </div>
 {:else}

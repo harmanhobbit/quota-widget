@@ -265,6 +265,7 @@ fn parse_usage(body: &Value) -> Vec<UsageWindow> {
             label: label_for(key),
             used_pct: pct,
             resets_at: w.get("resets_at").and_then(parse_timestamp),
+            ..Default::default()
         });
     }
     // Stable, human-sensible order: 5-hour first, then weekly, then the rest.

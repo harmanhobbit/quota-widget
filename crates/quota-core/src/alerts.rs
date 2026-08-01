@@ -38,7 +38,7 @@ impl AlertEngine {
         }
         let Thresholds { warn_pct, critical_pct } = cfg.effective_thresholds(&snapshot.provider_id);
 
-        for w in &snapshot.windows {
+        for w in snapshot.windows.iter().filter(|w| !w.informational) {
             let level = if w.used_pct >= critical_pct {
                 AlertLevel::Critical
             } else if w.used_pct >= warn_pct {
@@ -89,7 +89,7 @@ mod tests {
         UsageSnapshot::ok(
             "claude",
             "Claude",
-            vec![UsageWindow { label: "5-hour".into(), used_pct: pct, resets_at: None }],
+            vec![UsageWindow { label: "5-hour".into(), used_pct: pct, ..Default::default() }],
             None,
         )
     }

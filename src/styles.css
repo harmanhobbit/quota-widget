@@ -9,6 +9,9 @@
   --warn: #e6a817;
   --critical: #d63638;
   font-size: 14px;
+  /* Native controls (select popups, scrollbars) follow the OS theme instead of
+     defaulting to light chrome with light text. */
+  color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -197,6 +200,17 @@ button.primary {
   background: var(--critical);
 }
 
+/* Informational windows don't gate anything, so they stay neutral and
+   recede rather than competing with the real quota bars. */
+.fill.muted {
+  background: var(--muted);
+  opacity: 0.5;
+}
+
+.window.informational {
+  opacity: 0.7;
+}
+
 .credits {
   margin-top: 6px;
   display: flex;
@@ -264,6 +278,13 @@ button.primary {
   gap: 6px;
 }
 
+/* Indented secondary toggle under a provider's enable checkbox. */
+.row.sub-toggle {
+  margin-left: 22px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .note {
   font-size: 11px;
   color: var(--muted);
@@ -297,6 +318,13 @@ select {
   padding: 4px 6px;
   max-width: 100%;
   min-width: 0;
+}
+
+/* The popup list is drawn by the platform; without explicit colors it can end
+   up light-on-light. */
+select option {
+  color: var(--text);
+  background: var(--card);
 }
 
 /* Stacked label-above-control row: never overflows the narrow window. */
