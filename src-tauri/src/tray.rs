@@ -66,28 +66,28 @@ fn badge_icon(arc_rgb: [u8; 3], fill: f64) -> Image<'static> {
 /// state shows a full grey arc so it reads as "switched off", not "empty".
 pub fn icon_for(status: Status, fill: f64) -> Image<'static> {
     match status {
-        Status::Ok => badge_icon([0x4a, 0xda, 0x7c], fill),       // green
-        Status::Warn => badge_icon([0xe6, 0xa8, 0x17], fill),     // amber
+        Status::Ok => badge_icon([0x4a, 0xda, 0x7c], fill), // green
+        Status::Warn => badge_icon([0xe6, 0xa8, 0x17], fill), // amber
         Status::Critical => badge_icon([0xd6, 0x36, 0x38], fill), // red
-        Status::Stale => badge_icon([0x8a, 0x8a, 0x8a], 1.0),     // grey
+        Status::Stale => badge_icon([0x8a, 0x8a, 0x8a], 1.0), // grey
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let open = MenuItemBuilder::with_id("open", "Open").build(app)?;
     let refresh = MenuItemBuilder::with_id("refresh", "Refresh now").build(app)?;
     let settings = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-    let menu = MenuBuilder::new(app).items(&[&open, &refresh, &settings, &quit]).build()?;
+    let menu = MenuBuilder::new(app)
+        .items(&[&open, &refresh, &settings, &quit])
+        .build()?;
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon_for(Status::Stale, 1.0))
         .tooltip("Quota Widget — waiting for first poll")
         .menu(&menu)
-        // Linux appindicator trays deliver only menu interactions — raw click
-        // events never arrive — so left-click opens the menu there. On
-        // Windows/macOS left-click toggles the popup directly.
-        .show_menu_on_left_click(cfg!(target_os = "linux"))
+        .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_popup(app, None),
             "settings" => {
@@ -130,26 +130,32 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn set_status<R: Runtime>(app: &AppHandle<R>, status: Status, fill: f64, tooltip: &str) {
+#[cfg(not(target_os = "linux"))]
+pub fn set_status<R: Runtime>(app: &AppHandle<R>, status: Status, fill: f64, _tooltip: &str) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_icon(Some(icon_for(status, fill)));
-        let _ = tray.set_tooltip(Some(tooltip));
     }
 }
 
 /// Show the hover peek near the cursor. Deliberately never focused: taking
 /// focus would blur the main popup and trip its click-away hide.
 fn show_hover<R: Runtime>(app: &AppHandle<R>, at: PhysicalPosition<f64>) {
-    let Some(win) = app.get_webview_window("hover") else { return };
+    let Some(win) = app.get_webview_window("hover") else {
+        return;
+    };
     // Don't peek over the real thing — it's already showing more detail.
-    if app.get_webview_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(false) {
+    if app
+        .get_webview_window("main")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false)
+    {
         return;
     }
     place_near_tray(&win, at);
     let _ = win.show();
 }
 
-fn hide_hover<R: Runtime>(app: &AppHandle<R>) {
+pub fn hide_hover<R: Runtime>(app: &AppHandle<R>) {
     if let Some(win) = app.get_webview_window("hover") {
         let _ = win.hide();
     }
@@ -158,9 +164,12 @@ fn hide_hover<R: Runtime>(app: &AppHandle<R>) {
 /// Clamp a window to the monitor work area next to a tray position, flipping
 /// above/below the cursor depending on which half of the screen the tray is in.
 fn place_near_tray<R: Runtime>(win: &tauri::WebviewWindow<R>, pos: PhysicalPosition<f64>) {
-    let (Ok(size), Ok(Some(monitor))) = (win.outer_size(), win.current_monitor()) else { return };
-    let msize = monitor.size();
-    let mpos = monitor.position();
+    let (Ok(size), Ok(Some(monitor))) = (win.outer_size(), win.current_monitor()) else {
+        return;
+    };
+    let area = monitor.work_area();
+    let msize = area.size;
+    let mpos = area.position;
     let margin = 12.0;
     let x = (pos.x - size.width as f64 / 2.0).clamp(
         mpos.x as f64 + margin,
@@ -174,8 +183,10 @@ fn place_near_tray<R: Runtime>(win: &tauri::WebviewWindow<R>, pos: PhysicalPosit
     let _ = win.set_position(PhysicalPosition::new(x as i32, y as i32));
 }
 
-fn toggle_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f64>>) {
-    let Some(win) = app.get_webview_window("main") else { return };
+pub fn toggle_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f64>>) {
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
     if win.is_visible().unwrap_or(false) {
         let _ = win.hide();
     } else {
@@ -183,10 +194,24 @@ fn toggle_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f6
     }
 }
 
+/// Pin to the work area's lower edge: this is immediately above a bottom
+/// panel, unlike monitor bounds which place the popup underneath the panel.
+pub fn anchor_above_panel<R: Runtime>(win: &tauri::WebviewWindow<R>) {
+    let (Ok(size), Ok(Some(monitor))) = (win.outer_size(), win.current_monitor()) else {
+        return;
+    };
+    let area = monitor.work_area();
+    let x = area.position.x + area.size.width as i32 - size.width as i32 - 12;
+    let y = area.position.y + area.size.height as i32 - size.height as i32;
+    let _ = win.set_position(PhysicalPosition::new(x.max(area.position.x), y));
+}
+
 /// Show the always-on-top popup, positioned near the tray click when we know
 /// it. Dismisses any hover peek first so the two never overlap.
 pub fn show_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f64>>) {
-    let Some(win) = app.get_webview_window("main") else { return };
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
     hide_hover(app);
     if let Some(pos) = near {
         place_near_tray(&win, pos);

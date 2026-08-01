@@ -23,27 +23,35 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::path::Path;
 
-pub struct Hermes;
+pub struct Hermes {
+    pub key: String,
+    pub label: Option<String>,
+}
 
 const DEFAULT_PORTAL: &str = "https://portal.nousresearch.com";
 
 #[async_trait::async_trait]
 impl Provider for Hermes {
-    fn id(&self) -> &'static str {
+    fn kind(&self) -> &'static str {
         "hermes"
     }
-    fn name(&self) -> &'static str {
-        "Hermes Portal"
+    fn id(&self) -> &str {
+        &self.key
+    }
+    fn name(&self) -> &str {
+        self.label.as_deref().unwrap_or("Hermes Portal")
     }
 
     async fn fetch(&self, ctx: &ProviderCtx) -> Result<UsageSnapshot, FetchError> {
         let source = ctx
             .config
-            .provider_setting("hermes", "source")
+            .provider_setting(&self.key, "source")
             .and_then(|v| v.as_str().map(str::to_owned))
             .unwrap_or_else(|| "auto".into());
-        let token_price =
-            ctx.config.provider_setting("hermes", "token_price").and_then(|v| as_f64(&v));
+        let token_price = ctx
+            .config
+            .provider_setting(&self.key, "token_price")
+            .and_then(|v| as_f64(&v));
 
         // Auth candidates in preference order; remember expired ones so the
         // error is "expired" (actionable) rather than "not configured".
@@ -54,7 +62,7 @@ impl Provider for Hermes {
                 if !auth.is_fresh() {
                     // Ask the local hermes CLI to refresh its own login (it
                     // persists the rotated tokens safely), then re-read.
-                    if run_local_refresh(ctx).await {
+                    if run_local_refresh(ctx, &self.key).await {
                         if let Some(a) = read_hermes_auth(&ctx.home) {
                             auth = a;
                         }
@@ -76,12 +84,12 @@ impl Provider for Hermes {
         }
 
         if matches!(source.as_str(), "auto" | "remote") {
-            match remote_fresh_auth(ctx).await {
+            match remote_fresh_auth(ctx, &self.key).await {
                 Ok(Some(auth)) if auth.is_fresh() => {
                     return self.fetch_billing(ctx, &auth, token_price).await
                 }
                 Ok(Some(_)) => {
-                    let host = remote_host(ctx).unwrap_or_default();
+                    let host = remote_host(ctx, &self.key).unwrap_or_default();
                     expired_hint = Some(format!(
                         "hermes token on {host} expired and auto-refresh failed — run `hermes auth status nous` there"
                     ));
@@ -99,7 +107,13 @@ impl Provider for Hermes {
             }
         }
 
-        if source == "cookie" || ctx.secrets.get("hermes").filter(|c| !c.is_empty()).is_some() {
+        if source == "cookie"
+            || ctx
+                .secrets
+                .get(&self.key)
+                .filter(|c| !c.is_empty())
+                .is_some()
+        {
             return self.fetch_cookie(ctx, token_price).await;
         }
         match expired_hint {
@@ -112,10 +126,13 @@ impl Provider for Hermes {
     }
 }
 
-fn remote_host(ctx: &ProviderCtx) -> Option<String> {
-    ctx.config
-        .provider_setting("hermes", "ssh_host")
-        .and_then(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from))
+fn remote_host(ctx: &ProviderCtx, key: &str) -> Option<String> {
+    ctx.config.provider_setting(key, "ssh_host").and_then(|v| {
+        v.as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    })
 }
 
 /// The refresh command run (locally or over SSH) when the token is stale.
@@ -123,24 +140,30 @@ fn remote_host(ctx: &ProviderCtx) -> Option<String> {
 /// and hermes itself performs the rotation-safe refresh + persistence. PATH is
 /// widened because non-interactive SSH shells often lack ~/.local/bin.
 /// Overridable via the `refresh_cmd` provider setting (e.g. Nix store paths).
-const DEFAULT_REFRESH_CMD: &str = "PATH=\"$HOME/.local/bin:$HOME/bin:$PATH\" hermes auth status nous";
+const DEFAULT_REFRESH_CMD: &str =
+    "PATH=\"$HOME/.local/bin:$HOME/bin:$PATH\" hermes auth status nous";
 const REFRESH_TIMEOUT: Duration = std::time::Duration::from_secs(45);
 
 use std::time::Duration;
 
-fn refresh_cmd(ctx: &ProviderCtx) -> String {
+fn refresh_cmd(ctx: &ProviderCtx, key: &str) -> String {
     ctx.config
-        .provider_setting("hermes", "refresh_cmd")
+        .provider_setting(key, "refresh_cmd")
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_else(|| DEFAULT_REFRESH_CMD.into())
 }
 
 /// Run a command on the remote host over SSH (BatchMode — the user's existing
 /// keys/agent must authenticate; we never prompt).
-async fn run_ssh(ctx: &ProviderCtx, host: &str, remote_cmd: &str) -> Result<Vec<u8>, FetchError> {
+async fn run_ssh(
+    ctx: &ProviderCtx,
+    key: &str,
+    host: &str,
+    remote_cmd: &str,
+) -> Result<Vec<u8>, FetchError> {
     let program = ctx
         .config
-        .provider_setting("hermes", "ssh_program")
+        .provider_setting(key, "ssh_program")
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_else(|| "ssh".into());
     let mut cmd = tokio::process::Command::new(&program);
@@ -167,16 +190,16 @@ async fn run_ssh(ctx: &ProviderCtx, host: &str, remote_cmd: &str) -> Result<Vec<
     Ok(out.stdout)
 }
 
-fn remote_auth_path(ctx: &ProviderCtx) -> String {
+fn remote_auth_path(ctx: &ProviderCtx, key: &str) -> String {
     ctx.config
-        .provider_setting("hermes", "ssh_auth_path")
+        .provider_setting(key, "ssh_auth_path")
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_else(|| ".hermes/auth.json".into())
 }
 
-async fn read_remote(ctx: &ProviderCtx, host: &str) -> Result<NousAuth, FetchError> {
-    let path = remote_auth_path(ctx);
-    let bytes = run_ssh(ctx, host, &format!("cat {path}")).await?;
+async fn read_remote(ctx: &ProviderCtx, key: &str, host: &str) -> Result<NousAuth, FetchError> {
+    let path = remote_auth_path(ctx, key);
+    let bytes = run_ssh(ctx, key, host, &format!("cat {path}")).await?;
     parse_hermes_auth(&String::from_utf8_lossy(&bytes))
         .ok_or_else(|| FetchError::Parse(format!("no Nous login in {host}:{path}")))
 }
@@ -185,22 +208,27 @@ async fn read_remote(ctx: &ProviderCtx, host: &str) -> Result<NousAuth, FetchErr
 /// the remote hermes CLI to refresh it and re-read once. Returns Ok(None)
 /// when no remote host is configured. The returned auth may still be stale —
 /// the caller checks `is_fresh()`.
-async fn remote_fresh_auth(ctx: &ProviderCtx) -> Result<Option<NousAuth>, FetchError> {
-    let Some(host) = remote_host(ctx) else { return Ok(None) };
-    let auth = read_remote(ctx, &host).await?;
+async fn remote_fresh_auth(ctx: &ProviderCtx, key: &str) -> Result<Option<NousAuth>, FetchError> {
+    let Some(host) = remote_host(ctx, key) else {
+        return Ok(None);
+    };
+    let auth = read_remote(ctx, key, &host).await?;
     if auth.is_fresh() {
         return Ok(Some(auth));
     }
-    if run_ssh(ctx, &host, &refresh_cmd(ctx)).await.is_ok() {
-        return read_remote(ctx, &host).await.map(Some);
+    if run_ssh(ctx, key, &host, &refresh_cmd(ctx, key))
+        .await
+        .is_ok()
+    {
+        return read_remote(ctx, key, &host).await.map(Some);
     }
     Ok(Some(auth))
 }
 
 /// Ask a locally-installed hermes CLI to refresh its login. Best-effort:
 /// missing binary or failure just returns false.
-async fn run_local_refresh(ctx: &ProviderCtx) -> bool {
-    let shell_cmd = refresh_cmd(ctx);
+async fn run_local_refresh(ctx: &ProviderCtx, key: &str) -> bool {
+    let shell_cmd = refresh_cmd(ctx, key);
     #[cfg(windows)]
     let mut cmd = {
         let mut c = tokio::process::Command::new("cmd");
@@ -269,6 +297,9 @@ pub fn parse_hermes_auth(text: &str) -> Option<NousAuth> {
 }
 
 impl Hermes {
+    pub fn new(key: String, label: Option<String>) -> Self {
+        Self { key, label }
+    }
     async fn fetch_billing(
         &self,
         ctx: &ProviderCtx,
@@ -303,14 +334,25 @@ impl Hermes {
         // Subscription allowance (tier, monthly credits, cycle reset) — best
         // effort; a failure here still leaves a valid balance card.
         let sub_url = format!("{}/api/billing/subscription", auth.portal_base);
-        if let Ok(resp) = ctx.http.get(&sub_url).bearer_auth(&auth.access_token).send().await {
+        if let Ok(resp) = ctx
+            .http
+            .get(&sub_url)
+            .bearer_auth(&auth.access_token)
+            .send()
+            .await
+        {
             if resp.status().is_success() {
                 if let Ok(sub) = resp.json::<Value>().await {
                     windows.extend(parse_subscription(&sub, credits.balance));
                 }
             }
         }
-        Ok(UsageSnapshot::ok(self.id(), self.name(), windows, Some(credits)))
+        Ok(UsageSnapshot::ok(
+            self.id(),
+            self.name(),
+            windows,
+            Some(credits),
+        ))
     }
 
     async fn fetch_cookie(
@@ -318,16 +360,20 @@ impl Hermes {
         ctx: &ProviderCtx,
         token_price: Option<f64>,
     ) -> Result<UsageSnapshot, FetchError> {
-        let cookie = ctx.secrets.get("hermes").filter(|c| !c.is_empty()).ok_or_else(|| {
-            FetchError::NotConfigured(
-                "run hermes-agent on this machine (its login is reused automatically) \
+        let cookie = ctx
+            .secrets
+            .get(&self.key)
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| {
+                FetchError::NotConfigured(
+                    "run hermes-agent on this machine (its login is reused automatically) \
                  or paste a portal session cookie in Settings"
-                    .into(),
-            )
-        })?;
+                        .into(),
+                )
+            })?;
         let endpoint = ctx
             .config
-            .provider_setting("hermes", "endpoint")
+            .provider_setting(&self.key, "endpoint")
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| format!("{DEFAULT_PORTAL}/api/billing/state"));
 
@@ -353,16 +399,25 @@ impl Hermes {
             .or_else(|| parse_lenient(&body, token_price))
             .ok_or_else(|| {
                 FetchError::Parse(
-                    "no balance-like field found in response — check the endpoint in Settings".into(),
+                    "no balance-like field found in response — check the endpoint in Settings"
+                        .into(),
                 )
             })?;
-        Ok(UsageSnapshot::ok(self.id(), self.name(), parsed.1, Some(parsed.0)))
+        Ok(UsageSnapshot::ok(
+            self.id(),
+            self.name(),
+            parsed.1,
+            Some(parsed.0),
+        ))
     }
 }
 
 /// Parse the portal's `/api/billing/state` shape (camelCase, money as strings):
 /// `{"balanceUsd": "142.5", "monthlyCap": {"limitUsd": "1000", "spentThisMonthUsd": "180"}, …}`
-fn parse_billing_state(body: &Value, token_price: Option<f64>) -> Option<(Credits, Vec<UsageWindow>)> {
+fn parse_billing_state(
+    body: &Value,
+    token_price: Option<f64>,
+) -> Option<(Credits, Vec<UsageWindow>)> {
     let balance = body.get("balanceUsd").and_then(as_f64)?;
     let mut windows = Vec::new();
     let mut used = None;
@@ -439,7 +494,13 @@ const BALANCE_KEYS: &[&str] = &[
     "balance",
     "credits",
 ];
-const USED_KEYS: &[&str] = &["credits_used", "creditsused", "used_credits", "usage", "used"];
+const USED_KEYS: &[&str] = &[
+    "credits_used",
+    "creditsused",
+    "used_credits",
+    "usage",
+    "used",
+];
 
 fn parse_lenient(body: &Value, token_price: Option<f64>) -> Option<(Credits, Vec<UsageWindow>)> {
     let balance = find_numeric(body, BALANCE_KEYS)?;
@@ -527,7 +588,11 @@ mod tests {
         assert_eq!(w[0].used_pct, 100.0);
         assert!(w[0].resets_at.is_some());
         // zero-allowance tiers and missing fields produce no window
-        assert!(parse_subscription(&serde_json::json!({"current": {"monthlyCredits": "0", "creditsRemaining": "0"}}), 0.0).is_empty());
+        assert!(parse_subscription(
+            &serde_json::json!({"current": {"monthlyCredits": "0", "creditsRemaining": "0"}}),
+            0.0
+        )
+        .is_empty());
         assert!(parse_subscription(&serde_json::json!({}), 0.0).is_empty());
     }
 
@@ -542,7 +607,10 @@ mod tests {
 
         let funded = parse_subscription(&body, 142.5);
         assert_eq!(funded[0].used_pct, 100.0);
-        assert!(funded[0].informational, "funded balance should not report critical");
+        assert!(
+            funded[0].informational,
+            "funded balance should not report critical"
+        );
 
         // No balance left: the exhausted allowance is a genuine block.
         let broke = parse_subscription(&body, 0.0);
@@ -568,7 +636,10 @@ mod tests {
         let mut cfg = Config::default();
         let settings = &mut cfg.providers.get_mut("hermes").unwrap().settings;
         settings.insert("ssh_host".into(), "ian@server".into());
-        settings.insert("ssh_program".into(), stub.to_string_lossy().into_owned().into());
+        settings.insert(
+            "ssh_program".into(),
+            stub.to_string_lossy().into_owned().into(),
+        );
         ProviderCtx::new(dir.into(), Default::default(), cfg)
     }
 
@@ -579,7 +650,7 @@ mod tests {
     async fn remote_auth_via_stub_ssh() {
         let dir = tempfile::tempdir().unwrap();
         let ctx = stub_ctx(dir.path(), &format!("#!/bin/sh\necho \"{FRESH}\"\n"));
-        let auth = remote_fresh_auth(&ctx).await.unwrap().unwrap();
+        let auth = remote_fresh_auth(&ctx, "hermes").await.unwrap().unwrap();
         assert_eq!(auth.access_token, "remote-tok");
         assert!(auth.is_fresh());
     }
@@ -596,7 +667,7 @@ mod tests {
             m = marker.display()
         );
         let ctx = stub_ctx(dir.path(), &script);
-        let auth = remote_fresh_auth(&ctx).await.unwrap().unwrap();
+        let auth = remote_fresh_auth(&ctx, "hermes").await.unwrap().unwrap();
         assert!(marker.exists(), "refresh command was not invoked");
         assert_eq!(auth.access_token, "remote-tok");
         assert!(auth.is_fresh());
@@ -606,14 +677,17 @@ mod tests {
     async fn remote_auth_unconfigured_is_none_and_failure_is_network() {
         use crate::config::Config;
         let ctx = ProviderCtx::new(std::env::temp_dir(), Default::default(), Config::default());
-        assert!(remote_fresh_auth(&ctx).await.unwrap().is_none());
+        assert!(remote_fresh_auth(&ctx, "hermes").await.unwrap().is_none());
 
         let mut cfg = Config::default();
         let settings = &mut cfg.providers.get_mut("hermes").unwrap().settings;
         settings.insert("ssh_host".into(), "ian@server".into());
         settings.insert("ssh_program".into(), "/nonexistent/ssh".into());
         let ctx = ProviderCtx::new(std::env::temp_dir(), Default::default(), cfg);
-        assert!(matches!(remote_fresh_auth(&ctx).await, Err(FetchError::Network(_))));
+        assert!(matches!(
+            remote_fresh_auth(&ctx, "hermes").await,
+            Err(FetchError::Network(_))
+        ));
     }
 
     #[test]

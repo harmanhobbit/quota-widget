@@ -11,6 +11,7 @@
     { id: 'openrouter', name: 'OpenRouter', secret: 'API key', note: 'Create a key at openrouter.ai/keys.' },
     { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Uses a hermes-agent login: local ~/.hermes/auth.json, or fetched from a remote machine over SSH (needs working key auth, e.g. via ssh-agent). Cookie paste is a last-resort fallback.' },
   ];
+  const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secret: null, note: 'Unknown provider kind.' };
 
   let config = $state(null);
   let secretInputs = $state({});
@@ -23,6 +24,8 @@
   // Native Wayland can't honour always-on-top, so the popup sinks behind other
   // windows regardless of the click-away setting. Worth saying so in place.
   let onWayland = $state(false);
+  let newKind = $state('claude');
+  let newName = $state('');
 
   onMount(async () => {
     const cfg = await invoke('get_config');
@@ -33,8 +36,9 @@
       cfg.providers[p.id].in_tray ??= true;
     }
     config = cfg;
-    for (const p of PROVIDERS) {
-      if (p.secret) secretStored[p.id] = await invoke('has_secret', { provider: p.id });
+    for (const [id, account] of Object.entries(cfg.providers)) {
+      const p = providerInfo(account.kind ?? id);
+      if (p.secret) secretStored[id] = await invoke('has_secret', { provider: id });
     }
     oauth.signedIn = await invoke('has_secret', { provider: 'claude_oauth' });
     codex.signedIn = await invoke('has_secret', { provider: 'codex_oauth' });
@@ -52,10 +56,10 @@
     return un;
   });
 
-  async function codexStart() {
+  async function codexStart(provider) {
     codex.status = 'waiting';
     try {
-      const r = await invoke('codex_oauth_start');
+      const r = await invoke('codex_oauth_start', { provider });
       codex.userCode = r.user_code;
       codex.url = r.verification_url;
     } catch (e) {
@@ -69,14 +73,14 @@
     codex.signedIn = false;
   }
 
-  async function oauthStart() {
+  async function oauthStart(provider) {
     oauth.status = '';
-    oauth.url = await invoke('claude_oauth_start');
+    oauth.url = await invoke('claude_oauth_start', { provider });
   }
 
-  async function oauthFinish() {
+  async function oauthFinish(provider) {
     try {
-      await invoke('claude_oauth_finish', { code: oauth.code });
+      await invoke('claude_oauth_finish', { code: oauth.code, provider });
       oauth.status = 'ok';
       oauth.signedIn = true;
       oauth.url = '';
@@ -142,24 +146,43 @@
     await invoke('clear_secret', { provider: id });
     secretStored[id] = false;
   }
+
+  function addAccount() {
+    const n = Object.values(config.providers).filter((p) => (p.kind ?? '') === newKind).length + 1;
+    let key = `${newKind}#${n}`;
+    while (config.providers[key]) key = `${newKind}#${Number(key.split('#')[1]) + 1}`;
+    const info = providerInfo(newKind);
+    config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, settings: {} };
+    newName = '';
+  }
+
+  async function removeAccount(id) {
+    const kind = config.providers[id].kind ?? id;
+    await invoke('clear_secret', { provider: id });
+    if (kind === 'claude' || kind === 'codex') await invoke('clear_secret', { provider: `${id}_oauth` });
+    delete config.providers[id];
+  }
 </script>
 
 {#if config}
   <div class="settings">
     <section>
       <h2>Providers</h2>
-      {#each PROVIDERS as p (p.id)}
+      <div class="row"><select bind:value={newKind}>{#each PROVIDERS as p}<option value={p.id}>{p.name}</option>{/each}</select><input placeholder="Account name (optional)" bind:value={newName} /><button class="small" onclick={addAccount}>Add account</button></div>
+      {#each Object.entries(config.providers) as [id, account] (id)}
+        {@const p = providerInfo(account.kind ?? id)}
         <div class="provider">
           <label class="row">
-            <input type="checkbox" bind:checked={config.providers[p.id].enabled} />
-            <strong>{p.name}</strong>
+            <input type="checkbox" bind:checked={account.enabled} />
+            <strong>{account.label ?? p.name}</strong>
             <span class="spacer"></span>
-            <button class="small" onclick={() => test(p.id)}>Test</button>
+            <button class="small" onclick={() => test(id)}>Test</button>
           </label>
           <p class="note">{p.note}</p>
-          {#if config.providers[p.id].enabled}
+          <label class="field">Account name <input maxlength="40" bind:value={account.label} placeholder={p.name} /></label>
+          {#if account.enabled}
             <label class="row sub-toggle">
-              <input type="checkbox" bind:checked={config.providers[p.id].in_tray} />
+              <input type="checkbox" bind:checked={account.in_tray} />
               Include in tray icon
             </label>
           {/if}
@@ -167,17 +190,17 @@
             <div class="row">
               <input
                 type="password"
-                placeholder={secretStored[p.id] ? `${p.secret} stored — paste to replace` : `Paste ${p.secret}`}
-                bind:value={secretInputs[p.id]}
+                placeholder={secretStored[id] ? `${p.secret} stored — paste to replace` : `Paste ${p.secret}`}
+                bind:value={secretInputs[id]}
               />
-              {#if secretStored[p.id]}
-                <button class="small" onclick={() => clearSecret(p.id)}>Clear</button>
+              {#if secretStored[id]}
+                <button class="small" onclick={() => clearSecret(id)}>Clear</button>
               {/if}
             </div>
           {/if}
           {#if p.id === 'claude'}
             <label class="field">Sign-in method
-              <select bind:value={config.providers['claude'].settings.auth_mode}>
+              <select bind:value={account.settings.auth_mode}>
                 <option value={undefined}>Auto (CLI, then built-in)</option>
                 <option value="cli">Claude Code CLI only</option>
                 <option value="oauth">Built-in sign-in only</option>
@@ -189,7 +212,7 @@
                   <span class="test good">Built-in sign-in active ✓</span>
                   <button class="small" onclick={oauthClear}>Sign out</button>
                 {:else}
-                  <button class="small" onclick={oauthStart}>Sign in with Claude…</button>
+                  <button class="small" onclick={() => oauthStart(id)}>Sign in with Claude…</button>
                 {/if}
               </div>
               {#if oauth.url}
@@ -200,7 +223,7 @@
                 </p>
                 <div class="row">
                   <input type="text" placeholder="Paste code (looks like abc123#xyz789)" bind:value={oauth.code} />
-                  <button class="small" onclick={oauthFinish}>Finish</button>
+                  <button class="small" onclick={() => oauthFinish(id)}>Finish</button>
                 </div>
               {/if}
               {#if oauth.status && oauth.status !== 'ok'}
@@ -210,7 +233,7 @@
           {/if}
           {#if p.id === 'codex'}
             <label class="field">Sign-in method
-              <select bind:value={config.providers['codex'].settings.auth_mode}>
+              <select bind:value={account.settings.auth_mode}>
                 <option value={undefined}>Auto (CLI, then built-in)</option>
                 <option value="cli">Codex CLI only</option>
                 <option value="oauth">Built-in sign-in only</option>
@@ -222,7 +245,7 @@
                   <span class="test good">Built-in sign-in active ✓</span>
                   <button class="small" onclick={codexClear}>Sign out</button>
                 {:else}
-                  <button class="small" onclick={codexStart}>Sign in with Codex…</button>
+                  <button class="small" onclick={() => codexStart(id)}>Sign in with Codex…</button>
                 {/if}
               </div>
               {#if codex.userCode}
@@ -241,7 +264,7 @@
           {/if}
           {#if p.id === 'hermes'}
             <label class="field">Source
-              <select bind:value={config.providers['hermes'].settings.source}>
+              <select bind:value={account.settings.source}>
                 <option value={undefined}>Auto (local → SSH → cookie)</option>
                 <option value="hermes">Local hermes-agent</option>
                 <option value="remote">Remote over SSH</option>
@@ -253,7 +276,7 @@
                 <input
                   type="text"
                   placeholder="user@server (key auth)"
-                  bind:value={config.providers['hermes'].settings.ssh_host}
+                  bind:value={account.settings.ssh_host}
                 />
               </label>
             {/if}
@@ -262,7 +285,7 @@
                 <input
                   type="text"
                   placeholder="default: portal billing API"
-                  bind:value={config.providers['hermes'].settings.endpoint}
+                  bind:value={account.settings.endpoint}
                 />
               </label>
             {/if}
@@ -271,23 +294,24 @@
                 type="number"
                 step="any"
                 placeholder="for tokens-left estimate"
-                bind:value={config.providers['hermes'].settings.token_price}
+                bind:value={account.settings.token_price}
               />
             </label>
           {/if}
           {#if p.id === 'openrouter' || p.id === 'hermes'}
             <div class="row">
               <label class="inline">Low-balance warning at
-                <input type="number" step="any" class="num" bind:value={config.providers[p.id].low_balance_warn} placeholder="off" />
+                <input type="number" step="any" class="num" bind:value={account.low_balance_warn} placeholder="off" />
               </label>
             </div>
           {/if}
-          {#if testResults[p.id]}
-            <p class="test {testResults[p.id].ok ? 'good' : 'bad'}">
-              {testResults[p.id].pending ? 'testing…' : testResults[p.id].msg}
+          {#if testResults[id]}
+            <p class="test {testResults[id].ok ? 'good' : 'bad'}">
+              {testResults[id].pending ? 'testing…' : testResults[id].msg}
             </p>
           {/if}
-        </div>
+          </div>
+          {#if id.includes('#')}<button class="small" onclick={() => removeAccount(id)}>Remove account</button>{/if}
       {/each}
     </section>
 

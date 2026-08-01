@@ -4,17 +4,32 @@
 //! portable EXE leaves no plaintext secrets on disk. Elsewhere (Linux dev
 //! runs) secrets fall back to a 0600 JSON file in the config dir.
 
+use quota_core::config::Config;
 use std::collections::HashMap;
 use std::path::Path;
 
-const PROVIDERS: &[&str] = &["claude", "codex", "openrouter", "hermes", "claude_oauth"];
+/// Keep keyring names predictable and reject accidental arbitrary entries.
+pub fn valid_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 128
+        && key
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'#' | b'_' | b'-'))
+}
+
+pub fn oauth_key(account: &str) -> String {
+    format!("{account}_oauth")
+}
 
 #[cfg(windows)]
 mod backend {
     const SERVICE: &str = "quota-widget";
 
     pub fn get(_dir: &std::path::Path, provider: &str) -> Option<String> {
-        keyring::Entry::new(SERVICE, provider).ok()?.get_password().ok()
+        keyring::Entry::new(SERVICE, provider)
+            .ok()?
+            .get_password()
+            .ok()
     }
 
     pub fn set(_dir: &std::path::Path, provider: &str, value: &str) -> Result<(), String> {
@@ -49,7 +64,8 @@ mod backend {
     fn write(dir: &Path, map: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let p = path(dir);
-        std::fs::write(&p, serde_json::to_string_pretty(map).unwrap()).map_err(|e| e.to_string())?;
+        std::fs::write(&p, serde_json::to_string_pretty(map).unwrap())
+            .map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -76,10 +92,16 @@ mod backend {
 }
 
 pub fn get(dir: &Path, provider: &str) -> Option<String> {
+    if !valid_key(provider) {
+        return None;
+    }
     backend::get(dir, provider)
 }
 
 pub fn set(dir: &Path, provider: &str, value: &str) -> Result<(), String> {
+    if !valid_key(provider) {
+        return Err("invalid secret key".into());
+    }
     if value.trim().is_empty() {
         return clear(dir, provider);
     }
@@ -87,12 +109,24 @@ pub fn set(dir: &Path, provider: &str, value: &str) -> Result<(), String> {
 }
 
 pub fn clear(dir: &Path, provider: &str) -> Result<(), String> {
+    if !valid_key(provider) {
+        return Err("invalid secret key".into());
+    }
     backend::clear(dir, provider)
 }
 
-pub fn load_all(dir: &Path) -> HashMap<String, String> {
-    PROVIDERS
+pub fn load_all(dir: &Path, config: &Config) -> HashMap<String, String> {
+    config
+        .providers
         .iter()
-        .filter_map(|p| get(dir, p).map(|v| (p.to_string(), v)))
+        .flat_map(|(key, p)| {
+            let kind = p.kind.as_deref().unwrap_or(key);
+            let mut keys = vec![key.clone()];
+            if matches!(kind, "claude" | "codex") {
+                keys.push(oauth_key(key));
+            }
+            keys
+        })
+        .filter_map(|key| get(dir, &key).map(|v| (key, v)))
         .collect()
 }

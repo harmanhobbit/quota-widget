@@ -5,41 +5,73 @@ use super::{as_f64, network_err, Provider, ProviderCtx};
 use crate::model::{Credits, FetchError, UsageSnapshot};
 use serde_json::Value;
 
-pub struct OpenRouter;
+pub struct OpenRouter {
+    pub key: String,
+    pub label: Option<String>,
+}
+impl OpenRouter {
+    pub fn new(key: String, label: Option<String>) -> Self {
+        Self { key, label }
+    }
+}
 
 const CREDITS_URL: &str = "https://openrouter.ai/api/v1/credits";
 
 #[async_trait::async_trait]
 impl Provider for OpenRouter {
-    fn id(&self) -> &'static str {
+    fn kind(&self) -> &'static str {
         "openrouter"
     }
-    fn name(&self) -> &'static str {
-        "OpenRouter"
+    fn id(&self) -> &str {
+        &self.key
+    }
+    fn name(&self) -> &str {
+        self.label.as_deref().unwrap_or("OpenRouter")
     }
 
     async fn fetch(&self, ctx: &ProviderCtx) -> Result<UsageSnapshot, FetchError> {
-        let key = ctx.secrets.get("openrouter").filter(|k| !k.is_empty()).ok_or_else(|| {
-            FetchError::NotConfigured("paste an OpenRouter API key in Settings".into())
-        })?;
+        let key = ctx
+            .secrets
+            .get(&self.key)
+            .filter(|k| !k.is_empty())
+            .ok_or_else(|| {
+                FetchError::NotConfigured("paste an OpenRouter API key in Settings".into())
+            })?;
         let url = ctx
             .config
-            .provider_setting("openrouter", "credits_url")
+            .provider_setting(&self.key, "credits_url")
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| CREDITS_URL.to_string());
 
-        let resp = ctx.http.get(&url).bearer_auth(key).send().await.map_err(network_err)?;
+        let resp = ctx
+            .http
+            .get(&url)
+            .bearer_auth(key)
+            .send()
+            .await
+            .map_err(network_err)?;
         match resp.status().as_u16() {
             200..=299 => {}
             401 | 403 => {
-                return Err(FetchError::AuthExpired("API key rejected — re-check it in Settings".into()))
+                return Err(FetchError::AuthExpired(
+                    "API key rejected — re-check it in Settings".into(),
+                ))
             }
-            s => return Err(FetchError::Network(format!("HTTP {s} from credits endpoint"))),
+            s => {
+                return Err(FetchError::Network(format!(
+                    "HTTP {s} from credits endpoint"
+                )))
+            }
         }
         let body: Value = resp.json().await.map_err(network_err)?;
         let credits = parse_credits(&body)
             .ok_or_else(|| FetchError::Parse("credits response missing totals".into()))?;
-        Ok(UsageSnapshot::ok(self.id(), self.name(), vec![], Some(credits)))
+        Ok(UsageSnapshot::ok(
+            self.id(),
+            self.name(),
+            vec![],
+            Some(credits),
+        ))
     }
 }
 

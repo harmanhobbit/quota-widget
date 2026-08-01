@@ -3,11 +3,13 @@ mod oauth;
 mod poller;
 mod secrets;
 mod tray;
+#[cfg(target_os = "linux")]
+mod tray_linux;
 
 use quota_core::alerts::AlertEngine;
 use quota_core::config::Config;
 use quota_core::model::UsageSnapshot;
-use quota_core::providers::{all_providers, ProviderCtx};
+use quota_core::providers::{providers_for, ProviderCtx};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,7 +25,7 @@ pub struct AppState {
     /// Poked to trigger an immediate poll cycle.
     pub refresh: Notify,
     /// In-flight built-in Claude sign-in (PKCE verifier + state).
-    pub oauth_pending: std::sync::Mutex<Option<oauth::PendingLogin>>,
+    pub oauth_pending: std::sync::Mutex<HashMap<String, oauth::PendingLogin>>,
     /// Mirror of config.hide_on_blur, readable from the sync event loop.
     pub hide_on_blur: std::sync::atomic::AtomicBool,
     /// Millis timestamp of the last title-bar press — blur events within the
@@ -34,7 +36,7 @@ pub struct AppState {
 impl AppState {
     fn provider_ctx(&self, config: Config) -> ProviderCtx {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let secrets = secrets::load_all(&self.config_dir);
+        let secrets = secrets::load_all(&self.config_dir, &config);
         let mut ctx = ProviderCtx::new(home, secrets, config);
         // Adapters that rotate tokens (Claude OAuth refresh) persist them here.
         let dir = self.config_dir.clone();
@@ -48,19 +50,28 @@ impl AppState {
 }
 
 fn config_dir() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("quota-widget")
+    dirs::config_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("quota-widget")
 }
 
 // ---- IPC commands -----------------------------------------------------------
 
 #[tauri::command]
-async fn get_snapshots(state: tauri::State<'_, Arc<AppState>>) -> Result<Vec<UsageSnapshot>, String> {
+async fn get_snapshots(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<UsageSnapshot>, String> {
     let map = state.snapshots.read().await;
     let cfg = state.config.read().await;
     // Stable registry order, enabled providers only.
     let mut out = Vec::new();
-    for p in all_providers() {
-        if cfg.providers.get(p.id()).map(|c| c.enabled).unwrap_or(false) {
+    for p in providers_for(&cfg) {
+        if cfg
+            .providers
+            .get(p.id())
+            .map(|c| c.enabled)
+            .unwrap_or(false)
+        {
             if let Some(s) = map.get(p.id()) {
                 out.push(s.clone());
             }
@@ -81,11 +92,17 @@ async fn set_config(
     config: Config,
 ) -> Result<(), String> {
     config.save(&state.config_dir).map_err(|e| e.to_string())?;
-    state.hide_on_blur.store(config.hide_on_blur, std::sync::atomic::Ordering::Relaxed);
+    state
+        .hide_on_blur
+        .store(config.hide_on_blur, std::sync::atomic::Ordering::Relaxed);
     *state.config.write().await = config.clone();
     // Apply autostart immediately.
     let autolaunch = app.autolaunch();
-    let result = if config.autostart { autolaunch.enable() } else { autolaunch.disable() };
+    let result = if config.autostart {
+        autolaunch.enable()
+    } else {
+        autolaunch.disable()
+    };
     if let Err(e) = result {
         eprintln!("autostart: {e}"); // non-fatal (e.g. unsupported desktop)
     }
@@ -94,13 +111,19 @@ async fn set_config(
 }
 
 #[tauri::command]
-fn set_secret(state: tauri::State<'_, Arc<AppState>>, provider: String, value: String) -> Result<(), String> {
+fn set_secret(
+    state: tauri::State<'_, Arc<AppState>>,
+    provider: String,
+    value: String,
+) -> Result<(), String> {
     secrets::set(&state.config_dir, &provider, &value)
 }
 
 #[tauri::command]
 fn has_secret(state: tauri::State<'_, Arc<AppState>>, provider: String) -> bool {
-    secrets::get(&state.config_dir, &provider).map(|s| !s.is_empty()).unwrap_or(false)
+    secrets::get(&state.config_dir, &provider)
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -123,7 +146,7 @@ async fn test_provider(
 ) -> Result<UsageSnapshot, String> {
     let cfg = state.config.read().await.clone();
     let ctx = state.provider_ctx(cfg);
-    for p in all_providers() {
+    for p in providers_for(&cfg) {
         if p.id() == provider {
             return Ok(match p.fetch(&ctx).await {
                 Ok(s) => s,
@@ -137,9 +160,16 @@ async fn test_provider(
 /// Begin the built-in Claude sign-in: opens the browser and returns the URL
 /// (shown in the UI as a copyable fallback).
 #[tauri::command]
-fn claude_oauth_start(state: tauri::State<'_, Arc<AppState>>) -> Result<String, String> {
+fn claude_oauth_start(
+    state: tauri::State<'_, Arc<AppState>>,
+    provider: String,
+) -> Result<String, String> {
     let (url, pending) = oauth::start();
-    *state.oauth_pending.lock().unwrap() = Some(pending);
+    state
+        .oauth_pending
+        .lock()
+        .unwrap()
+        .insert(provider, pending);
     if let Err(e) = tauri_plugin_opener::open_url(&url, None::<&str>) {
         eprintln!("browser open failed: {e}"); // URL is still shown in the UI
     }
@@ -151,18 +181,19 @@ fn claude_oauth_start(state: tauri::State<'_, Arc<AppState>>) -> Result<String, 
 async fn claude_oauth_finish(
     state: tauri::State<'_, Arc<AppState>>,
     code: String,
+    provider: String,
 ) -> Result<(), String> {
     let pending = state
         .oauth_pending
         .lock()
         .unwrap()
-        .take()
+        .remove(&provider)
         .ok_or_else(|| "no sign-in in progress — click Sign in first".to_string())?;
     let http = reqwest::Client::new();
     let tokens = oauth::finish(&http, &pending, &code).await?;
     secrets::set(
         &state.config_dir,
-        quota_core::providers::claude::OAUTH_SECRET_KEY,
+        &secrets::oauth_key(&provider),
         &tokens.to_secret_json(),
     )?;
     state.refresh.notify_one();
@@ -177,6 +208,7 @@ async fn claude_oauth_finish(
 async fn codex_oauth_start(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
+    provider: String,
 ) -> Result<serde_json::Value, String> {
     let http = reqwest::Client::new();
     let login = codex_oauth::start(&http).await?;
@@ -195,17 +227,19 @@ async fn codex_oauth_start(
             Ok(tokens) => {
                 match secrets::set(
                     &state.config_dir,
-                    quota_core::providers::codex::OAUTH_SECRET_KEY,
+                    &secrets::oauth_key(&provider),
                     &tokens.to_string(),
                 ) {
                     Ok(()) => {
                         state.refresh.notify_one();
-                        serde_json::json!({ "ok": true })
+                        serde_json::json!({ "ok": true, "provider": provider.clone() })
                     }
-                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                    Err(e) => {
+                        serde_json::json!({ "ok": false, "error": e, "provider": provider.clone() })
+                    }
                 }
             }
-            Err(e) => serde_json::json!({ "ok": false, "error": e }),
+            Err(e) => serde_json::json!({ "ok": false, "error": e, "provider": provider.clone() }),
         };
         let _ = app.emit("codex-oauth", payload);
     });
@@ -231,13 +265,30 @@ fn hide_window(window: tauri::Window) {
     let _ = window.hide();
 }
 
+#[tauri::command]
+fn set_pinned(state: tauri::State<'_, Arc<AppState>>, window: tauri::Window, pinned: bool) {
+    state.hide_on_blur.store(
+        if pinned {
+            false
+        } else {
+            state.config.blocking_read().hide_on_blur
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let _ = window.set_always_on_top(pinned);
+    if pinned {
+        tray::anchor_above_panel(&window);
+    }
+}
+
 /// Fired by the frontend on a title-bar mousedown, just before the native
 /// drag begins — arms the blur grace period.
 #[tauri::command]
 fn note_drag(state: tauri::State<'_, Arc<AppState>>) {
-    state
-        .last_drag_ms
-        .store(chrono::Utc::now().timestamp_millis(), std::sync::atomic::Ordering::Relaxed);
+    state.last_drag_ms.store(
+        chrono::Utc::now().timestamp_millis(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 #[tauri::command]
@@ -259,7 +310,7 @@ pub fn run() {
         snapshots: RwLock::new(HashMap::new()),
         alert_engine: Mutex::new(AlertEngine::default()),
         refresh: Notify::new(),
-        oauth_pending: std::sync::Mutex::new(None),
+        oauth_pending: std::sync::Mutex::new(HashMap::new()),
     });
 
     tauri::Builder::default()
@@ -288,10 +339,14 @@ pub fn run() {
             codex_oauth_start,
             on_wayland,
             hide_window,
+            set_pinned,
             note_drag,
             quit,
         ])
         .setup(move |app| {
+            #[cfg(target_os = "linux")]
+            tray_linux::create_tray(app.handle().clone(), state.clone());
+            #[cfg(not(target_os = "linux"))]
             tray::create_tray(app.handle())?;
             poller::spawn(app.handle().clone(), state.clone());
             Ok(())
@@ -315,8 +370,8 @@ pub fn run() {
                     if !state.hide_on_blur.load(Relaxed) {
                         return;
                     }
-                    let since_drag = chrono::Utc::now().timestamp_millis()
-                        - state.last_drag_ms.load(Relaxed);
+                    let since_drag =
+                        chrono::Utc::now().timestamp_millis() - state.last_drag_ms.load(Relaxed);
                     if since_drag > 2_000 {
                         let _ = window.hide();
                     }
