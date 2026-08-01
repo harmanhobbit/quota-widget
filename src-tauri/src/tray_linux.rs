@@ -48,13 +48,13 @@ impl ksni::Tray for QuotaTray {
         vec![
             StandardItem {
                 label: "Open".into(),
-                activate: Box::new(|t| tray::show_popup(&t.app, None)),
+                activate: Box::new(|t: &mut QuotaTray| tray::show_popup(&t.app, None)),
                 ..Default::default()
             }
             .into(),
             StandardItem {
                 label: "Refresh now".into(),
-                activate: Box::new(|t| {
+                activate: Box::new(|t: &mut QuotaTray| {
                     if let Some(s) = t.app.try_state::<Arc<AppState>>() {
                         s.refresh.notify_one()
                     }
@@ -64,7 +64,7 @@ impl ksni::Tray for QuotaTray {
             .into(),
             StandardItem {
                 label: "Settings".into(),
-                activate: Box::new(|t| {
+                activate: Box::new(|t: &mut QuotaTray| {
                     tray::show_popup(&t.app, None);
                     let _ = t.app.emit("navigate", "settings");
                 }),
@@ -73,7 +73,7 @@ impl ksni::Tray for QuotaTray {
             .into(),
             StandardItem {
                 label: "Quit".into(),
-                activate: Box::new(|t| t.app.exit(0)),
+                activate: Box::new(|t: &mut QuotaTray| t.app.exit(0)),
                 ..Default::default()
             }
             .into(),
