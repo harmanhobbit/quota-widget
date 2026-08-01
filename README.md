@@ -146,3 +146,18 @@ scripts/            icon generation, version-drift guard
   observed in the wild resetting more often than every 7 days.
 - The tray hover peek is Windows-only: Linux appindicator trays deliver menu
   events but never pointer enter/leave, so there is nothing to hook.
+- **Always-on-top does not work on native Wayland**, so the popup slips behind
+  other windows when they take focus — regardless of the *Hide when clicking
+  outside* setting, which is a separate mechanism. This is a protocol gap, not
+  a widget bug: `xdg-shell` has no `set_always_on_top`, GTK dropped its old
+  one, and no portable replacement exists (GNOME and wlroots each expose their
+  own). Tracked upstream as [tao#1134](https://github.com/tauri-apps/tao/issues/1134)
+  and [tauri#3117](https://github.com/tauri-apps/tauri/issues/3117), both
+  labelled *upstream*. Running under XWayland restores it:
+
+  ```sh
+  GDK_BACKEND=x11 quota-widget
+  ```
+
+  Worth knowing before you switch: XWayland can look blurry under fractional
+  scaling. X11 and Windows are unaffected.

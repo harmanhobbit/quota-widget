@@ -213,6 +213,19 @@ async fn codex_oauth_start(
     Ok(shown)
 }
 
+/// True when running as a native Wayland client, where always-on-top has no
+/// protocol (xdg-shell lacks it; tao#1134) and the popup sinks behind other
+/// windows. XWayland reports as x11 here and behaves correctly, so this is
+/// specifically "the broken case", not merely "on Linux".
+#[tauri::command]
+fn on_wayland() -> bool {
+    if std::env::var("GDK_BACKEND").is_ok_and(|v| v.eq_ignore_ascii_case("x11")) {
+        return false;
+    }
+    std::env::var("WAYLAND_DISPLAY").is_ok_and(|v| !v.is_empty())
+        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|v| v.eq_ignore_ascii_case("wayland"))
+}
+
 #[tauri::command]
 fn hide_window(window: tauri::Window) {
     let _ = window.hide();
@@ -273,6 +286,7 @@ pub fn run() {
             claude_oauth_start,
             claude_oauth_finish,
             codex_oauth_start,
+            on_wayland,
             hide_window,
             note_drag,
             quit,

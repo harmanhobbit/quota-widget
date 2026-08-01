@@ -200,6 +200,18 @@ button.primary {
   background: var(--critical);
 }
 
+/* Inline literals in notes (env vars, commands) — selectable so they can be
+   copied rather than retyped. */
+.note code {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  padding: 1px 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  user-select: text;
+}
+
 /* The Codex device code is read off the screen and retyped in a browser, so
    it needs to be unambiguous and selectable. */
 .device-code {

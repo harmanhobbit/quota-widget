@@ -20,6 +20,9 @@
   // Codex uses a device flow: we show a short code, the user types it in the
   // browser, and Rust emits `codex-oauth` when polling resolves.
   let codex = $state({ userCode: '', url: '', status: '', signedIn: false });
+  // Native Wayland can't honour always-on-top, so the popup sinks behind other
+  // windows regardless of the click-away setting. Worth saying so in place.
+  let onWayland = $state(false);
 
   onMount(async () => {
     const cfg = await invoke('get_config');
@@ -35,6 +38,7 @@
     }
     oauth.signedIn = await invoke('has_secret', { provider: 'claude_oauth' });
     codex.signedIn = await invoke('has_secret', { provider: 'codex_oauth' });
+    onWayland = await invoke('on_wayland');
 
     const un = await listen('codex-oauth', (e) => {
       if (e.payload.ok) {
@@ -310,6 +314,14 @@
       <label class="row"><input type="checkbox" bind:checked={config.autostart} /> Start on login</label>
       <label class="row"><input type="checkbox" bind:checked={config.hide_on_blur} /> Hide when clicking outside</label>
       <p class="note">Esc, ✕, and the tray icon always hide the widget. This extra click-away dismiss can occasionally fight window dragging.</p>
+      {#if onWayland}
+        <p class="note">
+          You're on Wayland, which has no always-on-top protocol — the widget
+          will slip behind other windows when they take focus, whatever the
+          setting above says. Launching it with <code>GDK_BACKEND=x11</code>
+          restores it.
+        </p>
+      {/if}
     </section>
 
     <div class="actions">
