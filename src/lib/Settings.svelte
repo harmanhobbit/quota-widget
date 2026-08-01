@@ -15,6 +15,7 @@
 
   let config = $state(null);
   let appVersion = $state('');
+  let loadError = $state('');
   let secretInputs = $state({});
   let secretStored = $state({});
   let testResults = $state({});
@@ -28,29 +29,39 @@
   let newKind = $state('claude');
   let newName = $state('');
 
-  onMount(async () => {
-    const cfg = await invoke('get_config');
-    // Normalize configured accounts only. Do not recreate removed defaults.
-    for (const account of Object.values(cfg.providers)) {
-      account.settings ??= {};
-      account.in_tray ??= true;
+  async function loadSettings() {
+    loadError = '';
+    try {
+      const cfg = await invoke('get_config');
+      // Normalize configured accounts only. Do not recreate removed defaults.
+      for (const account of Object.values(cfg.providers)) {
+        account.settings ??= {};
+        account.in_tray ??= true;
+      }
+      config = cfg;
+      // The version footer is informational only. Do not let a missing command
+      // from an older backend keep the entire Settings page on “Loading…”.
+      invoke('app_version').then((version) => (appVersion = version)).catch(() => {});
+      for (const [id, account] of Object.entries(cfg.providers)) {
+        const p = providerInfo(account.kind ?? id);
+        if (p.secret) secretStored[id] = await invoke('has_secret', { provider: id });
+      }
+      for (const [id, account] of Object.entries(cfg.providers)) {
+        const kind = account.kind ?? id;
+        if (kind === 'claude') oauthFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
+        if (kind === 'codex') codexFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
+      }
+      onWayland = await invoke('on_wayland');
+    } catch (error) {
+      loadError = String(error);
+      console.error('failed to load settings', error);
     }
-    config = cfg;
-    // The version footer is informational only. Do not let a missing command
-    // from an older backend keep the entire Settings page on “Loading…”.
-    invoke('app_version').then((version) => (appVersion = version)).catch(() => {});
-    for (const [id, account] of Object.entries(cfg.providers)) {
-      const p = providerInfo(account.kind ?? id);
-      if (p.secret) secretStored[id] = await invoke('has_secret', { provider: id });
-    }
-    for (const [id, account] of Object.entries(cfg.providers)) {
-      const kind = account.kind ?? id;
-      if (kind === 'claude') oauthFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
-      if (kind === 'codex') codexFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
-    }
-    onWayland = await invoke('on_wayland');
+  }
 
-    const un = await listen('codex-oauth', (e) => {
+  onMount(() => {
+    void loadSettings();
+    let unlisten;
+    listen('codex-oauth', (e) => {
       const flow = codexFor(e.payload.provider);
       if (e.payload.ok) {
         flow.signedIn = true;
@@ -59,8 +70,8 @@
       } else {
         flow.status = e.payload.error;
       }
-    });
-    return un;
+    }).then((stop) => (unlisten = stop));
+    return () => unlisten?.();
   });
 
   function oauthFor(provider) {
@@ -380,5 +391,10 @@
     {/if}
   </div>
 {:else}
-  <p class="empty">Loading…</p>
+  <div class="empty">
+    <p>{loadError || 'Loading…'}</p>
+    {#if loadError}
+      <button class="small" onclick={loadSettings}>Retry</button>
+    {/if}
+  </div>
 {/if}
