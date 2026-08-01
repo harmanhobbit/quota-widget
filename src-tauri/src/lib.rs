@@ -88,6 +88,13 @@ async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config, St
     Ok(state.config.read().await.clone())
 }
 
+/// Cargo supplies this from the workspace's single version source at build
+/// time, so the Settings footer can never drift from the packaged app.
+#[tauri::command]
+fn app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
 #[tauri::command]
 async fn set_config(
     app: tauri::AppHandle,
@@ -335,6 +342,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_snapshots,
             get_config,
+            app_version,
             set_config,
             set_secret,
             has_secret,

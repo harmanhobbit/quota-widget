@@ -133,6 +133,14 @@ button.primary {
   gap: 8px;
 }
 
+.version {
+  margin-top: auto;
+  padding-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
 .card {
   background: var(--card);
   border: 1px solid var(--border);
