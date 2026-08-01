@@ -29,10 +29,14 @@ impl Default for AlertToggles {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ProviderConfig {
     pub enabled: bool,
+    /// Whether this provider counts toward the tray icon's worst-case status
+    /// and gauge fill. On by default; turn off to keep a provider visible in
+    /// the popup without letting it colour the tray.
+    pub in_tray: bool,
     /// Overrides the global thresholds when set.
     pub thresholds: Option<Thresholds>,
     /// Overrides the global alert toggles when set.
@@ -41,6 +45,19 @@ pub struct ProviderConfig {
     pub low_balance_warn: Option<f64>,
     /// Provider-specific knobs (endpoint overrides, token price, …).
     pub settings: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            in_tray: true,
+            thresholds: None,
+            alerts: None,
+            low_balance_warn: None,
+            settings: Default::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -91,6 +108,12 @@ impl Config {
             .get(provider_id)
             .and_then(|p| p.alerts.clone())
             .unwrap_or_else(|| self.alerts.clone())
+    }
+
+    /// Whether this provider contributes to the tray icon. Unknown providers
+    /// (config written by a newer build) default to counting.
+    pub fn counts_in_tray(&self, provider_id: &str) -> bool {
+        self.providers.get(provider_id).map(|p| p.in_tray).unwrap_or(true)
     }
 
     pub fn provider_setting(&self, provider_id: &str, key: &str) -> Option<serde_json::Value> {

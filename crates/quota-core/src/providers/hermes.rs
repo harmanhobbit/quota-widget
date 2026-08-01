@@ -306,7 +306,7 @@ impl Hermes {
         if let Ok(resp) = ctx.http.get(&sub_url).bearer_auth(&auth.access_token).send().await {
             if resp.status().is_success() {
                 if let Ok(sub) = resp.json::<Value>().await {
-                    windows.extend(parse_subscription(&sub));
+                    windows.extend(parse_subscription(&sub, credits.balance));
                 }
             }
         }
@@ -375,6 +375,7 @@ fn parse_billing_state(body: &Value, token_price: Option<f64>) -> Option<(Credit
                     label: "Monthly cap".into(),
                     used_pct: spent / limit * 100.0,
                     resets_at: None,
+                    ..Default::default()
                 });
             }
         }
@@ -385,7 +386,13 @@ fn parse_billing_state(body: &Value, token_price: Option<f64>) -> Option<(Credit
 /// Parse `/api/billing/subscription`:
 /// `{"current": {"tierName": "Plus", "monthlyCredits": "22", "creditsRemaining": "3.5",
 ///   "cycleEndsAt": "2026-08-01T20:29:04.000Z", …}, …}`
-fn parse_subscription(body: &Value) -> Vec<UsageWindow> {
+///
+/// `balance` is the purchased-credit balance, used to decide whether an
+/// exhausted allowance is actually a problem: on the Free tier the portal
+/// grants a fraction of a credit, so it reads 100% used forever while a funded
+/// balance quietly pays for every call. Such a window is informational —
+/// visible, but not driving the status colour, the tray, or alerts.
+fn parse_subscription(body: &Value, balance: f64) -> Vec<UsageWindow> {
     let cur = &body["current"];
     let (Some(monthly), Some(remaining)) = (
         cur.get("monthlyCredits").and_then(as_f64),
@@ -397,6 +404,9 @@ fn parse_subscription(body: &Value) -> Vec<UsageWindow> {
         return vec![];
     }
     let tier = cur["tierName"].as_str().unwrap_or("subscription");
+    // A funded balance keeps calls working regardless of the allowance, so
+    // don't let an exhausted one paint everything red.
+    let informational = balance > 0.0;
     vec![UsageWindow {
         label: format!("Monthly allowance ({tier})"),
         used_pct: ((monthly - remaining) / monthly * 100.0).clamp(0.0, 100.0),
@@ -404,6 +414,7 @@ fn parse_subscription(body: &Value) -> Vec<UsageWindow> {
             .as_str()
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|d| d.with_timezone(&Utc)),
+        informational,
     }]
 }
 
@@ -510,14 +521,39 @@ mod tests {
                 "cycleEndsAt": "2026-08-01T20:29:04.000Z"
             }
         });
-        let w = parse_subscription(&body);
+        let w = parse_subscription(&body, 0.0);
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].label, "Monthly allowance (Free)");
         assert_eq!(w[0].used_pct, 100.0);
         assert!(w[0].resets_at.is_some());
         // zero-allowance tiers and missing fields produce no window
-        assert!(parse_subscription(&serde_json::json!({"current": {"monthlyCredits": "0", "creditsRemaining": "0"}})).is_empty());
-        assert!(parse_subscription(&serde_json::json!({})).is_empty());
+        assert!(parse_subscription(&serde_json::json!({"current": {"monthlyCredits": "0", "creditsRemaining": "0"}}), 0.0).is_empty());
+        assert!(parse_subscription(&serde_json::json!({}), 0.0).is_empty());
+    }
+
+    /// The Free tier grants a fraction of a credit, so its allowance reads
+    /// 100% used forever. With a purchased balance still paying for calls
+    /// that isn't a quota problem — the window must not colour the card.
+    #[test]
+    fn exhausted_allowance_is_informational_when_balance_funds_calls() {
+        let body = serde_json::json!({
+            "current": {"tierName": "Free", "monthlyCredits": "0.1", "creditsRemaining": "0"}
+        });
+
+        let funded = parse_subscription(&body, 142.5);
+        assert_eq!(funded[0].used_pct, 100.0);
+        assert!(funded[0].informational, "funded balance should not report critical");
+
+        // No balance left: the exhausted allowance is a genuine block.
+        let broke = parse_subscription(&body, 0.0);
+        assert!(!broke[0].informational);
+
+        let snap = UsageSnapshot::ok("hermes", "Hermes Portal", funded, None);
+        assert_eq!(snap.status(80.0, 95.0, None), crate::model::Status::Ok);
+        assert_eq!(
+            UsageSnapshot::ok("hermes", "Hermes Portal", broke, None).status(80.0, 95.0, None),
+            crate::model::Status::Critical
+        );
     }
 
     fn stub_ctx(dir: &std::path::Path, script: &str) -> ProviderCtx {

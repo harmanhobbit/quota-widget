@@ -3,11 +3,22 @@ use serde::{Deserialize, Serialize};
 
 /// One rate-limit window of a provider (e.g. Claude's rolling 5-hour window).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct UsageWindow {
     pub label: String,
     /// 0.0–100.0. May exceed 100 if the provider reports overage.
     pub used_pct: f64,
     pub resets_at: Option<DateTime<Utc>>,
+    /// Shown, but never drives status, alerts, or the tray. For allowances
+    /// whose exhaustion doesn't actually block you — e.g. Hermes' tiny free
+    /// subscription trickle when a purchased balance is still funding calls.
+    pub informational: bool,
+}
+
+impl Default for UsageWindow {
+    fn default() -> Self {
+        Self { label: String::new(), used_pct: 0.0, resets_at: None, informational: false }
+    }
 }
 
 /// Credit balance for pay-per-use providers (OpenRouter, Hermes Portal).
@@ -86,7 +97,7 @@ impl UsageSnapshot {
             return Status::Stale;
         }
         let mut worst = Status::Ok;
-        for w in &self.windows {
+        for w in self.windows.iter().filter(|w| !w.informational) {
             let s = if w.used_pct >= critical_pct {
                 Status::Critical
             } else if w.used_pct >= warn_pct {

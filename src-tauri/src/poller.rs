@@ -57,8 +57,9 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
         }
     }
 
-    // Tray icon: worst status across enabled providers (respecting per-provider
-    // tray_color toggle — providers with it off can't push the icon past Ok).
+    // Tray icon: worst status across providers included in the tray. Two
+    // independent opt-outs — `in_tray` excludes the provider from the icon
+    // entirely, and `tray_color` keeps it counted but stops it colouring.
     let mut worst = Status::Ok;
     let mut worst_pct: f64 = 0.0;
     let mut tip_lines = Vec::new();
@@ -66,10 +67,11 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
         let thr = cfg.effective_thresholds(&s.provider_id);
         let low = cfg.providers.get(&s.provider_id).and_then(|p| p.low_balance_warn);
         let st = s.status(thr.warn_pct, thr.critical_pct, low);
-        if cfg.effective_alerts(&s.provider_id).tray_color {
+        if cfg.counts_in_tray(&s.provider_id) && cfg.effective_alerts(&s.provider_id).tray_color {
             worst = worst.max(st);
             if s.error.is_none() {
-                for w in &s.windows {
+                // Informational windows are shown but never drive the gauge.
+                for w in s.windows.iter().filter(|w| !w.informational) {
                     worst_pct = worst_pct.max(w.used_pct);
                 }
             }

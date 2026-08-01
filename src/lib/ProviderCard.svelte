@@ -52,13 +52,18 @@
   {/if}
   {#if !snap.error || snap.windows.length > 0 || snap.credits}
     {#each snap.windows as w (w.label)}
-      <div class="window">
+      <div class="window" class:informational={w.informational}>
         <div class="window-row">
           <span>{w.label}</span>
           <span class="pct">{w.used_pct.toFixed(0)}% · {resetsIn(w.resets_at)}</span>
         </div>
         <div class="bar">
-          <div class="fill {barClass(w.used_pct)}" style="width: {Math.min(w.used_pct, 100)}%"></div>
+          <!-- Informational windows never colour by threshold: they don't
+               gate anything, so red would be misleading. -->
+          <div
+            class="fill {w.informational ? 'muted' : barClass(w.used_pct)}"
+            style="width: {Math.min(w.used_pct, 100)}%"
+          ></div>
         </div>
       </div>
     {/each}

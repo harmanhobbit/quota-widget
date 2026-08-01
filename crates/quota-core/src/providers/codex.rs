@@ -128,7 +128,15 @@ fn collect_windows(v: &Value, out: &mut Vec<(f64, UsageWindow)>) {
                             .and_then(as_f64)
                             .map(|s| Utc::now() + Duration::seconds(s as i64))
                     });
-                out.push((minutes, UsageWindow { label: label_for_minutes(minutes), used_pct: pct, resets_at }));
+                out.push((
+                    minutes,
+                    UsageWindow {
+                        label: label_for_minutes(minutes),
+                        used_pct: pct,
+                        resets_at,
+                        ..Default::default()
+                    },
+                ));
             } else {
                 for val in obj.values() {
                     collect_windows(val, out);
