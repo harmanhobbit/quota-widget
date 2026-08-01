@@ -200,6 +200,73 @@ button.primary {
   background: var(--critical);
 }
 
+/* ---- tray hover peek (the ?view=hover window) ---------------------------- */
+
+/* This window is sized by Tauri, not by content, and is never scrolled or
+   interacted with — it just needs to fill the frame edge to edge. */
+body.hover-window {
+  border-radius: 8px;
+  cursor: default;
+}
+
+.hover {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.hover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.hover-name {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.hover-bar {
+  flex: 1 1 auto;
+  height: 5px;
+  min-width: 30px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.hover-bar .fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+}
+
+.hover-val {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.hover-val.warn {
+  color: var(--warn);
+}
+
+.hover-val.critical {
+  color: var(--critical);
+}
+
+.hover-val.stale {
+  color: var(--muted);
+}
+
+.hover-empty {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  padding: 4px;
+}
+
 /* Informational windows don't gate anything, so they stay neutral and
    recede rather than competing with the real quota bars. */
 .fill.muted {

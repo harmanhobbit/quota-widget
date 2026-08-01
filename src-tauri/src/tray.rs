@@ -91,9 +91,11 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_popup(app, None),
             "settings" => {
+                // Show first: show_popup resets the view to the usage list,
+                // so navigating afterwards is what makes Settings stick.
+                show_popup(app, None);
                 use tauri::Emitter;
                 let _ = app.emit("navigate", "settings");
-                show_popup(app, None);
             }
             "refresh" => {
                 if let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() {
@@ -104,14 +106,24 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                position,
-                ..
-            } = event
-            {
-                toggle_popup(tray.app_handle(), Some(position));
+            let app = tray.app_handle();
+            match event {
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    position,
+                    ..
+                } => {
+                    // Clicking commits to the full popup; the peek is noise
+                    // once the real window is coming up.
+                    hide_hover(app);
+                    toggle_popup(app, Some(position));
+                }
+                // Hover peek. Linux appindicator trays never deliver these,
+                // so this is a no-op there rather than a broken feature.
+                TrayIconEvent::Enter { position, .. } => show_hover(app, position),
+                TrayIconEvent::Leave { .. } => hide_hover(app),
+                _ => {}
             }
         })
         .build(app)?;
@@ -125,6 +137,43 @@ pub fn set_status<R: Runtime>(app: &AppHandle<R>, status: Status, fill: f64, too
     }
 }
 
+/// Show the hover peek near the cursor. Deliberately never focused: taking
+/// focus would blur the main popup and trip its click-away hide.
+fn show_hover<R: Runtime>(app: &AppHandle<R>, at: PhysicalPosition<f64>) {
+    let Some(win) = app.get_webview_window("hover") else { return };
+    // Don't peek over the real thing — it's already showing more detail.
+    if app.get_webview_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(false) {
+        return;
+    }
+    place_near_tray(&win, at);
+    let _ = win.show();
+}
+
+fn hide_hover<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(win) = app.get_webview_window("hover") {
+        let _ = win.hide();
+    }
+}
+
+/// Clamp a window to the monitor work area next to a tray position, flipping
+/// above/below the cursor depending on which half of the screen the tray is in.
+fn place_near_tray<R: Runtime>(win: &tauri::WebviewWindow<R>, pos: PhysicalPosition<f64>) {
+    let (Ok(size), Ok(Some(monitor))) = (win.outer_size(), win.current_monitor()) else { return };
+    let msize = monitor.size();
+    let mpos = monitor.position();
+    let margin = 12.0;
+    let x = (pos.x - size.width as f64 / 2.0).clamp(
+        mpos.x as f64 + margin,
+        mpos.x as f64 + msize.width as f64 - size.width as f64 - margin,
+    );
+    let y = if pos.y > mpos.y as f64 + msize.height as f64 / 2.0 {
+        pos.y - size.height as f64 - margin
+    } else {
+        pos.y + margin
+    };
+    let _ = win.set_position(PhysicalPosition::new(x as i32, y as i32));
+}
+
 fn toggle_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f64>>) {
     let Some(win) = app.get_webview_window("main") else { return };
     if win.is_visible().unwrap_or(false) {
@@ -135,26 +184,17 @@ fn toggle_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f6
 }
 
 /// Show the always-on-top popup, positioned near the tray click when we know
-/// it (clamped to the monitor work area so it never renders off-screen).
+/// it. Dismisses any hover peek first so the two never overlap.
 pub fn show_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f64>>) {
     let Some(win) = app.get_webview_window("main") else { return };
+    hide_hover(app);
     if let Some(pos) = near {
-        if let (Ok(size), Ok(Some(monitor))) = (win.outer_size(), win.current_monitor()) {
-            let msize = monitor.size();
-            let mpos = monitor.position();
-            let margin = 12.0;
-            let x = (pos.x - size.width as f64 / 2.0)
-                .clamp(mpos.x as f64 + margin, mpos.x as f64 + msize.width as f64 - size.width as f64 - margin);
-            // Place above the tray (bottom taskbar) unless the click was in the
-            // top half of the screen (top taskbar / vertical tray).
-            let y = if pos.y > mpos.y as f64 + msize.height as f64 / 2.0 {
-                pos.y - size.height as f64 - margin
-            } else {
-                pos.y + margin
-            };
-            let _ = win.set_position(PhysicalPosition::new(x as i32, y as i32));
-        }
+        place_near_tray(&win, pos);
     }
     let _ = win.show();
     let _ = win.set_focus();
+    // Hiding to tray keeps the webview alive, so the frontend resets its view
+    // here rather than leaving the user back in Settings on next open.
+    use tauri::Emitter;
+    let _ = app.emit("window-shown", ());
 }
