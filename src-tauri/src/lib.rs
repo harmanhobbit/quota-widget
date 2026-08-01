@@ -28,6 +28,9 @@ pub struct AppState {
     pub oauth_pending: std::sync::Mutex<HashMap<String, oauth::PendingLogin>>,
     /// Mirror of config.hide_on_blur, readable from the sync event loop.
     pub hide_on_blur: std::sync::atomic::AtomicBool,
+    /// Pinning belongs only to the compact tray-click summary and lasts for
+    /// this process, never in the user's config file.
+    pub mini_pinned: std::sync::atomic::AtomicBool,
     /// Millis timestamp of the last title-bar press — blur events within the
     /// grace window are drag-induced (tauri#10767), not click-away.
     pub last_drag_ms: std::sync::atomic::AtomicI64,
@@ -96,6 +99,7 @@ async fn set_config(
         .hide_on_blur
         .store(config.hide_on_blur, std::sync::atomic::Ordering::Relaxed);
     *state.config.write().await = config.clone();
+    let _ = app.emit("config", &config);
     // Apply autostart immediately.
     let autolaunch = app.autolaunch();
     let result = if config.autostart {
@@ -266,20 +270,16 @@ fn hide_window(window: tauri::Window) {
 }
 
 #[tauri::command]
-fn set_pinned(state: tauri::State<'_, Arc<AppState>>, window: tauri::Window, pinned: bool) {
-    state.hide_on_blur.store(
-        if pinned {
-            false
-        } else {
-            state.config.blocking_read().hide_on_blur
-        },
-        std::sync::atomic::Ordering::Relaxed,
-    );
+fn set_mini_pinned(state: tauri::State<'_, Arc<AppState>>, window: tauri::Window, pinned: bool) {
+    if window.label() != "mini" {
+        return;
+    }
+    state
+        .mini_pinned
+        .store(pinned, std::sync::atomic::Ordering::Relaxed);
     let _ = window.set_always_on_top(pinned);
     if pinned {
-        if let Some(main) = window.app_handle().get_webview_window("main") {
-            tray::anchor_above_panel(&main);
-        }
+        tray::anchor_above_panel(&window);
     }
 }
 
@@ -307,6 +307,7 @@ pub fn run() {
     let state = Arc::new(AppState {
         config_dir,
         hide_on_blur: std::sync::atomic::AtomicBool::new(config.hide_on_blur),
+        mini_pinned: std::sync::atomic::AtomicBool::new(false),
         last_drag_ms: std::sync::atomic::AtomicI64::new(0),
         config: RwLock::new(config),
         snapshots: RwLock::new(HashMap::new()),
@@ -341,7 +342,7 @@ pub fn run() {
             codex_oauth_start,
             on_wayland,
             hide_window,
-            set_pinned,
+            set_mini_pinned,
             note_drag,
             quit,
         ])
@@ -369,6 +370,15 @@ pub fn run() {
                         return;
                     };
                     use std::sync::atomic::Ordering::Relaxed;
+                    // The mini summary is always click-away transient unless
+                    // its own pin button is active. The full window keeps the
+                    // separate user-configured click-away preference.
+                    if window.label() == "mini" {
+                        if !state.mini_pinned.load(Relaxed) {
+                            let _ = window.hide();
+                        }
+                        return;
+                    }
                     if !state.hide_on_blur.load(Relaxed) {
                         return;
                     }

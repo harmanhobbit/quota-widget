@@ -38,6 +38,20 @@
         "focus": false,
         "shadow": true,
         "transparent": false
+      },
+      {
+        "label": "mini",
+        "url": "index.html?view=mini",
+        "title": "Quota Widget summary",
+        "width": 300,
+        "height": 140,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": true,
+        "visible": false,
+        "shadow": true,
+        "transparent": false
       }
     ],
     "security": {

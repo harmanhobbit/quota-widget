@@ -27,8 +27,8 @@ fn random_b64url(bytes: usize) -> String {
 /// Build the authorize URL and the pending state to verify the paste-back.
 pub fn start() -> (String, PendingLogin) {
     let verifier = random_b64url(48);
-    let challenge =
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(verifier.as_bytes()));
     let state = random_b64url(24);
     let url = format!(
         "{AUTHORIZE_URL}?code=true&client_id={CLIENT_ID}&response_type=code\
@@ -70,8 +70,10 @@ pub async fn finish(
         .await
         .map_err(|e| format!("token exchange failed: {e}"))?;
     let status = resp.status();
-    let body: serde_json::Value =
-        resp.json().await.map_err(|e| format!("token exchange failed: {e}"))?;
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("token exchange failed: {e}"))?;
     if !status.is_success() {
         return Err(format!("token exchange rejected (HTTP {status}): {body}"));
     }

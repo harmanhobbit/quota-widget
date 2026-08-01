@@ -243,6 +243,30 @@ body.hover-window {
   gap: 5px;
 }
 
+/* The tray-click mini summary is interactive (unlike the hover peek), but
+   deliberately retains the same compact provider rows. */
+.mini {
+  padding: 6px 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.mini header {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mini .icon {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 13px;
+}
+
 .hover-row {
   display: flex;
   align-items: center;

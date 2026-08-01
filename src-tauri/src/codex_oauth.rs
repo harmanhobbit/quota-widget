@@ -58,7 +58,10 @@ pub async fn start(http: &reqwest::Client) -> Result<DeviceLogin, String> {
         return Err(format!("sign-in request rejected (HTTP {})", resp.status()));
     }
 
-    let body: Value = resp.json().await.map_err(|e| format!("unexpected sign-in response: {e}"))?;
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("unexpected sign-in response: {e}"))?;
     let device_auth_id = body["device_auth_id"]
         .as_str()
         .ok_or("sign-in response missing device_auth_id")?
@@ -80,16 +83,16 @@ pub async fn start(http: &reqwest::Client) -> Result<DeviceLogin, String> {
 }
 
 fn interval_from(v: &Value) -> Duration {
-    let secs = v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())).unwrap_or(0);
+    let secs = v
+        .as_u64()
+        .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        .unwrap_or(0);
     Duration::from_secs(secs)
 }
 
 /// Steps 3–4: block until the user authorizes, then exchange for tokens.
 /// Returns the `tokens` object to persist, in the CLI's own shape.
-pub async fn poll_for_tokens(
-    http: &reqwest::Client,
-    login: &DeviceLogin,
-) -> Result<Value, String> {
+pub async fn poll_for_tokens(http: &reqwest::Client, login: &DeviceLogin) -> Result<Value, String> {
     let deadline = std::time::Instant::now() + MAX_WAIT;
     loop {
         if std::time::Instant::now() >= deadline {
@@ -112,8 +115,10 @@ pub async fn poll_for_tokens(
                 continue;
             }
             200..=299 => {
-                let body: Value =
-                    resp.json().await.map_err(|e| format!("unexpected poll response: {e}"))?;
+                let body: Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| format!("unexpected poll response: {e}"))?;
                 let code = body["authorization_code"]
                     .as_str()
                     .ok_or("poll response missing authorization_code")?;
@@ -144,11 +149,16 @@ async fn exchange(http: &reqwest::Client, code: &str, verifier: &str) -> Result<
         .await
         .map_err(|e| format!("token exchange failed: {e}"))?;
     let status = resp.status();
-    let body: Value = resp.json().await.map_err(|e| format!("token exchange failed: {e}"))?;
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("token exchange failed: {e}"))?;
     if !status.is_success() {
         return Err(format!("token exchange rejected (HTTP {status})"));
     }
-    let access = body["access_token"].as_str().ok_or("token response missing access_token")?;
+    let access = body["access_token"]
+        .as_str()
+        .ok_or("token response missing access_token")?;
     let id_token = body["id_token"].as_str().unwrap_or_default();
 
     // Store in the CLI's `tokens` shape so the provider adapter can read
@@ -170,10 +180,16 @@ mod tests {
 
     #[test]
     fn interval_accepts_string_number_and_missing() {
-        assert_eq!(interval_from(&serde_json::json!("5")), Duration::from_secs(5));
+        assert_eq!(
+            interval_from(&serde_json::json!("5")),
+            Duration::from_secs(5)
+        );
         assert_eq!(interval_from(&serde_json::json!(3)), Duration::from_secs(3));
         // Absent or unparseable falls back to 0, which the caller floors.
         assert_eq!(interval_from(&Value::Null), Duration::from_secs(0));
-        assert_eq!(interval_from(&serde_json::json!("")), Duration::from_secs(0));
+        assert_eq!(
+            interval_from(&serde_json::json!("")),
+            Duration::from_secs(0)
+        );
     }
 }

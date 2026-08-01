@@ -8,6 +8,7 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, PhysicalPosition, Runtime};
 
+#[cfg(not(target_os = "linux"))]
 pub const TRAY_ID: &str = "quota-tray";
 
 /// The same rounded-square gauge badge as the app icon, drawn at runtime:
@@ -116,10 +117,11 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                     position,
                     ..
                 } => {
-                    // Clicking commits to the full popup; the peek is noise
-                    // once the real window is coming up.
+                    // The tray click is deliberately a compact, transient
+                    // summary. The context menu's Open item leads to the full
+                    // usage/settings window.
                     hide_hover(app);
-                    toggle_popup(app, Some(position));
+                    toggle_mini(app, Some(position));
                 }
                 // Hover peek. Linux appindicator trays never deliver these,
                 // so this is a no-op there rather than a broken feature.
@@ -141,16 +143,19 @@ pub fn set_status<R: Runtime>(app: &AppHandle<R>, status: Status, fill: f64, _to
 
 /// Show the hover peek near the cursor. Deliberately never focused: taking
 /// focus would blur the main popup and trip its click-away hide.
+#[cfg(not(target_os = "linux"))]
 fn show_hover<R: Runtime>(app: &AppHandle<R>, at: PhysicalPosition<f64>) {
     let Some(win) = app.get_webview_window("hover") else {
         return;
     };
-    // Don't peek over the real thing — it's already showing more detail.
-    if app
-        .get_webview_window("main")
-        .and_then(|w| w.is_visible().ok())
-        .unwrap_or(false)
-    {
+    // Don't peek over either interactive window — it is already showing more
+    // detail than this read-only hover view.
+    let interactive_window_visible = ["main", "mini"].into_iter().any(|label| {
+        app.get_webview_window(label)
+            .and_then(|w| w.is_visible().ok())
+            .unwrap_or(false)
+    });
+    if interactive_window_visible {
         return;
     }
     place_near_tray(&win, at);
@@ -185,14 +190,14 @@ fn place_near_tray<R: Runtime>(win: &tauri::WebviewWindow<R>, pos: PhysicalPosit
     let _ = win.set_position(PhysicalPosition::new(x as i32, y as i32));
 }
 
-pub fn toggle_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f64>>) {
-    let Some(win) = app.get_webview_window("main") else {
+pub fn toggle_mini<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f64>>) {
+    let Some(win) = app.get_webview_window("mini") else {
         return;
     };
     if win.is_visible().unwrap_or(false) {
         let _ = win.hide();
     } else {
-        show_popup(app, near);
+        show_mini(app, near);
     }
 }
 
@@ -215,6 +220,9 @@ pub fn show_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<
         return;
     };
     hide_hover(app);
+    if let Some(mini) = app.get_webview_window("mini") {
+        let _ = mini.hide();
+    }
     if let Some(pos) = near {
         place_near_tray(&win, pos);
     }
@@ -224,4 +232,28 @@ pub fn show_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<
     // here rather than leaving the user back in Settings on next open.
     use tauri::Emitter;
     let _ = app.emit("window-shown", ());
+}
+
+/// Show the compact tray-click summary. It is transient unless the mini
+/// window itself has been pinned; the full window is never involved.
+pub fn show_mini<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f64>>) {
+    let Some(win) = app.get_webview_window("mini") else {
+        return;
+    };
+    hide_hover(app);
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    let pinned = app
+        .try_state::<std::sync::Arc<crate::AppState>>()
+        .map(|state| state.mini_pinned.load(std::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(false);
+    let _ = win.set_always_on_top(pinned);
+    if pinned {
+        anchor_above_panel(&win);
+    } else if let Some(pos) = near {
+        place_near_tray(&win, pos);
+    }
+    let _ = win.show();
+    let _ = win.set_focus();
 }

@@ -13,7 +13,7 @@ Platform differences are small but real:
 
 | | Windows 11 | Linux |
 |---|---|---|
-| Tray left-click | Toggles the popup | Toggles the popup |
+| Tray left-click | Toggles the mini summary | Toggles the mini summary |
 | Tray hover peek | Custom peek window | Plasma-drawn tooltip |
 | Secret storage | Credential Manager | `0600` file in the config dir |
 | Autostart | `HKCU` run entry | XDG autostart entry |
@@ -24,13 +24,14 @@ Platform differences are small but real:
   threshold, 🔴 past critical, ⚪ grey when data is stale or auth failed. Each
   provider has an **Include in tray icon** checkbox in Settings — clear it to
   keep a provider on the popup without letting it drive the tray.
-- **Left-click** the tray icon to toggle the popup near the tray. **Esc**,
-  clicking elsewhere, or the ✕ button hides it again — the app keeps running.
-  Reopening always lands on the usage list, even if you left it in Settings.
+- **Left-click** the tray icon to toggle a compact mini summary near the tray.
+  It hides when it loses focus unless you pin it with its circle button; the
+  pin lasts only for the current app session. A Settings checkbox controls
+  whether the mini summary includes usage bars.
 - **Hover** the tray icon for a one-line-per-provider peek without opening the
-  popup (a custom window on Windows, Plasma's native tooltip on Linux). Pin the
-  popup with the circle button to keep it above the panel while you work.
-- **Right-click** for Open / Refresh now / Settings / Quit.
+  full window (a custom window on Windows, Plasma's native tooltip on Linux).
+- **Right-click** for Open / Refresh now / Settings / Quit. **Open** shows the
+  full usage/settings window; reopening it always lands on the usage list.
 - A background poller (default every 60 s) refreshes all enabled providers and
   fires alerts when usage *crosses* a threshold (edge-triggered — you get one
   toast at 80%, not one per poll). Toast, tray color, and auto-popup are each
@@ -47,7 +48,9 @@ Platform differences are small but real:
 
 You can add multiple named accounts of each provider in Settings. The editable
 account name is shown everywhere; its internal key stays fixed so changing a
-name never loses its stored sign-in.
+name never loses its stored sign-in. New accounts copy an existing account's
+provider settings, while their API keys and OAuth sign-ins remain separate.
+Every account, including the original defaults, can be removed.
 
 Secrets (API keys, cookies, OAuth tokens) are stored in the **Windows Credential
 Manager**, not on disk. On Linux they fall back to a `0600` `secrets.json` in the
@@ -124,14 +127,14 @@ crates/quota-core   pure Rust, no UI deps — fully unit-tested
   alerts.rs         edge-triggered alert engine
   providers/        one adapter per provider behind a common trait
 src-tauri           the Tauri shell
-  tray.rs           runtime-generated status icons, menu, popup + hover peek
+  tray.rs           runtime-generated status icons, full window + mini summary + hover peek
   poller.rs         poll loop → state → tray/toasts/events
   oauth.rs          built-in Claude sign-in (PKCE paste-back)
   codex_oauth.rs    built-in Codex sign-in (device code)
   secrets.rs        Credential Manager (Windows) / 0600 file (elsewhere)
 src/                Svelte UI
   App.svelte        popup shell (usage list / settings)
-  lib/              ProviderCard, Settings, HoverSummary (tray peek window)
+  lib/              ProviderCard, Settings, HoverSummary (peek), MiniSummary
 scripts/            icon generation, version-drift guard
 ```
 
@@ -151,7 +154,7 @@ scripts/            icon generation, version-drift guard
   observed in the wild resetting more often than every 7 days.
 - Linux hover uses the StatusNotifierItem tooltip Plasma draws; it is not a
   window the widget can position or style. The Linux launcher uses XWayland so
-  pinned-popup placement and always-on-top work.
+  pinned mini-summary placement and always-on-top work.
 - **Always-on-top does not work on native Wayland**, so the popup slips behind
   other windows when they take focus — regardless of the *Hide when clicking
   outside* setting, which is a separate mechanism. This is a protocol gap, not

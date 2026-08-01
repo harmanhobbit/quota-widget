@@ -17,10 +17,10 @@
   let secretInputs = $state({});
   let secretStored = $state({});
   let testResults = $state({});
-  let oauth = $state({ url: '', code: '', status: '', signedIn: false });
+  let oauth = $state({});
   // Codex uses a device flow: we show a short code, the user types it in the
   // browser, and Rust emits `codex-oauth` when polling resolves.
-  let codex = $state({ userCode: '', url: '', status: '', signedIn: false });
+  let codex = $state({});
   // Native Wayland can't honour always-on-top, so the popup sinks behind other
   // windows regardless of the click-away setting. Worth saying so in place.
   let onWayland = $state(false);
@@ -29,70 +29,84 @@
 
   onMount(async () => {
     const cfg = await invoke('get_config');
-    // Normalize so every provider entry exists and is directly bindable.
-    for (const p of PROVIDERS) {
-      cfg.providers[p.id] ??= { enabled: false, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, settings: {} };
-      cfg.providers[p.id].settings ??= {};
-      cfg.providers[p.id].in_tray ??= true;
+    // Normalize configured accounts only. Do not recreate removed defaults.
+    for (const account of Object.values(cfg.providers)) {
+      account.settings ??= {};
+      account.in_tray ??= true;
     }
     config = cfg;
     for (const [id, account] of Object.entries(cfg.providers)) {
       const p = providerInfo(account.kind ?? id);
       if (p.secret) secretStored[id] = await invoke('has_secret', { provider: id });
     }
-    oauth.signedIn = await invoke('has_secret', { provider: 'claude_oauth' });
-    codex.signedIn = await invoke('has_secret', { provider: 'codex_oauth' });
+    for (const [id, account] of Object.entries(cfg.providers)) {
+      const kind = account.kind ?? id;
+      if (kind === 'claude') oauthFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
+      if (kind === 'codex') codexFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
+    }
     onWayland = await invoke('on_wayland');
 
     const un = await listen('codex-oauth', (e) => {
+      const flow = codexFor(e.payload.provider);
       if (e.payload.ok) {
-        codex.signedIn = true;
-        codex.status = '';
-        codex.userCode = '';
+        flow.signedIn = true;
+        flow.status = '';
+        flow.userCode = '';
       } else {
-        codex.status = e.payload.error;
+        flow.status = e.payload.error;
       }
     });
     return un;
   });
 
+  function oauthFor(provider) {
+    return (oauth[provider] ??= { url: '', code: '', status: '', signedIn: false });
+  }
+
+  function codexFor(provider) {
+    return (codex[provider] ??= { userCode: '', url: '', status: '', signedIn: false });
+  }
+
   async function codexStart(provider) {
-    codex.status = 'waiting';
+    const flow = codexFor(provider);
+    flow.status = 'waiting';
     try {
       const r = await invoke('codex_oauth_start', { provider });
-      codex.userCode = r.user_code;
-      codex.url = r.verification_url;
+      flow.userCode = r.user_code;
+      flow.url = r.verification_url;
     } catch (e) {
-      codex.status = String(e);
-      codex.userCode = '';
+      flow.status = String(e);
+      flow.userCode = '';
     }
   }
 
-  async function codexClear() {
-    await invoke('clear_secret', { provider: 'codex_oauth' });
-    codex.signedIn = false;
+  async function codexClear(provider) {
+    await invoke('clear_secret', { provider: `${provider}_oauth` });
+    codexFor(provider).signedIn = false;
   }
 
   async function oauthStart(provider) {
-    oauth.status = '';
-    oauth.url = await invoke('claude_oauth_start', { provider });
+    const flow = oauthFor(provider);
+    flow.status = '';
+    flow.url = await invoke('claude_oauth_start', { provider });
   }
 
   async function oauthFinish(provider) {
+    const flow = oauthFor(provider);
     try {
-      await invoke('claude_oauth_finish', { code: oauth.code, provider });
-      oauth.status = 'ok';
-      oauth.signedIn = true;
-      oauth.url = '';
-      oauth.code = '';
+      await invoke('claude_oauth_finish', { code: flow.code, provider });
+      flow.status = 'ok';
+      flow.signedIn = true;
+      flow.url = '';
+      flow.code = '';
     } catch (e) {
-      oauth.status = String(e);
+      flow.status = String(e);
     }
   }
 
-  async function oauthClear() {
-    await invoke('clear_secret', { provider: 'claude_oauth' });
-    oauth.signedIn = false;
+  async function oauthClear(provider) {
+    await invoke('clear_secret', { provider: `${provider}_oauth` });
+    oauthFor(provider).signedIn = false;
   }
 
   // Write settings without leaving the panel — used by Test, which needs the
@@ -152,7 +166,10 @@
     let key = `${newKind}#${n}`;
     while (config.providers[key]) key = `${newKind}#${Number(key.split('#')[1]) + 1}`;
     const info = providerInfo(newKind);
-    config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, settings: {} };
+    // Start extra accounts with the same provider configuration as the first
+    // configured account of this kind. Credentials remain account-specific.
+    const template = Object.entries(config.providers).find(([id, p]) => (p.kind ?? id) === newKind)?.[1];
+    config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, settings: structuredClone(template?.settings ?? {}) };
     newName = '';
   }
 
@@ -199,6 +216,7 @@
             </div>
           {/if}
           {#if p.id === 'claude'}
+            {@const claudeFlow = oauthFor(id)}
             <label class="field">Sign-in method
               <select bind:value={account.settings.auth_mode}>
                 <option value={undefined}>Auto (CLI, then built-in)</option>
@@ -206,32 +224,33 @@
                 <option value="oauth">Built-in sign-in only</option>
               </select>
             </label>
-            {#if config.providers['claude'].settings.auth_mode !== 'cli'}
+            {#if account.settings.auth_mode !== 'cli'}
               <div class="row">
-                {#if oauth.signedIn}
+                {#if claudeFlow.signedIn}
                   <span class="test good">Built-in sign-in active ✓</span>
-                  <button class="small" onclick={oauthClear}>Sign out</button>
+                  <button class="small" onclick={() => oauthClear(id)}>Sign out</button>
                 {:else}
                   <button class="small" onclick={() => oauthStart(id)}>Sign in with Claude…</button>
                 {/if}
               </div>
-              {#if oauth.url}
+              {#if claudeFlow.url}
                 <p class="note">
                   A browser window opened (or open this link yourself):
-                  <span class="wrap">{oauth.url}</span><br />
+                  <span class="wrap">{claudeFlow.url}</span><br />
                   Authorize, then paste the code shown:
                 </p>
                 <div class="row">
-                  <input type="text" placeholder="Paste code (looks like abc123#xyz789)" bind:value={oauth.code} />
+                  <input type="text" placeholder="Paste code (looks like abc123#xyz789)" bind:value={claudeFlow.code} />
                   <button class="small" onclick={() => oauthFinish(id)}>Finish</button>
                 </div>
               {/if}
-              {#if oauth.status && oauth.status !== 'ok'}
-                <p class="test bad">{oauth.status}</p>
+              {#if claudeFlow.status && claudeFlow.status !== 'ok'}
+                <p class="test bad">{claudeFlow.status}</p>
               {/if}
             {/if}
           {/if}
           {#if p.id === 'codex'}
+            {@const codexFlow = codexFor(id)}
             <label class="field">Sign-in method
               <select bind:value={account.settings.auth_mode}>
                 <option value={undefined}>Auto (CLI, then built-in)</option>
@@ -239,26 +258,26 @@
                 <option value="oauth">Built-in sign-in only</option>
               </select>
             </label>
-            {#if config.providers['codex'].settings.auth_mode !== 'cli'}
+            {#if account.settings.auth_mode !== 'cli'}
               <div class="row">
-                {#if codex.signedIn}
+                {#if codexFlow.signedIn}
                   <span class="test good">Built-in sign-in active ✓</span>
-                  <button class="small" onclick={codexClear}>Sign out</button>
+                  <button class="small" onclick={() => codexClear(id)}>Sign out</button>
                 {:else}
                   <button class="small" onclick={() => codexStart(id)}>Sign in with Codex…</button>
                 {/if}
               </div>
-              {#if codex.userCode}
+              {#if codexFlow.userCode}
                 <p class="note">
                   A browser window opened (or open this link yourself):
-                  <span class="wrap">{codex.url}</span><br />
+                  <span class="wrap">{codexFlow.url}</span><br />
                   Enter this code to authorize:
                 </p>
-                <p class="device-code">{codex.userCode}</p>
+                <p class="device-code">{codexFlow.userCode}</p>
                 <p class="note">Waiting for authorization… (the code expires after 15 minutes)</p>
               {/if}
-              {#if codex.status && codex.status !== 'waiting'}
-                <p class="test bad">{codex.status}</p>
+              {#if codexFlow.status && codexFlow.status !== 'waiting'}
+                <p class="test bad">{codexFlow.status}</p>
               {/if}
             {/if}
           {/if}
@@ -271,7 +290,7 @@
                 <option value="cookie">Session cookie</option>
               </select>
             </label>
-            {#if config.providers['hermes'].settings.source !== 'cookie' && config.providers['hermes'].settings.source !== 'hermes'}
+            {#if account.settings.source !== 'cookie' && account.settings.source !== 'hermes'}
               <label class="field">Remote SSH host
                 <input
                   type="text"
@@ -280,7 +299,7 @@
                 />
               </label>
             {/if}
-            {#if config.providers['hermes'].settings.source === 'cookie'}
+            {#if account.settings.source === 'cookie'}
               <label class="field">Balance endpoint
                 <input
                   type="text"
@@ -311,7 +330,7 @@
             </p>
           {/if}
           </div>
-          {#if id.includes('#')}<button class="small" onclick={() => removeAccount(id)}>Remove account</button>{/if}
+          <button class="small" onclick={() => removeAccount(id)}>Remove account</button>
       {/each}
     </section>
 
@@ -337,6 +356,7 @@
       </div>
       <label class="row"><input type="checkbox" bind:checked={config.autostart} /> Start on login</label>
       <label class="row"><input type="checkbox" bind:checked={config.hide_on_blur} /> Hide when clicking outside</label>
+      <label class="row"><input type="checkbox" bind:checked={config.mini_summary_bars} /> Show usage bars in the mini summary</label>
       <p class="note">Esc, ✕, and the tray icon always hide the widget. This extra click-away dismiss can occasionally fight window dragging.</p>
       {#if onWayland}
         <p class="note">
