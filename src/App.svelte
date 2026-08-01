@@ -42,6 +42,10 @@
     const unlisten = [];
     listen('snapshots', (e) => (snapshots = e.payload)).then((u) => unlisten.push(u));
     listen('navigate', (e) => (view = e.payload)).then((u) => unlisten.push(u));
+    // Hiding to tray doesn't unload the page, so `view` would otherwise
+    // persist: reopening after a visit to Settings would land back in
+    // Settings instead of the usage list. Rust emits this on every show.
+    listen('window-shown', () => (view = 'popup')).then((u) => unlisten.push(u));
     const esc = (e) => {
       if (e.key === 'Escape') {
         if (view === 'settings') view = 'popup';

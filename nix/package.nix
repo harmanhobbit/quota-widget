@@ -19,7 +19,9 @@
 
 rustPlatform.buildRustPackage rec {
   pname = "quota-widget";
-  version = "0.2.0";
+  # Single source of truth: the workspace Cargo.toml. tauri.conf.json and
+  # package.json derive from it too, so a bump is a one-line edit there.
+  version = (lib.importTOML ../Cargo.toml).workspace.package.version;
 
   src = lib.cleanSource ../.;
 
@@ -67,11 +69,14 @@ rustPlatform.buildRustPackage rec {
     install -Dm644 src-tauri/icons/32x32.png \
       $out/share/icons/hicolor/32x32/apps/quota-widget.png
     mkdir -p $out/share/applications
+    # Launch under XWayland: native Wayland has no always-on-top protocol
+    # (xdg-shell lacks it; tao#1134), so the popup would sink behind other
+    # windows. Harmless on X11, where GDK_BACKEND=x11 is already the case.
     cat > $out/share/applications/quota-widget.desktop <<EOF
     [Desktop Entry]
     Name=Quota Widget
     Comment=AI provider usage and credits in the tray
-    Exec=quota-widget
+    Exec=env GDK_BACKEND=x11 quota-widget
     Icon=quota-widget
     Type=Application
     Categories=Utility;
