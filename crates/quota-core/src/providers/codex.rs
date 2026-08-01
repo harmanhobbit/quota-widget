@@ -54,40 +54,97 @@ impl Provider for Codex {
     }
 }
 
-struct CodexAuth {
-    access_token: String,
-    account_id: Option<String>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodexAuth {
+    pub access_token: String,
+    pub account_id: Option<String>,
+}
+
+/// Where Codex credentials may come from, via the `auth_mode` provider
+/// setting — mirrors the Claude adapter's sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    /// Codex CLI's `~/.codex/auth.json` first, then the widget's own login.
+    Auto,
+    /// Only the Codex CLI file.
+    Cli,
+    /// Only the widget's own device-code sign-in.
+    Oauth,
+}
+
+pub fn auth_mode(ctx: &ProviderCtx) -> AuthMode {
+    match ctx
+        .config
+        .provider_setting("codex", "auth_mode")
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .as_deref()
+    {
+        Some("cli") => AuthMode::Cli,
+        Some("oauth") => AuthMode::Oauth,
+        _ => AuthMode::Auto,
+    }
+}
+
+/// Tokens stored by the widget's own device-code sign-in.
+pub const OAUTH_SECRET_KEY: &str = "codex_oauth";
+
+/// Parse the `tokens` object shared by the CLI's auth.json and our own stored
+/// secret: `{access_token, refresh_token, id_token, account_id}`.
+pub fn parse_codex_tokens(tokens: &Value) -> Option<CodexAuth> {
+    let access = tokens["access_token"].as_str().filter(|s| !s.is_empty())?;
+    let account_id = tokens["account_id"]
+        .as_str()
+        .map(String::from)
+        .or_else(|| tokens["id_token"].as_str().and_then(account_id_from_jwt));
+    Some(CodexAuth { access_token: access.to_string(), account_id })
 }
 
 impl Codex {
-    fn read_auth(&self, ctx: &ProviderCtx) -> Result<CodexAuth, FetchError> {
+    fn cli_auth(&self, ctx: &ProviderCtx) -> Option<CodexAuth> {
         let path = ctx.home.join(".codex").join("auth.json");
-        let text = std::fs::read_to_string(&path).map_err(|_| {
-            FetchError::NotConfigured(format!(
-                "no Codex CLI login found ({}) — install Codex CLI and run `codex`",
-                path.display()
-            ))
-        })?;
-        let auth: Value =
-            serde_json::from_str(&text).map_err(|e| FetchError::Parse(format!("auth.json: {e}")))?;
-        let tokens = &auth["tokens"];
-        let access = tokens["access_token"].as_str().unwrap_or_default();
-        if access.is_empty() {
-            return Err(FetchError::NotConfigured(
-                "auth.json has no access_token — run `codex` to log in".into(),
-            ));
+        let text = std::fs::read_to_string(&path).ok()?;
+        let auth: Value = serde_json::from_str(&text).ok()?;
+        parse_codex_tokens(&auth["tokens"])
+    }
+
+    fn stored_auth(&self, ctx: &ProviderCtx) -> Option<CodexAuth> {
+        let raw = ctx.secrets.get(OAUTH_SECRET_KEY)?;
+        let v: Value = serde_json::from_str(raw).ok()?;
+        // Accept both the bare token object and a CLI-shaped wrapper.
+        parse_codex_tokens(&v["tokens"]).or_else(|| parse_codex_tokens(&v))
+    }
+
+    fn read_auth(&self, ctx: &ProviderCtx) -> Result<CodexAuth, FetchError> {
+        let mode = auth_mode(ctx);
+        if mode != AuthMode::Oauth {
+            if let Some(auth) = self.cli_auth(ctx) {
+                return Ok(auth);
+            }
         }
-        let account_id = tokens["account_id"]
-            .as_str()
-            .map(String::from)
-            .or_else(|| tokens["id_token"].as_str().and_then(account_id_from_jwt));
-        Ok(CodexAuth { access_token: access.to_string(), account_id })
+        if mode != AuthMode::Cli {
+            if let Some(auth) = self.stored_auth(ctx) {
+                return Ok(auth);
+            }
+        }
+        Err(FetchError::NotConfigured(match mode {
+            AuthMode::Cli => format!(
+                "no Codex CLI login found ({}) — install Codex CLI and run `codex`",
+                ctx.home.join(".codex").join("auth.json").display()
+            ),
+            AuthMode::Oauth => {
+                "not signed in — use Sign in with Codex in Settings → Codex".into()
+            }
+            AuthMode::Auto => {
+                "no Codex login found — sign in via Settings → Codex (or run `codex` if you use the CLI)"
+                    .into()
+            }
+        }))
     }
 }
 
 /// The ChatGPT account id lives in the id_token JWT's auth claim when
 /// auth.json doesn't carry it top-level.
-fn account_id_from_jwt(id_token: &str) -> Option<String> {
+pub fn account_id_from_jwt(id_token: &str) -> Option<String> {
     let payload_b64 = id_token.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
     let claims: Value = serde_json::from_slice(&bytes).ok()?;
@@ -203,6 +260,79 @@ mod tests {
     #[test]
     fn no_windows_yields_empty() {
         assert!(parse_usage(&serde_json::json!({"plan_type": "plus"})).is_empty());
+    }
+
+    fn ctx_with(home: &std::path::Path, mode: Option<&str>, secret: Option<&str>) -> ProviderCtx {
+        use crate::config::Config;
+        let mut cfg = Config::default();
+        if let Some(m) = mode {
+            cfg.providers.get_mut("codex").unwrap().settings.insert("auth_mode".into(), m.into());
+        }
+        let mut secrets = std::collections::HashMap::new();
+        if let Some(s) = secret {
+            secrets.insert(OAUTH_SECRET_KEY.to_string(), s.to_string());
+        }
+        ProviderCtx::new(home.into(), secrets, cfg)
+    }
+
+    fn write_cli_auth(home: &std::path::Path, token: &str) {
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(
+            home.join(".codex/auth.json"),
+            serde_json::json!({
+                "auth_mode": "chatgpt",
+                "tokens": {"access_token": token, "account_id": "acct-cli"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    const STORED: &str = r#"{"tokens":{"access_token":"stored-tok","account_id":"acct-oauth"}}"#;
+
+    #[test]
+    fn auto_prefers_cli_then_falls_back_to_stored_login() {
+        let dir = tempfile::tempdir().unwrap();
+        // Nothing anywhere → not configured, with a hint naming both routes.
+        let err = Codex.read_auth(&ctx_with(dir.path(), None, None)).unwrap_err();
+        assert!(matches!(err, FetchError::NotConfigured(_)));
+
+        // Only our own login → used.
+        let auth = Codex.read_auth(&ctx_with(dir.path(), None, Some(STORED))).unwrap();
+        assert_eq!(auth.access_token, "stored-tok");
+
+        // CLI login present → wins in auto mode.
+        write_cli_auth(dir.path(), "cli-tok");
+        let auth = Codex.read_auth(&ctx_with(dir.path(), None, Some(STORED))).unwrap();
+        assert_eq!(auth.access_token, "cli-tok");
+        assert_eq!(auth.account_id.as_deref(), Some("acct-cli"));
+    }
+
+    #[test]
+    fn explicit_modes_ignore_the_other_source() {
+        let dir = tempfile::tempdir().unwrap();
+        write_cli_auth(dir.path(), "cli-tok");
+
+        // oauth mode skips the CLI file even though it's present and valid.
+        let auth = Codex.read_auth(&ctx_with(dir.path(), Some("oauth"), Some(STORED))).unwrap();
+        assert_eq!(auth.access_token, "stored-tok");
+        assert!(Codex.read_auth(&ctx_with(dir.path(), Some("oauth"), None)).is_err());
+
+        // cli mode ignores our stored login.
+        let auth = Codex.read_auth(&ctx_with(dir.path(), Some("cli"), Some(STORED))).unwrap();
+        assert_eq!(auth.access_token, "cli-tok");
+        let empty = tempfile::tempdir().unwrap();
+        assert!(Codex.read_auth(&ctx_with(empty.path(), Some("cli"), Some(STORED))).is_err());
+    }
+
+    /// The device flow writes the CLI's `{"tokens": {...}}` shape, but accept
+    /// a bare token object too rather than silently failing to sign in.
+    #[test]
+    fn stored_secret_accepts_wrapped_or_bare_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let bare = r#"{"access_token":"bare-tok"}"#;
+        let auth = Codex.read_auth(&ctx_with(dir.path(), Some("oauth"), Some(bare))).unwrap();
+        assert_eq!(auth.access_token, "bare-tok");
     }
 
     #[test]

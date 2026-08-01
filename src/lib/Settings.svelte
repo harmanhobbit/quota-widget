@@ -1,12 +1,13 @@
 <script>
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
 
   let { onclose } = $props();
 
   const PROVIDERS = [
     { id: 'claude', name: 'Claude', secret: null, note: 'Uses the Claude Code CLI login if present, or the built-in browser sign-in below.' },
-    { id: 'codex', name: 'Codex', secret: null, note: 'Uses the Codex CLI login on this machine (run `codex` once to sign in).' },
+    { id: 'codex', name: 'Codex', secret: null, note: 'Uses the Codex CLI login if present, or the built-in device sign-in below.' },
     { id: 'openrouter', name: 'OpenRouter', secret: 'API key', note: 'Create a key at openrouter.ai/keys.' },
     { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Uses a hermes-agent login: local ~/.hermes/auth.json, or fetched from a remote machine over SSH (needs working key auth, e.g. via ssh-agent). Cookie paste is a last-resort fallback.' },
   ];
@@ -16,6 +17,9 @@
   let secretStored = $state({});
   let testResults = $state({});
   let oauth = $state({ url: '', code: '', status: '', signedIn: false });
+  // Codex uses a device flow: we show a short code, the user types it in the
+  // browser, and Rust emits `codex-oauth` when polling resolves.
+  let codex = $state({ userCode: '', url: '', status: '', signedIn: false });
 
   onMount(async () => {
     const cfg = await invoke('get_config');
@@ -30,7 +34,36 @@
       if (p.secret) secretStored[p.id] = await invoke('has_secret', { provider: p.id });
     }
     oauth.signedIn = await invoke('has_secret', { provider: 'claude_oauth' });
+    codex.signedIn = await invoke('has_secret', { provider: 'codex_oauth' });
+
+    const un = await listen('codex-oauth', (e) => {
+      if (e.payload.ok) {
+        codex.signedIn = true;
+        codex.status = '';
+        codex.userCode = '';
+      } else {
+        codex.status = e.payload.error;
+      }
+    });
+    return un;
   });
+
+  async function codexStart() {
+    codex.status = 'waiting';
+    try {
+      const r = await invoke('codex_oauth_start');
+      codex.userCode = r.user_code;
+      codex.url = r.verification_url;
+    } catch (e) {
+      codex.status = String(e);
+      codex.userCode = '';
+    }
+  }
+
+  async function codexClear() {
+    await invoke('clear_secret', { provider: 'codex_oauth' });
+    codex.signedIn = false;
+  }
 
   async function oauthStart() {
     oauth.status = '';
@@ -168,6 +201,37 @@
               {/if}
               {#if oauth.status && oauth.status !== 'ok'}
                 <p class="test bad">{oauth.status}</p>
+              {/if}
+            {/if}
+          {/if}
+          {#if p.id === 'codex'}
+            <label class="field">Sign-in method
+              <select bind:value={config.providers['codex'].settings.auth_mode}>
+                <option value={undefined}>Auto (CLI, then built-in)</option>
+                <option value="cli">Codex CLI only</option>
+                <option value="oauth">Built-in sign-in only</option>
+              </select>
+            </label>
+            {#if config.providers['codex'].settings.auth_mode !== 'cli'}
+              <div class="row">
+                {#if codex.signedIn}
+                  <span class="test good">Built-in sign-in active ✓</span>
+                  <button class="small" onclick={codexClear}>Sign out</button>
+                {:else}
+                  <button class="small" onclick={codexStart}>Sign in with Codex…</button>
+                {/if}
+              </div>
+              {#if codex.userCode}
+                <p class="note">
+                  A browser window opened (or open this link yourself):
+                  <span class="wrap">{codex.url}</span><br />
+                  Enter this code to authorize:
+                </p>
+                <p class="device-code">{codex.userCode}</p>
+                <p class="note">Waiting for authorization… (the code expires after 15 minutes)</p>
+              {/if}
+              {#if codex.status && codex.status !== 'waiting'}
+                <p class="test bad">{codex.status}</p>
               {/if}
             {/if}
           {/if}

@@ -200,6 +200,21 @@ button.primary {
   background: var(--critical);
 }
 
+/* The Codex device code is read off the screen and retyped in a browser, so
+   it needs to be unambiguous and selectable. */
+.device-code {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 20px;
+  letter-spacing: 2px;
+  text-align: center;
+  margin: 6px 0;
+  padding: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  user-select: text;
+}
+
 /* ---- tray hover peek (the ?view=hover window) ---------------------------- */
 
 /* This window is sized by Tauri, not by content, and is never scrolled or

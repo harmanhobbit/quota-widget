@@ -1,3 +1,4 @@
+mod codex_oauth;
 mod oauth;
 mod poller;
 mod secrets;
@@ -168,6 +169,50 @@ async fn claude_oauth_finish(
     Ok(())
 }
 
+/// Begin the built-in Codex sign-in. Unlike Claude's paste-back flow, the user
+/// types a short code into the browser and we poll — so this returns the code
+/// for display and spawns the wait in the background, emitting `codex-oauth`
+/// when it resolves.
+#[tauri::command]
+async fn codex_oauth_start(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let http = reqwest::Client::new();
+    let login = codex_oauth::start(&http).await?;
+    let shown = serde_json::json!({
+        "user_code": login.user_code,
+        "verification_url": login.verification_url,
+    });
+    if let Err(e) = tauri_plugin_opener::open_url(&login.verification_url, None::<&str>) {
+        eprintln!("browser open failed: {e}"); // URL is still shown in the UI
+    }
+
+    // Polling blocks for up to 15 minutes; don't hold the IPC call open.
+    let state = (*state).clone();
+    tauri::async_runtime::spawn(async move {
+        let payload = match codex_oauth::poll_for_tokens(&http, &login).await {
+            Ok(tokens) => {
+                match secrets::set(
+                    &state.config_dir,
+                    quota_core::providers::codex::OAUTH_SECRET_KEY,
+                    &tokens.to_string(),
+                ) {
+                    Ok(()) => {
+                        state.refresh.notify_one();
+                        serde_json::json!({ "ok": true })
+                    }
+                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                }
+            }
+            Err(e) => serde_json::json!({ "ok": false, "error": e }),
+        };
+        let _ = app.emit("codex-oauth", payload);
+    });
+
+    Ok(shown)
+}
+
 #[tauri::command]
 fn hide_window(window: tauri::Window) {
     let _ = window.hide();
@@ -227,6 +272,7 @@ pub fn run() {
             test_provider,
             claude_oauth_start,
             claude_oauth_finish,
+            codex_oauth_start,
             hide_window,
             note_drag,
             quit,
