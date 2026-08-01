@@ -88,6 +88,8 @@ pub struct Config {
     /// grace period after a drag press, but Esc/✕/tray remain the reliable
     /// ways to dismiss.
     pub hide_on_blur: bool,
+    /// Show usage bars in the compact tray-click summary.
+    pub mini_summary_bars: bool,
     pub providers: BTreeMap<String, ProviderConfig>,
 }
 
@@ -118,6 +120,7 @@ impl Default for Config {
             alerts: AlertToggles::default(),
             autostart: false,
             hide_on_blur: false,
+            mini_summary_bars: true,
             providers,
         }
     }

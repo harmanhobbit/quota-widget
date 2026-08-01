@@ -17,7 +17,12 @@ pub struct UsageWindow {
 
 impl Default for UsageWindow {
     fn default() -> Self {
-        Self { label: String::new(), used_pct: 0.0, resets_at: None, informational: false }
+        Self {
+            label: String::new(),
+            used_pct: 0.0,
+            resets_at: None,
+            informational: false,
+        }
     }
 }
 
@@ -92,7 +97,12 @@ impl UsageSnapshot {
     }
 
     /// Worst status across this snapshot's windows/credits for the given thresholds.
-    pub fn status(&self, warn_pct: f64, critical_pct: f64, low_balance_warn: Option<f64>) -> Status {
+    pub fn status(
+        &self,
+        warn_pct: f64,
+        critical_pct: f64,
+        low_balance_warn: Option<f64>,
+    ) -> Status {
         if self.error.is_some() {
             return Status::Stale;
         }

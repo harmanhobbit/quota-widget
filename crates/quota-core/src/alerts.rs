@@ -36,7 +36,10 @@ impl AlertEngine {
         if snapshot.error.is_some() {
             return events; // never alert off stale/failed data
         }
-        let Thresholds { warn_pct, critical_pct } = cfg.effective_thresholds(&snapshot.provider_id);
+        let Thresholds {
+            warn_pct,
+            critical_pct,
+        } = cfg.effective_thresholds(&snapshot.provider_id);
 
         for w in snapshot.windows.iter().filter(|w| !w.informational) {
             let level = if w.used_pct >= critical_pct {
@@ -47,7 +50,10 @@ impl AlertEngine {
                 AlertLevel::Normal
             };
             let key = (snapshot.provider_id.clone(), w.label.clone());
-            let prev = self.window_levels.insert(key, level).unwrap_or(AlertLevel::Normal);
+            let prev = self
+                .window_levels
+                .insert(key, level)
+                .unwrap_or(AlertLevel::Normal);
             if level > prev {
                 events.push(AlertEvent {
                     provider_id: snapshot.provider_id.clone(),
@@ -59,7 +65,11 @@ impl AlertEngine {
         }
 
         if let Some(credits) = &snapshot.credits {
-            if let Some(thr) = cfg.providers.get(&snapshot.provider_id).and_then(|p| p.low_balance_warn) {
+            if let Some(thr) = cfg
+                .providers
+                .get(&snapshot.provider_id)
+                .and_then(|p| p.low_balance_warn)
+            {
                 let low = credits.balance <= thr;
                 let was_low = self
                     .balance_low
@@ -89,7 +99,11 @@ mod tests {
         UsageSnapshot::ok(
             "claude",
             "Claude",
-            vec![UsageWindow { label: "5-hour".into(), used_pct: pct, ..Default::default() }],
+            vec![UsageWindow {
+                label: "5-hour".into(),
+                used_pct: pct,
+                ..Default::default()
+            }],
             None,
         )
     }
@@ -127,20 +141,33 @@ mod tests {
     fn no_alerts_from_errored_snapshots() {
         let cfg = Config::default();
         let mut eng = AlertEngine::default();
-        let s = UsageSnapshot::failed("claude", "Claude", crate::model::FetchError::Network("x".into()));
+        let s = UsageSnapshot::failed(
+            "claude",
+            "Claude",
+            crate::model::FetchError::Network("x".into()),
+        );
         assert!(eng.evaluate(&s, &cfg).is_empty());
     }
 
     #[test]
     fn low_balance_fires_once() {
         let mut cfg = Config::default();
-        cfg.providers.get_mut("openrouter").unwrap().low_balance_warn = Some(5.0);
+        cfg.providers
+            .get_mut("openrouter")
+            .unwrap()
+            .low_balance_warn = Some(5.0);
         let mut eng = AlertEngine::default();
         let s = UsageSnapshot::ok(
             "openrouter",
             "OpenRouter",
             vec![],
-            Some(Credits { balance: 3.0, unit: "USD".into(), used: None, granted: None, est_tokens_remaining: None }),
+            Some(Credits {
+                balance: 3.0,
+                unit: "USD".into(),
+                used: None,
+                granted: None,
+                est_tokens_remaining: None,
+            }),
         );
         assert_eq!(eng.evaluate(&s, &cfg).len(), 1);
         assert!(eng.evaluate(&s, &cfg).is_empty());

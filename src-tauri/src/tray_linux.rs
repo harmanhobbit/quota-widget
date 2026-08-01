@@ -41,7 +41,7 @@ impl ksni::Tray for QuotaTray {
         }
     }
     fn activate(&mut self, x: i32, y: i32) {
-        tray::toggle_popup(&self.app, Some(PhysicalPosition::new(x as f64, y as f64)));
+        tray::toggle_mini(&self.app, Some(PhysicalPosition::new(x as f64, y as f64)));
     }
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::StandardItem;
