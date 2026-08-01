@@ -14,6 +14,7 @@
   const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secret: null, note: 'Unknown provider kind.' };
 
   let config = $state(null);
+  let appVersion = $state('');
   let secretInputs = $state({});
   let secretStored = $state({});
   let testResults = $state({});
@@ -29,6 +30,7 @@
 
   onMount(async () => {
     const cfg = await invoke('get_config');
+    appVersion = await invoke('app_version');
     // Normalize configured accounts only. Do not recreate removed defaults.
     for (const account of Object.values(cfg.providers)) {
       account.settings ??= {};
@@ -371,6 +373,9 @@
     <div class="actions">
       <button class="primary" onclick={save}>Save &amp; close</button>
     </div>
+    {#if appVersion}
+      <p class="version">Quota Widget v{appVersion}</p>
+    {/if}
   </div>
 {:else}
   <p class="empty">Loading…</p>
