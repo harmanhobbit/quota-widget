@@ -243,7 +243,7 @@
       <div class="row">
         <label class="inline">Poll every <input type="number" class="num" bind:value={config.poll_interval_secs} /> s</label>
       </div>
-      <label class="row"><input type="checkbox" bind:checked={config.autostart} /> Start with Windows</label>
+      <label class="row"><input type="checkbox" bind:checked={config.autostart} /> Start on login</label>
       <label class="row"><input type="checkbox" bind:checked={config.hide_on_blur} /> Hide when clicking outside</label>
       <p class="note">Esc, ✕, and the tray icon always hide the widget. This extra click-away dismiss can occasionally fight window dragging.</p>
     </section>

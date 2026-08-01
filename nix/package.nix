@@ -19,7 +19,9 @@
 
 rustPlatform.buildRustPackage rec {
   pname = "quota-widget";
-  version = "0.2.0";
+  # Single source of truth: the workspace Cargo.toml. tauri.conf.json and
+  # package.json derive from it too, so a bump is a one-line edit there.
+  version = (lib.importTOML ../Cargo.toml).workspace.package.version;
 
   src = lib.cleanSource ../.;
 
