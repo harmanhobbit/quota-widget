@@ -13,7 +13,7 @@ use quota_core::providers::{providers_for, ProviderCtx};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
 use tokio::sync::{Mutex, Notify, RwLock};
 
@@ -270,7 +270,11 @@ fn hide_window(window: tauri::Window) {
 }
 
 #[tauri::command]
-fn set_mini_pinned(state: tauri::State<'_, Arc<AppState>>, window: tauri::Window, pinned: bool) {
+fn set_mini_pinned(
+    state: tauri::State<'_, Arc<AppState>>,
+    window: tauri::WebviewWindow,
+    pinned: bool,
+) {
     if window.label() != "mini" {
         return;
     }
