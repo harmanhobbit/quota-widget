@@ -13,7 +13,7 @@ use quota_core::providers::{providers_for, ProviderCtx};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{Emitter, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
 use tokio::sync::{Mutex, Notify, RwLock};
 
@@ -145,7 +145,7 @@ async fn test_provider(
     provider: String,
 ) -> Result<UsageSnapshot, String> {
     let cfg = state.config.read().await.clone();
-    let ctx = state.provider_ctx(cfg);
+    let ctx = state.provider_ctx(cfg.clone());
     for p in providers_for(&cfg) {
         if p.id() == provider {
             return Ok(match p.fetch(&ctx).await {
@@ -277,7 +277,9 @@ fn set_pinned(state: tauri::State<'_, Arc<AppState>>, window: tauri::Window, pin
     );
     let _ = window.set_always_on_top(pinned);
     if pinned {
-        tray::anchor_above_panel(&window);
+        if let Some(main) = window.app_handle().get_webview_window("main") {
+            tray::anchor_above_panel(&main);
+        }
     }
 }
 

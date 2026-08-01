@@ -27,8 +27,9 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
 async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
     let cfg = state.config.read().await.clone();
     let ctx = state.provider_ctx(cfg.clone());
+    let ctx = &ctx;
 
-    let fresh = join_all(
+    let mut fresh = join_all(
         providers_for(&cfg)
             .into_iter()
             .filter(|provider| {
@@ -39,7 +40,7 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
                     .unwrap_or(false);
                 enabled
             })
-            .map(|provider| async {
+            .map(|provider| async move {
                 match provider.fetch(&ctx).await {
                     Ok(s) => s,
                     Err(e) => UsageSnapshot::failed(provider.id(), provider.name(), e),
