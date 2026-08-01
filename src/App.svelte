@@ -12,6 +12,7 @@
   let refreshing = $state(false);
   let headerEl = $state(null);
   let cardsEl = $state(null);
+  let pinned = $state(false);
 
   const SETTINGS_HEIGHT = 560;
 
@@ -45,9 +46,9 @@
     // Hiding to tray doesn't unload the page, so `view` would otherwise
     // persist: reopening after a visit to Settings would land back in
     // Settings instead of the usage list. Rust emits this on every show.
-    listen('window-shown', () => (view = 'popup')).then((u) => unlisten.push(u));
+    listen('window-shown', () => { view = 'popup'; if (pinned) { pinned = false; void invoke('set_pinned', { pinned: false }); } }).then((u) => unlisten.push(u));
     const esc = (e) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !pinned) {
         if (view === 'settings') view = 'popup';
         else invoke('hide_window');
       }
@@ -64,6 +65,11 @@
     await invoke('refresh_now');
     setTimeout(() => (refreshing = false), 1200);
   }
+
+  async function togglePin() {
+    pinned = !pinned;
+    await invoke('set_pinned', { pinned });
+  }
 </script>
 
 <main>
@@ -76,6 +82,7 @@
     {:else}
       <button class="icon" title="Back" onclick={() => (view = 'popup')}>←</button>
     {/if}
+    <button class="icon" title={pinned ? 'Unpin popup' : 'Pin popup'} onclick={togglePin}>{pinned ? '●' : '○'}</button>
     <button class="icon" title="Hide to tray" onclick={() => invoke('hide_window')}>✕</button>
   </header>
 

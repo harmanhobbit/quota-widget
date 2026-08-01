@@ -19,7 +19,10 @@ use crate::model::{FetchError, UsageSnapshot, UsageWindow};
 use chrono::Utc;
 use serde_json::Value;
 
-pub struct Claude;
+pub struct Claude {
+    pub key: String,
+    pub label: Option<String>,
+}
 
 pub const OAUTH_SECRET_KEY: &str = "claude_oauth";
 
@@ -38,10 +41,10 @@ pub enum AuthMode {
     Oauth,
 }
 
-pub fn auth_mode(ctx: &ProviderCtx) -> AuthMode {
+pub fn auth_mode(ctx: &ProviderCtx, key: &str) -> AuthMode {
     match ctx
         .config
-        .provider_setting("claude", "auth_mode")
+        .provider_setting(key, "auth_mode")
         .and_then(|v| v.as_str().map(str::to_owned))
         .as_deref()
     {
@@ -91,11 +94,14 @@ pub fn parse_token_set(v: &Value) -> Option<TokenSet> {
 
 #[async_trait::async_trait]
 impl Provider for Claude {
-    fn id(&self) -> &'static str {
+    fn kind(&self) -> &'static str {
         "claude"
     }
-    fn name(&self) -> &'static str {
-        "Claude"
+    fn id(&self) -> &str {
+        &self.key
+    }
+    fn name(&self) -> &str {
+        self.label.as_deref().unwrap_or("Claude")
     }
 
     async fn fetch(&self, ctx: &ProviderCtx) -> Result<UsageSnapshot, FetchError> {
@@ -122,9 +128,13 @@ impl Provider for Claude {
                     return Ok(UsageSnapshot::ok(self.id(), self.name(), windows, None));
                 }
                 Ok(r) if r.status().as_u16() == 401 || r.status().as_u16() == 403 => {
-                    return Err(FetchError::AuthExpired(reauth_hint(auth_mode(ctx))));
+                    return Err(FetchError::AuthExpired(reauth_hint(auth_mode(
+                        ctx, &self.key,
+                    ))));
                 }
-                Ok(r) => last_err = Some(FetchError::Network(format!("{url}: HTTP {}", r.status()))),
+                Ok(r) => {
+                    last_err = Some(FetchError::Network(format!("{url}: HTTP {}", r.status())))
+                }
                 Err(e) => last_err = Some(network_err(e)),
             }
         }
@@ -155,8 +165,18 @@ fn notconf_hint(mode: AuthMode) -> String {
 }
 
 impl Claude {
+    pub fn new(key: String, label: Option<String>) -> Self {
+        Self { key, label }
+    }
+    fn secret_key(&self) -> String {
+        format!("{}_oauth", self.key)
+    }
     fn usage_urls(&self, ctx: &ProviderCtx) -> Vec<String> {
-        match ctx.config.provider_setting("claude", "usage_url").and_then(|v| v.as_str().map(String::from)) {
+        match ctx
+            .config
+            .provider_setting(&self.key, "usage_url")
+            .and_then(|v| v.as_str().map(String::from))
+        {
             Some(u) => vec![u],
             None => USAGE_URLS.iter().map(|s| s.to_string()).collect(),
         }
@@ -170,17 +190,21 @@ impl Claude {
     }
 
     fn stored_tokens(&self, ctx: &ProviderCtx) -> Option<TokenSet> {
-        let raw = ctx.secrets.get(OAUTH_SECRET_KEY)?;
+        let raw = ctx.secrets.get(&self.secret_key())?;
         parse_token_set(&serde_json::from_str(raw).ok()?)
     }
 
     async fn access_token(&self, ctx: &ProviderCtx) -> Result<String, FetchError> {
-        let mode = auth_mode(ctx);
+        let mode = auth_mode(ctx, &self.key);
         let now_ms = Utc::now().timestamp_millis();
 
         // 1. A fresh token from the Claude Code CLI file (kept current by the
         //    CLI itself whenever the user runs it).
-        let cli = if mode != AuthMode::Oauth { self.cli_tokens(ctx) } else { None };
+        let cli = if mode != AuthMode::Oauth {
+            self.cli_tokens(ctx)
+        } else {
+            None
+        };
         if let Some(t) = &cli {
             if !t.expired(now_ms) {
                 return Ok(t.access.clone());
@@ -195,7 +219,7 @@ impl Claude {
                 }
                 if let Some(refresh) = &t.refresh {
                     if let Ok(fresh) = self.refresh(ctx, refresh).await {
-                        ctx.persist_secret(OAUTH_SECRET_KEY, &fresh.to_secret_json());
+                        ctx.persist_secret(&self.secret_key(), &fresh.to_secret_json());
                         return Ok(fresh.access);
                     }
                 }
@@ -208,7 +232,7 @@ impl Claude {
         if let Some(t) = cli {
             if let Some(refresh) = &t.refresh {
                 if let Ok(fresh) = self.refresh(ctx, refresh).await {
-                    ctx.persist_secret(OAUTH_SECRET_KEY, &fresh.to_secret_json());
+                    ctx.persist_secret(&self.secret_key(), &fresh.to_secret_json());
                     return Ok(fresh.access);
                 }
             }
@@ -218,7 +242,11 @@ impl Claude {
         Err(FetchError::NotConfigured(notconf_hint(mode)))
     }
 
-    async fn refresh(&self, ctx: &ProviderCtx, refresh_token: &str) -> Result<TokenSet, FetchError> {
+    async fn refresh(
+        &self,
+        ctx: &ProviderCtx,
+        refresh_token: &str,
+    ) -> Result<TokenSet, FetchError> {
         let resp = ctx
             .http
             .post(TOKEN_URL)
@@ -231,7 +259,10 @@ impl Claude {
             .await
             .map_err(network_err)?;
         if !resp.status().is_success() {
-            return Err(FetchError::AuthExpired(format!("refresh failed: HTTP {}", resp.status())));
+            return Err(FetchError::AuthExpired(format!(
+                "refresh failed: HTTP {}",
+                resp.status()
+            )));
         }
         let body: Value = resp.json().await.map_err(network_err)?;
         let access = body["access_token"]
@@ -246,7 +277,10 @@ impl Claude {
             access,
             // Anthropic rotates refresh tokens; fall back to the one we used
             // if the response doesn't include a new one.
-            refresh: body["refresh_token"].as_str().map(String::from).or_else(|| Some(refresh_token.into())),
+            refresh: body["refresh_token"]
+                .as_str()
+                .map(String::from)
+                .or_else(|| Some(refresh_token.into())),
             expires_at_ms,
         })
     }
@@ -256,11 +290,15 @@ impl Claude {
 /// Parse every object that looks like a window so new windows Anthropic adds
 /// (e.g. per-model weekly caps) show up without a code change.
 fn parse_usage(body: &Value) -> Vec<UsageWindow> {
-    let Some(obj) = body.as_object() else { return vec![] };
+    let Some(obj) = body.as_object() else {
+        return vec![];
+    };
     let mut windows = Vec::new();
     for (key, val) in obj {
         let Some(w) = val.as_object() else { continue };
-        let Some(pct) = w.get("utilization").and_then(as_f64) else { continue };
+        let Some(pct) = w.get("utilization").and_then(as_f64) else {
+            continue;
+        };
         windows.push(UsageWindow {
             label: label_for(key),
             used_pct: pct,
@@ -324,13 +362,21 @@ mod tests {
 
     #[test]
     fn token_set_round_trip_and_expiry() {
-        let t = TokenSet { access: "a".into(), refresh: Some("r".into()), expires_at_ms: 1000 };
+        let t = TokenSet {
+            access: "a".into(),
+            refresh: Some("r".into()),
+            expires_at_ms: 1000,
+        };
         let parsed = parse_token_set(&serde_json::from_str(&t.to_secret_json()).unwrap()).unwrap();
         assert_eq!(parsed, t);
         assert!(t.expired(1_000_000));
         assert!(!t.expired(-100_000));
         // unknown expiry is treated as valid
-        let t2 = TokenSet { access: "a".into(), refresh: None, expires_at_ms: 0 };
+        let t2 = TokenSet {
+            access: "a".into(),
+            refresh: None,
+            expires_at_ms: 0,
+        };
         assert!(!t2.expired(i64::MAX - 60_000));
     }
 
@@ -347,10 +393,10 @@ mod tests {
             }
             ProviderCtx::new(std::env::temp_dir(), HashMap::new(), cfg)
         };
-        assert_eq!(auth_mode(&mk(None)), AuthMode::Auto);
-        assert_eq!(auth_mode(&mk(Some("cli"))), AuthMode::Cli);
-        assert_eq!(auth_mode(&mk(Some("oauth"))), AuthMode::Oauth);
-        assert_eq!(auth_mode(&mk(Some("bogus"))), AuthMode::Auto);
+        assert_eq!(auth_mode(&mk(None), "claude"), AuthMode::Auto);
+        assert_eq!(auth_mode(&mk(Some("cli")), "claude"), AuthMode::Cli);
+        assert_eq!(auth_mode(&mk(Some("oauth")), "claude"), AuthMode::Oauth);
+        assert_eq!(auth_mode(&mk(Some("bogus")), "claude"), AuthMode::Auto);
     }
 
     #[tokio::test]
@@ -370,7 +416,10 @@ mod tests {
         )
         .unwrap();
         let ctx = ProviderCtx::new(dir.path().into(), HashMap::new(), cfg);
-        let err = Claude.access_token(&ctx).await.unwrap_err();
+        let err = Claude::new("claude".into(), None)
+            .access_token(&ctx)
+            .await
+            .unwrap_err();
         assert!(matches!(err, FetchError::NotConfigured(_)));
     }
 
@@ -390,7 +439,13 @@ mod tests {
         );
         // fresh CLI token wins
         let ctx = ProviderCtx::new(dir.path().into(), secrets.clone(), Config::default());
-        assert_eq!(Claude.access_token(&ctx).await.unwrap(), "cli-token");
+        assert_eq!(
+            Claude::new("claude".into(), None)
+                .access_token(&ctx)
+                .await
+                .unwrap(),
+            "cli-token"
+        );
         // expired CLI token without refresh → stored secret wins
         std::fs::write(
             dir.path().join(".claude/.credentials.json"),
@@ -398,6 +453,12 @@ mod tests {
         )
         .unwrap();
         let ctx = ProviderCtx::new(dir.path().into(), secrets, Config::default());
-        assert_eq!(Claude.access_token(&ctx).await.unwrap(), "widget-token");
+        assert_eq!(
+            Claude::new("claude".into(), None)
+                .access_token(&ctx)
+                .await
+                .unwrap(),
+            "widget-token"
+        );
     }
 }

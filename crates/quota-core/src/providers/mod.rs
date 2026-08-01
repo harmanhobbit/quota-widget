@@ -30,7 +30,13 @@ impl ProviderCtx {
             .user_agent("quota-widget/0.1")
             .build()
             .expect("reqwest client");
-        Self { http, home, secrets, config, on_secret_update: None }
+        Self {
+            http,
+            home,
+            secrets,
+            config,
+            on_secret_update: None,
+        }
     }
 
     pub fn persist_secret(&self, key: &str, value: &str) {
@@ -42,19 +48,48 @@ impl ProviderCtx {
 
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
-    fn id(&self) -> &'static str;
-    fn name(&self) -> &'static str;
+    fn kind(&self) -> &'static str;
+    fn id(&self) -> &str;
+    fn name(&self) -> &str;
     async fn fetch(&self, ctx: &ProviderCtx) -> Result<UsageSnapshot, FetchError>;
 }
 
 /// The full adapter registry, in display order.
-pub fn all_providers() -> Vec<Box<dyn Provider>> {
-    vec![
-        Box::new(claude::Claude),
-        Box::new(codex::Codex),
-        Box::new(openrouter::OpenRouter),
-        Box::new(hermes::Hermes),
+pub fn adapter_kinds() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("claude", "Claude"),
+        ("codex", "Codex"),
+        ("openrouter", "OpenRouter"),
+        ("hermes", "Hermes Portal"),
     ]
+}
+
+/// Instantiate each configured account in stable map order. Unknown kinds are
+/// ignored so a config written by a newer build remains usable.
+pub fn providers_for(cfg: &Config) -> Vec<Box<dyn Provider>> {
+    cfg.providers
+        .iter()
+        .filter_map(|(key, entry)| {
+            let kind = entry.kind.as_deref().unwrap_or(key);
+            let label = entry.label.clone();
+            match kind {
+                "claude" => {
+                    Some(Box::new(claude::Claude::new(key.clone(), label)) as Box<dyn Provider>)
+                }
+                "codex" => {
+                    Some(Box::new(codex::Codex::new(key.clone(), label)) as Box<dyn Provider>)
+                }
+                "openrouter" => {
+                    Some(Box::new(openrouter::OpenRouter::new(key.clone(), label))
+                        as Box<dyn Provider>)
+                }
+                "hermes" => {
+                    Some(Box::new(hermes::Hermes::new(key.clone(), label)) as Box<dyn Provider>)
+                }
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 // ---- shared parsing helpers -------------------------------------------------
@@ -70,7 +105,9 @@ pub(crate) fn as_f64(v: &serde_json::Value) -> Option<f64> {
 /// Parse a `resets_at`-style value: ISO-8601 string, epoch seconds, or epoch ms.
 pub(crate) fn parse_timestamp(v: &serde_json::Value) -> Option<DateTime<Utc>> {
     if let Some(s) = v.as_str() {
-        return DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&Utc));
+        return DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.with_timezone(&Utc));
     }
     let n = as_f64(v)?;
     let n = n as i64;
@@ -96,5 +133,31 @@ mod tests {
         let ms = serde_json::json!(1_785_542_400_000i64);
         assert!(parse_timestamp(&iso).is_some());
         assert_eq!(parse_timestamp(&secs), parse_timestamp(&ms));
+    }
+
+    #[test]
+    fn configured_accounts_keep_keys_and_use_labels() {
+        let mut cfg = Config::default();
+        cfg.providers.insert(
+            "claude#work".into(),
+            crate::config::ProviderConfig {
+                enabled: true,
+                kind: Some("claude".into()),
+                label: Some("Work Claude".into()),
+                ..Default::default()
+            },
+        );
+        let providers = providers_for(&cfg);
+        assert_eq!(providers.iter().filter(|p| p.kind() == "claude").count(), 2);
+        let work = providers.iter().find(|p| p.id() == "claude#work").unwrap();
+        assert_eq!(work.name(), "Work Claude");
+        assert_eq!(
+            providers
+                .iter()
+                .find(|p| p.id() == "claude")
+                .unwrap()
+                .name(),
+            "Claude"
+        );
     }
 }

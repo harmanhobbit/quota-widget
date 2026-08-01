@@ -11,7 +11,10 @@ pub struct Thresholds {
 
 impl Default for Thresholds {
     fn default() -> Self {
-        Self { warn_pct: 80.0, critical_pct: 95.0 }
+        Self {
+            warn_pct: 80.0,
+            critical_pct: 95.0,
+        }
     }
 }
 
@@ -25,13 +28,21 @@ pub struct AlertToggles {
 
 impl Default for AlertToggles {
     fn default() -> Self {
-        Self { toast: true, tray_color: true, auto_popup: false }
+        Self {
+            toast: true,
+            tray_color: true,
+            auto_popup: false,
+        }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ProviderConfig {
+    /// Adapter kind. Missing means the original map key, preserving old files.
+    pub kind: Option<String>,
+    /// User-facing account label. Missing uses the adapter's standard name.
+    pub label: Option<String>,
     pub enabled: bool,
     /// Whether this provider counts toward the tray icon's worst-case status
     /// and gauge fill. On by default; turn off to keep a provider visible in
@@ -50,6 +61,8 @@ pub struct ProviderConfig {
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
+            kind: None,
+            label: None,
             enabled: false,
             in_tray: true,
             thresholds: None,
@@ -63,6 +76,8 @@ impl Default for ProviderConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
+    /// Reserved for future migrations. Old, unversioned files deserialize as 0.
+    pub version: u32,
     pub poll_interval_secs: u64,
     pub thresholds: Thresholds,
     pub alerts: AlertToggles,
@@ -80,11 +95,24 @@ impl Default for Config {
     fn default() -> Self {
         let mut providers = BTreeMap::new();
         // Claude and Codex work out of the box when their CLIs are logged in.
-        providers.insert("claude".into(), ProviderConfig { enabled: true, ..Default::default() });
-        providers.insert("codex".into(), ProviderConfig { enabled: true, ..Default::default() });
+        providers.insert(
+            "claude".into(),
+            ProviderConfig {
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        providers.insert(
+            "codex".into(),
+            ProviderConfig {
+                enabled: true,
+                ..Default::default()
+            },
+        );
         providers.insert("openrouter".into(), ProviderConfig::default());
         providers.insert("hermes".into(), ProviderConfig::default());
         Self {
+            version: 1,
             poll_interval_secs: 60,
             thresholds: Thresholds::default(),
             alerts: AlertToggles::default(),
@@ -113,7 +141,10 @@ impl Config {
     /// Whether this provider contributes to the tray icon. Unknown providers
     /// (config written by a newer build) default to counting.
     pub fn counts_in_tray(&self, provider_id: &str) -> bool {
-        self.providers.get(provider_id).map(|p| p.in_tray).unwrap_or(true)
+        self.providers
+            .get(provider_id)
+            .map(|p| p.in_tray)
+            .unwrap_or(true)
     }
 
     pub fn provider_setting(&self, provider_id: &str, key: &str) -> Option<serde_json::Value> {
@@ -131,7 +162,10 @@ impl Config {
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
         let text = serde_json::to_string_pretty(self).expect("config serializes");
-        std::fs::write(dir.join("config.json"), text)
+        let path = dir.join("config.json");
+        let tmp = dir.join("config.json.tmp");
+        std::fs::write(&tmp, text)?;
+        std::fs::rename(tmp, path)
     }
 }
 
@@ -164,9 +198,25 @@ mod tests {
     #[test]
     fn per_provider_overrides_win() {
         let mut cfg = Config::default();
-        cfg.providers.get_mut("claude").unwrap().thresholds =
-            Some(Thresholds { warn_pct: 50.0, critical_pct: 75.0 });
+        cfg.providers.get_mut("claude").unwrap().thresholds = Some(Thresholds {
+            warn_pct: 50.0,
+            critical_pct: 75.0,
+        });
         assert_eq!(cfg.effective_thresholds("claude").warn_pct, 50.0);
         assert_eq!(cfg.effective_thresholds("codex").warn_pct, 80.0);
+    }
+
+    #[test]
+    fn old_unversioned_config_keeps_default_account_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"providers":{"claude":{"enabled":true}}}"#,
+        )
+        .unwrap();
+        let cfg = Config::load(dir.path());
+        assert_eq!(cfg.version, 1);
+        assert_eq!(cfg.providers["claude"].kind, None);
+        assert_eq!(cfg.providers["claude"].label, None);
     }
 }

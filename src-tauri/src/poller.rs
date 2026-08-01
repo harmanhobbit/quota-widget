@@ -2,9 +2,10 @@
 //! the tray icon, dispatch alerts, and push snapshots to the webview.
 
 use crate::{tray, AppState};
+use futures_util::future::join_all;
 use quota_core::alerts::AlertLevel;
 use quota_core::model::{Status, UsageSnapshot};
-use quota_core::providers::all_providers;
+use quota_core::providers::providers_for;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::AppHandle;
@@ -27,18 +28,25 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
     let cfg = state.config.read().await.clone();
     let ctx = state.provider_ctx(cfg.clone());
 
-    let mut fresh: Vec<UsageSnapshot> = Vec::new();
-    for provider in all_providers() {
-        let enabled = cfg.providers.get(provider.id()).map(|p| p.enabled).unwrap_or(false);
-        if !enabled {
-            continue;
-        }
-        let snap = match provider.fetch(&ctx).await {
-            Ok(s) => s,
-            Err(e) => UsageSnapshot::failed(provider.id(), provider.name(), e),
-        };
-        fresh.push(snap);
-    }
+    let fresh = join_all(
+        providers_for(&cfg)
+            .into_iter()
+            .filter(|provider| {
+                let enabled = cfg
+                    .providers
+                    .get(provider.id())
+                    .map(|p| p.enabled)
+                    .unwrap_or(false);
+                enabled
+            })
+            .map(|provider| async {
+                match provider.fetch(&ctx).await {
+                    Ok(s) => s,
+                    Err(e) => UsageSnapshot::failed(provider.id(), provider.name(), e),
+                }
+            }),
+    )
+    .await;
 
     // Update shared state. When a fetch fails but we have older data, keep the
     // stale numbers and attach the new error, so the UI shows greyed-out values
@@ -65,7 +73,10 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
     let mut tip_lines = Vec::new();
     for s in &fresh {
         let thr = cfg.effective_thresholds(&s.provider_id);
-        let low = cfg.providers.get(&s.provider_id).and_then(|p| p.low_balance_warn);
+        let low = cfg
+            .providers
+            .get(&s.provider_id)
+            .and_then(|p| p.low_balance_warn);
         let st = s.status(thr.warn_pct, thr.critical_pct, low);
         if cfg.counts_in_tray(&s.provider_id) && cfg.effective_alerts(&s.provider_id).tray_color {
             worst = worst.max(st);
@@ -78,7 +89,14 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
         }
         tip_lines.push(tooltip_line(s));
     }
-    let tooltip = if tip_lines.is_empty() { "Quota Widget — no providers enabled".into() } else { tip_lines.join("\n") };
+    let tooltip = if tip_lines.is_empty() {
+        "Quota Widget — no providers enabled".into()
+    } else {
+        tip_lines.join("\n")
+    };
+    #[cfg(target_os = "linux")]
+    crate::tray_linux::set_status(worst, worst_pct / 100.0, tooltip);
+    #[cfg(not(target_os = "linux"))]
     tray::set_status(app, worst, worst_pct / 100.0, &tooltip);
 
     // Alerts (edge-triggered in the engine; dispatch per toggles).
@@ -91,7 +109,12 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
                 _ => format!("{} — warning", event.provider_name),
             };
             if toggles.toast {
-                let _ = app.notification().builder().title(&title).body(&event.message).show();
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title(&title)
+                    .body(&event.message)
+                    .show();
             }
             if toggles.auto_popup {
                 tray::show_popup(app, None);

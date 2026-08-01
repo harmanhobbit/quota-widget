@@ -13,7 +13,6 @@
 , gtk3
 , webkitgtk_4_1
 , libsoup_3
-, libayatana-appindicator
 , openssh
 }:
 
@@ -45,7 +44,6 @@ rustPlatform.buildRustPackage rec {
     gtk3
     webkitgtk_4_1
     libsoup_3
-    libayatana-appindicator
   ];
 
   # Vite must run before cargo: tauri-build embeds ../dist at compile time.
@@ -85,8 +83,6 @@ rustPlatform.buildRustPackage rec {
 
   preFixup = ''
     gappsWrapperArgs+=(
-      # The tray icon dlopens libayatana-appindicator at runtime.
-      --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ libayatana-appindicator ]}
       # The Hermes remote source shells out to `ssh`.
       --prefix PATH : ${lib.makeBinPath [ openssh ]}
     )

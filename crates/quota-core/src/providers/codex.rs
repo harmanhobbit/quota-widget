@@ -10,28 +10,38 @@ use base64::Engine;
 use chrono::{Duration, Utc};
 use serde_json::Value;
 
-pub struct Codex;
+pub struct Codex {
+    pub key: String,
+    pub label: Option<String>,
+}
 
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
 #[async_trait::async_trait]
 impl Provider for Codex {
-    fn id(&self) -> &'static str {
+    fn kind(&self) -> &'static str {
         "codex"
     }
-    fn name(&self) -> &'static str {
-        "Codex"
+    fn id(&self) -> &str {
+        &self.key
+    }
+    fn name(&self) -> &str {
+        self.label.as_deref().unwrap_or("Codex")
     }
 
     async fn fetch(&self, ctx: &ProviderCtx) -> Result<UsageSnapshot, FetchError> {
         let auth = self.read_auth(ctx)?;
         let url = ctx
             .config
-            .provider_setting("codex", "usage_url")
+            .provider_setting(&self.key, "usage_url")
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| USAGE_URL.to_string());
 
-        let mut req = ctx.http.get(&url).bearer_auth(&auth.access_token).header("Accept", "application/json");
+        let mut req = ctx
+            .http
+            .get(&url)
+            .bearer_auth(&auth.access_token)
+            .header("Accept", "application/json");
         if let Some(acct) = &auth.account_id {
             req = req.header("chatgpt-account-id", acct);
         }
@@ -48,7 +58,9 @@ impl Provider for Codex {
         let body: Value = resp.json().await.map_err(network_err)?;
         let windows = parse_usage(&body);
         if windows.is_empty() {
-            return Err(FetchError::Parse("no rate-limit windows in response".into()));
+            return Err(FetchError::Parse(
+                "no rate-limit windows in response".into(),
+            ));
         }
         Ok(UsageSnapshot::ok(self.id(), self.name(), windows, None))
     }
@@ -72,10 +84,10 @@ pub enum AuthMode {
     Oauth,
 }
 
-pub fn auth_mode(ctx: &ProviderCtx) -> AuthMode {
+pub fn auth_mode(ctx: &ProviderCtx, key: &str) -> AuthMode {
     match ctx
         .config
-        .provider_setting("codex", "auth_mode")
+        .provider_setting(key, "auth_mode")
         .and_then(|v| v.as_str().map(str::to_owned))
         .as_deref()
     {
@@ -96,10 +108,16 @@ pub fn parse_codex_tokens(tokens: &Value) -> Option<CodexAuth> {
         .as_str()
         .map(String::from)
         .or_else(|| tokens["id_token"].as_str().and_then(account_id_from_jwt));
-    Some(CodexAuth { access_token: access.to_string(), account_id })
+    Some(CodexAuth {
+        access_token: access.to_string(),
+        account_id,
+    })
 }
 
 impl Codex {
+    pub fn new(key: String, label: Option<String>) -> Self {
+        Self { key, label }
+    }
     fn cli_auth(&self, ctx: &ProviderCtx) -> Option<CodexAuth> {
         let path = ctx.home.join(".codex").join("auth.json");
         let text = std::fs::read_to_string(&path).ok()?;
@@ -108,14 +126,14 @@ impl Codex {
     }
 
     fn stored_auth(&self, ctx: &ProviderCtx) -> Option<CodexAuth> {
-        let raw = ctx.secrets.get(OAUTH_SECRET_KEY)?;
+        let raw = ctx.secrets.get(&format!("{}_oauth", self.key))?;
         let v: Value = serde_json::from_str(raw).ok()?;
         // Accept both the bare token object and a CLI-shaped wrapper.
         parse_codex_tokens(&v["tokens"]).or_else(|| parse_codex_tokens(&v))
     }
 
     fn read_auth(&self, ctx: &ProviderCtx) -> Result<CodexAuth, FetchError> {
-        let mode = auth_mode(ctx);
+        let mode = auth_mode(ctx, &self.key);
         if mode != AuthMode::Oauth {
             if let Some(auth) = self.cli_auth(ctx) {
                 return Ok(auth);
@@ -146,7 +164,9 @@ impl Codex {
 /// auth.json doesn't carry it top-level.
 pub fn account_id_from_jwt(id_token: &str) -> Option<String> {
     let payload_b64 = id_token.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .ok()?;
     let claims: Value = serde_json::from_slice(&bytes).ok()?;
     claims["https://api.openai.com/auth"]["chatgpt_account_id"]
         .as_str()
@@ -176,15 +196,12 @@ fn collect_windows(v: &Value, out: &mut Vec<(f64, UsageWindow)>) {
                     .or_else(|| obj.get("window_duration_mins"))
                     .and_then(as_f64)
                     .unwrap_or(0.0);
-                let resets_at = obj
-                    .get("resets_at")
-                    .and_then(parse_timestamp)
-                    .or_else(|| {
-                        obj.get("resets_in_seconds")
-                            .or_else(|| obj.get("reset_after_seconds"))
-                            .and_then(as_f64)
-                            .map(|s| Utc::now() + Duration::seconds(s as i64))
-                    });
+                let resets_at = obj.get("resets_at").and_then(parse_timestamp).or_else(|| {
+                    obj.get("resets_in_seconds")
+                        .or_else(|| obj.get("reset_after_seconds"))
+                        .and_then(as_f64)
+                        .map(|s| Utc::now() + Duration::seconds(s as i64))
+                });
                 out.push((
                     minutes,
                     UsageWindow {
@@ -266,7 +283,11 @@ mod tests {
         use crate::config::Config;
         let mut cfg = Config::default();
         if let Some(m) = mode {
-            cfg.providers.get_mut("codex").unwrap().settings.insert("auth_mode".into(), m.into());
+            cfg.providers
+                .get_mut("codex")
+                .unwrap()
+                .settings
+                .insert("auth_mode".into(), m.into());
         }
         let mut secrets = std::collections::HashMap::new();
         if let Some(s) = secret {
@@ -294,16 +315,22 @@ mod tests {
     fn auto_prefers_cli_then_falls_back_to_stored_login() {
         let dir = tempfile::tempdir().unwrap();
         // Nothing anywhere → not configured, with a hint naming both routes.
-        let err = Codex.read_auth(&ctx_with(dir.path(), None, None)).unwrap_err();
+        let err = Codex::new("codex".into(), None)
+            .read_auth(&ctx_with(dir.path(), None, None))
+            .unwrap_err();
         assert!(matches!(err, FetchError::NotConfigured(_)));
 
         // Only our own login → used.
-        let auth = Codex.read_auth(&ctx_with(dir.path(), None, Some(STORED))).unwrap();
+        let auth = Codex::new("codex".into(), None)
+            .read_auth(&ctx_with(dir.path(), None, Some(STORED)))
+            .unwrap();
         assert_eq!(auth.access_token, "stored-tok");
 
         // CLI login present → wins in auto mode.
         write_cli_auth(dir.path(), "cli-tok");
-        let auth = Codex.read_auth(&ctx_with(dir.path(), None, Some(STORED))).unwrap();
+        let auth = Codex::new("codex".into(), None)
+            .read_auth(&ctx_with(dir.path(), None, Some(STORED)))
+            .unwrap();
         assert_eq!(auth.access_token, "cli-tok");
         assert_eq!(auth.account_id.as_deref(), Some("acct-cli"));
     }
@@ -314,15 +341,23 @@ mod tests {
         write_cli_auth(dir.path(), "cli-tok");
 
         // oauth mode skips the CLI file even though it's present and valid.
-        let auth = Codex.read_auth(&ctx_with(dir.path(), Some("oauth"), Some(STORED))).unwrap();
+        let auth = Codex::new("codex".into(), None)
+            .read_auth(&ctx_with(dir.path(), Some("oauth"), Some(STORED)))
+            .unwrap();
         assert_eq!(auth.access_token, "stored-tok");
-        assert!(Codex.read_auth(&ctx_with(dir.path(), Some("oauth"), None)).is_err());
+        assert!(Codex::new("codex".into(), None)
+            .read_auth(&ctx_with(dir.path(), Some("oauth"), None))
+            .is_err());
 
         // cli mode ignores our stored login.
-        let auth = Codex.read_auth(&ctx_with(dir.path(), Some("cli"), Some(STORED))).unwrap();
+        let auth = Codex::new("codex".into(), None)
+            .read_auth(&ctx_with(dir.path(), Some("cli"), Some(STORED)))
+            .unwrap();
         assert_eq!(auth.access_token, "cli-tok");
         let empty = tempfile::tempdir().unwrap();
-        assert!(Codex.read_auth(&ctx_with(empty.path(), Some("cli"), Some(STORED))).is_err());
+        assert!(Codex::new("codex".into(), None)
+            .read_auth(&ctx_with(empty.path(), Some("cli"), Some(STORED)))
+            .is_err());
     }
 
     /// The device flow writes the CLI's `{"tokens": {...}}` shape, but accept
@@ -331,7 +366,9 @@ mod tests {
     fn stored_secret_accepts_wrapped_or_bare_tokens() {
         let dir = tempfile::tempdir().unwrap();
         let bare = r#"{"access_token":"bare-tok"}"#;
-        let auth = Codex.read_auth(&ctx_with(dir.path(), Some("oauth"), Some(bare))).unwrap();
+        let auth = Codex::new("codex".into(), None)
+            .read_auth(&ctx_with(dir.path(), Some("oauth"), Some(bare)))
+            .unwrap();
         assert_eq!(auth.access_token, "bare-tok");
     }
 
@@ -340,8 +377,7 @@ mod tests {
         let claims = serde_json::json!({
             "https://api.openai.com/auth": {"chatgpt_account_id": "acct-123"}
         });
-        let payload =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string());
         let jwt = format!("eyJhbGciOiJub25lIn0.{payload}.sig");
         assert_eq!(account_id_from_jwt(&jwt).as_deref(), Some("acct-123"));
     }

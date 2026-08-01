@@ -3,5 +3,5 @@
   "identifier": "hover",
   "description": "Tray hover peek: reads snapshots and listens for updates. Deliberately far narrower than the main window — it never opens URLs, resizes, drags, or notifies, so it gets none of those permissions.",
   "windows": ["hover"],
-  "permissions": ["core:event:default"]
+  "permissions": ["core:event:default", "core:default"]
 }
