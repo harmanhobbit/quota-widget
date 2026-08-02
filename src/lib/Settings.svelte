@@ -37,6 +37,7 @@
       account.settings ??= {};
       account.in_tray ??= true;
     }
+    ensureFlows();
     invoke('app_version').then((version) => (appVersion = version)).catch(() => {});
     for (const [id, account] of Object.entries(config.providers)) {
       const p = providerInfo(account.kind ?? id);
@@ -66,12 +67,30 @@
     return () => unlisten?.();
   });
 
+  const newOauthFlow = () => ({ url: '', code: '', status: '', signedIn: false });
+  const newCodexFlow = () => ({ userCode: '', url: '', status: '', signedIn: false });
+
   function oauthFor(provider) {
-    return (oauth[provider] ??= { url: '', code: '', status: '', signedIn: false });
+    return (oauth[provider] ??= newOauthFlow());
   }
 
   function codexFor(provider) {
-    return (codex[provider] ??= { userCode: '', url: '', status: '', signedIn: false });
+    return (codex[provider] ??= newCodexFlow());
+  }
+
+  // The markup reads these from inside `{@const}`, which compiles to a derived.
+  // Deriveds must not write to state, so these never create a missing entry —
+  // they fall back to a throwaway blank flow. Entries are created eagerly by
+  // `ensureFlows` instead.
+  const oauthView = (provider) => oauth[provider] ?? newOauthFlow();
+  const codexView = (provider) => codex[provider] ?? newCodexFlow();
+
+  function ensureFlows() {
+    for (const [id, account] of Object.entries(config.providers)) {
+      const kind = account.kind ?? id;
+      if (kind === 'claude') oauthFor(id);
+      if (kind === 'codex') codexFor(id);
+    }
   }
 
   async function codexStart(provider) {
@@ -177,6 +196,7 @@
     // configured account of this kind. Credentials remain account-specific.
     const template = Object.entries(config.providers).find(([id, p]) => (p.kind ?? id) === newKind)?.[1];
     config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, settings: $state.snapshot(template?.settings ?? {}) };
+    ensureFlows();
     newName = '';
   }
 
@@ -222,7 +242,7 @@
             </div>
           {/if}
           {#if p.id === 'claude'}
-            {@const claudeFlow = oauthFor(id)}
+            {@const claudeFlow = oauthView(id)}
             <label class="field">Sign-in method
               <select bind:value={account.settings.auth_mode}>
                 <option value={undefined}>Auto (CLI, then built-in)</option>
@@ -256,7 +276,7 @@
             {/if}
           {/if}
           {#if p.id === 'codex'}
-            {@const codexFlow = codexFor(id)}
+            {@const codexFlow = codexView(id)}
             <label class="field">Sign-in method
               <select bind:value={account.settings.auth_mode}>
                 <option value={undefined}>Auto (CLI, then built-in)</option>
