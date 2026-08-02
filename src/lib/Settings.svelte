@@ -33,20 +33,20 @@
     loadError = '';
     try {
       const cfg = await invoke('load_config');
+      config = cfg;
       // Normalize configured accounts only. Do not recreate removed defaults.
-      for (const account of Object.values(cfg.providers)) {
+      for (const account of Object.values(config.providers)) {
         account.settings ??= {};
         account.in_tray ??= true;
       }
-      config = cfg;
       // The version footer is informational only. Do not let a missing command
       // from an older backend keep the entire Settings page on “Loading…”.
       invoke('app_version').then((version) => (appVersion = version)).catch(() => {});
-      for (const [id, account] of Object.entries(cfg.providers)) {
+      for (const [id, account] of Object.entries(config.providers)) {
         const p = providerInfo(account.kind ?? id);
         if (p.secret) secretStored[id] = await invoke('has_secret', { provider: id });
       }
-      for (const [id, account] of Object.entries(cfg.providers)) {
+      for (const [id, account] of Object.entries(config.providers)) {
         const kind = account.kind ?? id;
         if (kind === 'claude') oauthFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
         if (kind === 'codex') codexFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });

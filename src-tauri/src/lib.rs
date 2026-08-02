@@ -84,8 +84,15 @@ async fn get_snapshots(
 }
 
 #[tauri::command]
-async fn load_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config, String> {
-    Ok(state.config.read().await.clone())
+fn load_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config, String> {
+    // Settings must never wait behind a polling or save operation. A fresh
+    // click can retry if a write is briefly in progress, whereas awaiting a
+    // lock here can leave the UI looking permanently stuck.
+    state
+        .config
+        .try_read()
+        .map(|config| config.clone())
+        .map_err(|_| "settings are briefly busy; please retry".to_string())
 }
 
 /// Cargo supplies this from the workspace's single version source at build
