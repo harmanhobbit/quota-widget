@@ -304,9 +304,11 @@ button.primary {
 .hover-rows {
   display: grid;
   grid-template-columns: auto 1fr auto;
+  grid-auto-rows: 16px;
   align-items: center;
   gap: 5px 8px;
   font-size: 12px;
+  line-height: 16px;
 }
 
 /* Names right-aligned and values left-aligned pulls both columns in against

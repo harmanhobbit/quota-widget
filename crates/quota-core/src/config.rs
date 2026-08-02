@@ -44,9 +44,9 @@ pub struct ProviderConfig {
     /// User-facing account label. Missing uses the adapter's standard name.
     pub label: Option<String>,
     pub enabled: bool,
-    /// Whether this provider counts toward the tray icon's worst-case status
-    /// and gauge fill. On by default; turn off to keep a provider visible in
-    /// the popup without letting it colour the tray.
+    /// Whether this account's mini-summary headline contributes to the tray
+    /// icon's status and gauge fill. On by default; turn off to keep the
+    /// account visible without letting its selected headline colour the tray.
     pub in_tray: bool,
     /// Overrides the global thresholds when set.
     pub thresholds: Option<Thresholds>,
@@ -55,7 +55,8 @@ pub struct ProviderConfig {
     /// Warn when a credit balance drops to/below this value.
     pub low_balance_warn: Option<f64>,
     /// Headline shown for this account in the compact tray-click summary.
-    /// `None` preserves the automatic worst-window/credits selection.
+    /// `None` preserves the automatic worst-window/credits selection; the
+    /// string `"none"` explicitly omits the account from that summary.
     pub mini_summary_metric: Option<String>,
     /// Provider-specific knobs (endpoint overrides, token price, …).
     pub settings: serde_json::Map<String, serde_json::Value>,
@@ -146,8 +147,9 @@ impl Config {
             .unwrap_or_else(|| self.alerts.clone())
     }
 
-    /// Whether this provider contributes to the tray icon. Unknown providers
-    /// (config written by a newer build) default to counting.
+    /// Whether this account's chosen mini-summary value contributes to the
+    /// tray icon. Unknown providers (config written by a newer build) default
+    /// to counting.
     pub fn counts_in_tray(&self, provider_id: &str) -> bool {
         self.providers
             .get(provider_id)

@@ -187,12 +187,36 @@ pub fn hide_mini<R: Runtime>(app: &AppHandle<R>) {
         state
             .mini_pinned
             .store(false, std::sync::atomic::Ordering::Relaxed);
+        state
+            .reopen_mini_after_popup
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
     let _ = win.set_always_on_top(false);
     // The webview survives hiding, so tell the frontend to un-light its pin
     // button; otherwise it would reopen showing pinned while it is not.
     use tauri::Emitter;
     let _ = app.emit("mini-pinned", false);
+}
+
+/// Hide the full popup and restore a pinned mini that it temporarily
+/// interrupted. Settings lives inside the full popup, so this covers both
+/// entry points without creating a second window lifecycle to keep in sync.
+pub fn hide_popup<R: Runtime>(app: &AppHandle<R>) {
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = win.hide();
+    let resume = app
+        .try_state::<std::sync::Arc<crate::AppState>>()
+        .map(|state| {
+            state
+                .reopen_mini_after_popup
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
+        })
+        .unwrap_or(false);
+    if resume {
+        show_mini(app, None);
+    }
 }
 
 /// Pin to the work area's lower edge: this is immediately above a bottom
@@ -237,7 +261,31 @@ pub fn show_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
-    hide_mini(app);
+    let mini_visible = app
+        .get_webview_window("mini")
+        .is_some_and(|mini| mini.is_visible().unwrap_or(false));
+    let preserve_pinned_mini = app
+        .try_state::<std::sync::Arc<crate::AppState>>()
+        .map(|state| {
+            state.mini_pinned.load(std::sync::atomic::Ordering::Relaxed)
+                && (mini_visible
+                    || state
+                        .reopen_mini_after_popup
+                        .load(std::sync::atomic::Ordering::Relaxed))
+        })
+        .unwrap_or(false);
+    if preserve_pinned_mini {
+        if let Some(mini) = app.get_webview_window("mini") {
+            let _ = mini.hide();
+        }
+        if let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() {
+            state
+                .reopen_mini_after_popup
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    } else {
+        hide_mini(app);
+    }
     if let Some(pos) = near {
         place_near_tray(&win, pos);
     }
@@ -265,7 +313,10 @@ pub fn show_mini<R: Runtime>(app: &AppHandle<R>, _near: Option<PhysicalPosition<
     let _ = win.set_always_on_top(pinned);
     // Use the pinned position for both states so toggling the pin changes
     // only click-away behaviour and always-on-top, never the summary's spot.
-    anchor_above_panel(&win);
     let _ = win.show();
+    // An invisible X11 window has no reliable current monitor. Position after
+    // mapping it so Nix/XWayland builds anchor above Plasma's panel instead of
+    // accepting the window manager's top-left default.
+    anchor_above_panel(&win);
     let _ = win.set_focus();
 }

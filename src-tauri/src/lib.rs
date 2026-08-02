@@ -31,6 +31,10 @@ pub struct AppState {
     /// Pinning belongs only to the compact tray-click summary and lasts for
     /// this process, never in the user's config file.
     pub mini_pinned: std::sync::atomic::AtomicBool,
+    /// A pinned mini is temporarily hidden while the full popup is open. It
+    /// returns when that interrupting popup closes, without turning pinning
+    /// into a persistent config setting.
+    pub reopen_mini_after_popup: std::sync::atomic::AtomicBool,
     /// Millis timestamp of the last title-bar press — blur events within the
     /// grace window are drag-induced (tauri#10767), not click-away.
     pub last_drag_ms: std::sync::atomic::AtomicI64,
@@ -286,7 +290,7 @@ fn hide_window(window: tauri::Window) {
         tray::hide_mini(window.app_handle());
         return;
     }
-    let _ = window.hide();
+    tray::hide_popup(window.app_handle());
 }
 
 #[tauri::command]
@@ -346,6 +350,7 @@ pub fn run() {
         config_dir,
         hide_on_blur: std::sync::atomic::AtomicBool::new(config.hide_on_blur),
         mini_pinned: std::sync::atomic::AtomicBool::new(false),
+        reopen_mini_after_popup: std::sync::atomic::AtomicBool::new(false),
         last_drag_ms: std::sync::atomic::AtomicI64::new(0),
         config: RwLock::new(config),
         snapshots: RwLock::new(HashMap::new()),
@@ -399,7 +404,11 @@ pub fn run() {
                 // Close button hides to tray; the app lives on.
                 WindowEvent::CloseRequested { api, .. } => {
                     api.prevent_close();
-                    let _ = window.hide();
+                    if window.label() == "mini" {
+                        tray::hide_mini(window.app_handle());
+                    } else {
+                        tray::hide_popup(window.app_handle());
+                    }
                 }
                 // Click-away dismiss (opt-in), suppressed right after a
                 // title-bar press: starting a native drag on Windows drops
@@ -424,7 +433,7 @@ pub fn run() {
                     let since_drag =
                         chrono::Utc::now().timestamp_millis() - state.last_drag_ms.load(Relaxed);
                     if since_drag > 2_000 {
-                        let _ = window.hide();
+                        tray::hide_popup(window.app_handle());
                     }
                 }
                 _ => {}
