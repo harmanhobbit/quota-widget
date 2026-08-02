@@ -34,32 +34,32 @@ body {
   height: 100%;
 }
 
+/* Both windows are transparent (tauri.conf.json), which is what lets a rounded
+   shape show the desktop through its corners. That only works if nothing
+   behind the shape paints, so the document stays see-through and the
+   background/border/radius live on the element that actually draws the
+   window — `main` for the popup, `.mini` for the summary. */
+html,
 body {
-  font-family: 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  user-select: none;
+  background: transparent;
 }
 
-/* The `mini` window is transparent (tauri.conf.json), which is what lets a
-   rounded shape show the desktop through its corners. That only works if
-   nothing behind the shape paints: the document has to be see-through and the
-   border/radius/background must live on `.mini`, which is the element actually
-   drawing the window. `main.js` sets this class from `?view=mini`. */
-.mini-view,
-.mini-view body {
-  background: transparent;
-  border: none;
-  border-radius: 0;
+body {
+  font-family: 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+  color: var(--text);
+  overflow: hidden;
+  user-select: none;
 }
 
 main {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  /* Keeps the scrolling card list from squaring off the bottom corners. */
+  overflow: hidden;
 }
 
 header {

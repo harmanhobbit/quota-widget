@@ -10,10 +10,4 @@ import './styles.css';
 const isMini = new URLSearchParams(location.search).get('view') === 'mini';
 const target = document.getElementById('app');
 
-// The two windows differ in whether the OS paints their background: `mini` is a
-// transparent window whose rounded shape is drawn by `.mini` itself, so the
-// document behind it must not paint an opaque square over the corners. CSS is
-// shared between both windows, so the distinction needs a hook on the root.
-if (isMini) document.documentElement.classList.add('mini-view');
-
 export default mount(isMini ? MiniSummary : App, { target });
