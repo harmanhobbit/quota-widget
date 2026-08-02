@@ -13,7 +13,9 @@
   ];
   const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secret: null, note: 'Unknown provider kind.' };
 
-  const settingsConfig = () => structuredClone(initialConfig);
+  // `initialConfig` arrives as a Svelte state proxy, which structuredClone
+  // rejects. $state.snapshot is the proxy-aware deep clone.
+  const settingsConfig = () => $state.snapshot(initialConfig);
   let config = $state(settingsConfig());
   let appVersion = $state('');
   let secretInputs = $state({});
@@ -174,7 +176,7 @@
     // Start extra accounts with the same provider configuration as the first
     // configured account of this kind. Credentials remain account-specific.
     const template = Object.entries(config.providers).find(([id, p]) => (p.kind ?? id) === newKind)?.[1];
-    config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, settings: structuredClone(template?.settings ?? {}) };
+    config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, settings: $state.snapshot(template?.settings ?? {}) };
     newName = '';
   }
 
