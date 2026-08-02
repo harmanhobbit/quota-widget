@@ -546,6 +546,62 @@ select option {
   color: var(--text);
 }
 
+/* A checkbox menu rather than a multi-select: the popup is narrow, and a
+   native multi-select needs modifier-clicks nobody discovers. */
+.metric-picker {
+  position: relative;
+}
+
+.metric-toggle {
+  width: 100%;
+  text-align: left;
+  min-height: 28px;
+  color: var(--text);
+}
+
+/* Absolute so opening the menu doesn't shove every account below it down the
+   page; the panel overlays whatever follows. */
+.metric-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  margin-top: 2px;
+  padding: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.35);
+}
+
+.metric-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.metric-item:hover {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.metric-item input {
+  width: auto;
+  margin: 0;
+}
+
+.metric-menu hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 2px;
+}
+
 /* Account creation is expanded only on demand, keeping the narrow popup's
    provider list uncluttered while giving its controls a comfortable target. */
 .add-account {

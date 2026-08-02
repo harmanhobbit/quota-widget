@@ -42,6 +42,11 @@
     for (const account of Object.values(config.providers)) {
       account.settings ??= {};
       account.in_tray ??= true;
+      // Rust migrates these on load, but a config that reaches the UI another
+      // way (an old cached payload) must not leave them undefined — `undefined`
+      // and `null` mean different things to the pickers.
+      account.mini_summary_metrics ??= null;
+      account.tray_metric ??= null;
     }
     ensureFlows();
     invoke('app_version').then((version) => (appVersion = version)).catch(() => {});
@@ -70,7 +75,19 @@
         flow.status = e.payload.error;
       }
     }).then((stop) => (unlisten = stop));
-    return () => unlisten?.();
+    // App binds Escape to leaving Settings. Capture phase so an open headline
+    // menu swallows the first press instead of the whole screen closing.
+    const escape = (event) => {
+      if (event.key === 'Escape' && openMetricMenu) {
+        openMetricMenu = '';
+        event.stopPropagation();
+      }
+    };
+    window.addEventListener('keydown', escape, true);
+    return () => {
+      unlisten?.();
+      window.removeEventListener('keydown', escape, true);
+    };
   });
 
   const newOauthFlow = () => ({ url: '', code: '', status: '', signedIn: false });
@@ -212,7 +229,7 @@
     // Start extra accounts with the same provider configuration as the first
     // configured account of this kind. Credentials remain account-specific.
     const template = Object.entries(config.providers).find(([id, p]) => (p.kind ?? id) === newKind)?.[1];
-    config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, mini_summary_metric: null, settings: $state.snapshot(template?.settings ?? {}) };
+    config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, mini_summary_metric: null, mini_summary_metrics: null, tray_metric: null, settings: $state.snapshot(template?.settings ?? {}) };
     ensureFlows();
     newName = '';
     addingAccount = false;
@@ -248,6 +265,57 @@
     config.providers = Object.fromEntries(entries);
   }
 
+  // Which account's headline menu is open, so only one is ever up at a time.
+  let openMetricMenu = $state('');
+
+  function toggleMetricMenu(id) {
+    openMetricMenu = openMetricMenu === id ? '' : id;
+  }
+
+  // The menu is absolutely positioned and outside any form control, so nothing
+  // closes it for us.
+  function closeMetricMenus(event) {
+    if (!event.target.closest?.('.metric-picker')) openMetricMenu = '';
+  }
+
+  const selectedMetrics = (account) => account.mini_summary_metrics ?? null;
+
+  function setMetric(account, metricId, checked) {
+    const current = selectedMetrics(account) ?? [];
+    // Unchecking the last one leaves an empty list, not automatic — otherwise
+    // "show nothing for this account" would be unreachable.
+    account.mini_summary_metrics = checked
+      ? [...current, metricId]
+      : current.filter((m) => m !== metricId);
+    pruneTrayMetric(account);
+  }
+
+  function setAutomatic(account) {
+    account.mini_summary_metrics = null;
+    pruneTrayMetric(account);
+  }
+
+  // A pinned tray metric that is no longer shown would keep driving the icon
+  // from off-screen, so drop it back to "worst of selected".
+  function pruneTrayMetric(account) {
+    const chosen = selectedMetrics(account);
+    const pinned = account.tray_metric;
+    if (!pinned || pinned === 'none') return;
+    if (chosen === null || !chosen.includes(pinned)) account.tray_metric = null;
+  }
+
+  function metricSummaryText(id, account) {
+    const chosen = selectedMetrics(account);
+    if (chosen === null) return 'Automatic';
+    if (chosen.length === 0) return 'None';
+    const labels = metricOptions(id, account);
+    const names = chosen.map((m) => labels.find((o) => o.id === m)?.label ?? m);
+    return names.length > 2 ? `${names.length} selected` : names.join(', ');
+  }
+
+  // The real metrics an account can show — the known set for its kind, plus
+  // anything the live snapshot reports that the known set missed. Automatic
+  // and None are states of the selection, not entries here.
   function metricOptions(id, account) {
     const kind = account.kind ?? id;
     const known = {
@@ -257,13 +325,20 @@
       hermes: [{ id: 'credits', label: 'Purchased credit balance' }, { id: 'window:monthly_cap', label: 'Monthly cap' }, { id: 'window:monthly_allowance', label: 'Monthly allowance' }],
     }[kind] ?? [];
     const live = snapshots.find((snap) => snap.provider_id === id)?.windows ?? [];
-    const choices = [{ id: '', label: 'Automatic' }, { id: 'none', label: 'None' }, ...known];
+    const choices = [...known];
     for (const window of live) {
       if (window.metric_id) choices.push({ id: `window:${window.metric_id}`, label: window.label });
+    }
+    // A metric saved before the provider stopped reporting it still needs a row,
+    // or unchecking it would be impossible.
+    for (const metric of selectedMetrics(account) ?? []) {
+      choices.push({ id: metric, label: metric.replace(/^window:/, '') });
     }
     return choices.filter((choice, index, all) => all.findIndex((other) => other.id === choice.id) === index);
   }
 </script>
+
+<svelte:window onclick={closeMetricMenus} />
 
 <div class="settings">
     <section>
@@ -300,17 +375,44 @@
           </div>
           <p class="note">{p.note}</p>
           <label class="field">Account name <input maxlength="40" bind:value={account.label} placeholder={p.name} /></label>
-          <label class="field">Mini-summary headline
-            <select value={account.mini_summary_metric ?? ''} onchange={(event) => (account.mini_summary_metric = event.currentTarget.value || null)}>
-              {#each metricOptions(id, account) as metric}
-                <option value={metric.id}>{metric.label}</option>
-              {/each}
-            </select>
-          </label>
+          <div class="field metric-picker">
+            <span>Mini-summary headlines</span>
+            <button
+              class="metric-toggle"
+              aria-expanded={openMetricMenu === id}
+              onclick={() => toggleMetricMenu(id)}
+            >{metricSummaryText(id, account)} ▾</button>
+            {#if openMetricMenu === id}
+              <div class="metric-menu">
+                <!-- Pinned above the metrics and mutually exclusive with them:
+                     automatic is a mode, not one more headline. -->
+                <label class="metric-item">
+                  <input type="checkbox" checked={selectedMetrics(account) === null} onchange={() => setAutomatic(account)} />
+                  Automatic
+                </label>
+                <hr />
+                {#each metricOptions(id, account) as metric}
+                  <label class="metric-item">
+                    <input
+                      type="checkbox"
+                      checked={selectedMetrics(account)?.includes(metric.id) ?? false}
+                      onchange={(event) => setMetric(account, metric.id, event.currentTarget.checked)}
+                    />
+                    {metric.label}
+                  </label>
+                {/each}
+              </div>
+            {/if}
+          </div>
           {#if account.enabled}
-            <label class="row sub-toggle">
-              <input type="checkbox" bind:checked={account.in_tray} disabled={account.mini_summary_metric === 'none'} />
-              Selected mini-summary value contributes to tray icon status
+            <label class="field">Tray icon status
+              <select value={account.tray_metric ?? ''} onchange={(event) => (account.tray_metric = event.currentTarget.value || null)}>
+                <option value="">Worst of selected</option>
+                <option value="none">None</option>
+                {#each metricOptions(id, account).filter((m) => selectedMetrics(account)?.includes(m.id)) as metric}
+                  <option value={metric.id}>{metric.label}</option>
+                {/each}
+              </select>
             </label>
           {/if}
           {#if p.secret}

@@ -68,25 +68,35 @@
     return 'ok';
   }
 
+  // One row per selected headline. An empty array omits the account entirely;
+  // `null` selection means automatic, which still resolves to a single row.
   function summarize(snap) {
-    const selected = config?.providers?.[snap.provider_id]?.mini_summary_metric;
-    if (selected === 'none') return null;
-    if (snap.error) return { text: 'unavailable', level: 'stale' };
-    if (selected === 'credits' && snap.credits) return creditSummary(snap.credits);
-    if (selected?.startsWith('window:')) {
-      const metricId = selected.slice('window:'.length);
-      const window = snap.windows.find((candidate) => candidate.metric_id === metricId);
+    const selected = config?.providers?.[snap.provider_id]?.mini_summary_metrics;
+    if (selected?.length === 0) return [];
+    if (snap.error) return [{ text: 'unavailable', level: 'stale' }];
+    if (selected) {
       // A selected informational allowance is still a valid headline; it
       // never changes the tray's separate status and alert calculations.
-      if (window) return windowSummary(window);
+      const rows = selected.map((metric) => metricSummary(snap, metric)).filter(Boolean);
+      // Every chosen metric having vanished from the snapshot is worth saying
+      // out loud rather than silently dropping the account.
+      return rows.length > 0 ? rows : [{ text: 'no data', level: 'stale' }];
     }
     const gating = snap.windows.filter((w) => !w.informational);
     if (gating.length > 0) {
       const worst = gating.reduce((a, b) => (b.used_pct > a.used_pct ? b : a));
-      return windowSummary(worst);
+      return [windowSummary(worst)];
     }
-    if (snap.credits) return creditSummary(snap.credits);
-    return { text: 'no data', level: 'stale' };
+    if (snap.credits) return [creditSummary(snap.credits)];
+    return [{ text: 'no data', level: 'stale' }];
+  }
+
+  function metricSummary(snap, metric) {
+    if (metric === 'credits') return snap.credits ? creditSummary(snap.credits) : null;
+    if (!metric.startsWith('window:')) return null;
+    const metricId = metric.slice('window:'.length);
+    const window = snap.windows.find((candidate) => candidate.metric_id === metricId);
+    return window ? windowSummary(window) : null;
   }
 
   const CURRENCY_SYMBOLS = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
@@ -132,9 +142,10 @@
          up across accounts whose names differ in width. -->
     <div class="hover-rows">
       {#each snapshots as snap (snap.provider_id)}
-        {@const s = summarize(snap)}
-        {#if s}
-          <span class="hover-name">{snap.provider_name}</span>
+        {#each summarize(snap) as s, row (row)}
+          <!-- The name labels the group, so later rows of the same account
+               leave the cell empty rather than repeating it. -->
+          <span class="hover-name">{row === 0 ? snap.provider_name : ''}</span>
           {#if s.amount != null}
             <!-- The bar column is dead space on a credit row, so the amount
                  spans it and the number column, ending flush with the
@@ -157,7 +168,7 @@
               <span class="hover-val span {s.level}">{s.text}</span>
             {/if}
           {/if}
-        {/if}
+        {/each}
       {/each}
     </div>
   {/if}
