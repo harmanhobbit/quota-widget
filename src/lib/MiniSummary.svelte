@@ -9,9 +9,9 @@
   let pinned = $state(false);
 
   onMount(async () => {
-    snapshots = await invoke('get_snapshots');
-    const config = await invoke('load_config');
-    showBars = config.mini_summary_bars;
+    const initial = await invoke('get_snapshots');
+    snapshots = initial.snapshots;
+    showBars = initial.config.mini_summary_bars;
     const unlisten = [];
     listen('snapshots', (e) => (snapshots = e.payload)).then((u) => unlisten.push(u));
     listen('config', (e) => (showBars = e.payload.mini_summary_bars)).then((u) => unlisten.push(u));

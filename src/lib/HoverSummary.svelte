@@ -6,7 +6,7 @@
   let snapshots = $state([]);
 
   onMount(() => {
-    invoke('get_snapshots').then((s) => (snapshots = s));
+    invoke('get_snapshots').then((initial) => (snapshots = initial.snapshots));
     const unlisten = [];
     listen('snapshots', (e) => (snapshots = e.payload)).then((u) => unlisten.push(u));
     return () => unlisten.forEach((u) => u());

@@ -10,6 +10,7 @@
   const APP_VERSION = __QUOTA_WIDGET_VERSION__;
   let view = $state('popup'); // 'popup' | 'settings'
   let snapshots = $state([]);
+  let appConfig = $state(null);
   let refreshing = $state(false);
   let headerEl = $state(null);
   let cardsEl = $state(null);
@@ -39,7 +40,10 @@
   });
 
   onMount(() => {
-    invoke('get_snapshots').then((s) => (snapshots = s));
+    invoke('get_snapshots').then((initial) => {
+      snapshots = initial.snapshots;
+      appConfig = initial.config;
+    });
     const unlisten = [];
     listen('snapshots', (e) => (snapshots = e.payload)).then((u) => unlisten.push(u));
     listen('navigate', (e) => (view = e.payload)).then((u) => unlisten.push(u));
@@ -94,6 +98,10 @@
       {/if}
     </div>
   {:else}
-    <Settings onclose={() => (view = 'popup')} />
+    {#if appConfig}
+      <Settings initialConfig={appConfig} onclose={() => (view = 'popup')} />
+    {:else}
+      <p class="empty">Loading…</p>
+    {/if}
   {/if}
 </main>

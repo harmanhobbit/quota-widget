@@ -36,6 +36,15 @@ pub struct AppState {
     pub last_drag_ms: std::sync::atomic::AtomicI64,
 }
 
+/// The frontend's first request needs both pieces of startup state. Keeping
+/// them on the established snapshot IPC route avoids a second request that
+/// could leave Settings waiting indefinitely.
+#[derive(serde::Serialize)]
+struct InitialState {
+    snapshots: Vec<UsageSnapshot>,
+    config: Config,
+}
+
 impl AppState {
     fn provider_ctx(&self, config: Config) -> ProviderCtx {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -61,9 +70,7 @@ fn config_dir() -> PathBuf {
 // ---- IPC commands -----------------------------------------------------------
 
 #[tauri::command]
-async fn get_snapshots(
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Result<Vec<UsageSnapshot>, String> {
+async fn get_snapshots(state: tauri::State<'_, Arc<AppState>>) -> Result<InitialState, String> {
     let map = state.snapshots.read().await;
     let cfg = state.config.read().await;
     // Stable registry order, enabled providers only.
@@ -80,19 +87,10 @@ async fn get_snapshots(
             }
         }
     }
-    Ok(out)
-}
-
-#[tauri::command]
-fn load_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config, String> {
-    // Settings must never wait behind a polling or save operation. A fresh
-    // click can retry if a write is briefly in progress, whereas awaiting a
-    // lock here can leave the UI looking permanently stuck.
-    state
-        .config
-        .try_read()
-        .map(|config| config.clone())
-        .map_err(|_| "settings are briefly busy; please retry".to_string())
+    Ok(InitialState {
+        snapshots: out,
+        config: cfg.clone(),
+    })
 }
 
 /// Cargo supplies this from the workspace's single version source at build
@@ -348,7 +346,6 @@ pub fn run() {
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
             get_snapshots,
-            load_config,
             app_version,
             set_config,
             set_secret,

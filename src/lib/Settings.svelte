@@ -3,7 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
 
-  let { onclose } = $props();
+  let { onclose, initialConfig } = $props();
 
   const PROVIDERS = [
     { id: 'claude', name: 'Claude', secret: null, note: 'Uses the Claude Code CLI login if present, or the built-in browser sign-in below.' },
@@ -13,9 +13,9 @@
   ];
   const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secret: null, note: 'Unknown provider kind.' };
 
-  let config = $state(null);
+  const settingsConfig = () => structuredClone(initialConfig);
+  let config = $state(settingsConfig());
   let appVersion = $state('');
-  let loadError = $state('');
   let secretInputs = $state({});
   let secretStored = $state({});
   let testResults = $state({});
@@ -29,37 +29,27 @@
   let newKind = $state('claude');
   let newName = $state('');
 
-  async function loadSettings() {
-    loadError = '';
-    try {
-      const cfg = await invoke('load_config');
-      config = cfg;
-      // Normalize configured accounts only. Do not recreate removed defaults.
-      for (const account of Object.values(config.providers)) {
-        account.settings ??= {};
-        account.in_tray ??= true;
-      }
-      // The version footer is informational only. Do not let a missing command
-      // from an older backend keep the entire Settings page on “Loading…”.
-      invoke('app_version').then((version) => (appVersion = version)).catch(() => {});
-      for (const [id, account] of Object.entries(config.providers)) {
-        const p = providerInfo(account.kind ?? id);
-        if (p.secret) secretStored[id] = await invoke('has_secret', { provider: id });
-      }
-      for (const [id, account] of Object.entries(config.providers)) {
-        const kind = account.kind ?? id;
-        if (kind === 'claude') oauthFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
-        if (kind === 'codex') codexFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
-      }
-      onWayland = await invoke('on_wayland');
-    } catch (error) {
-      loadError = String(error);
-      console.error('failed to load settings', error);
+  async function initialiseSettings() {
+    // Normalize configured accounts only. Do not recreate removed defaults.
+    for (const account of Object.values(config.providers)) {
+      account.settings ??= {};
+      account.in_tray ??= true;
     }
+    invoke('app_version').then((version) => (appVersion = version)).catch(() => {});
+    for (const [id, account] of Object.entries(config.providers)) {
+      const p = providerInfo(account.kind ?? id);
+      if (p.secret) secretStored[id] = await invoke('has_secret', { provider: id });
+    }
+    for (const [id, account] of Object.entries(config.providers)) {
+      const kind = account.kind ?? id;
+      if (kind === 'claude') oauthFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
+      if (kind === 'codex') codexFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
+    }
+    onWayland = await invoke('on_wayland');
   }
 
   onMount(() => {
-    void loadSettings();
+    void initialiseSettings();
     let unlisten;
     listen('codex-oauth', (e) => {
       const flow = codexFor(e.payload.provider);
@@ -196,8 +186,7 @@
   }
 </script>
 
-{#if config}
-  <div class="settings">
+<div class="settings">
     <section>
       <h2>Providers</h2>
       <div class="row"><select bind:value={newKind}>{#each PROVIDERS as p}<option value={p.id}>{p.name}</option>{/each}</select><input placeholder="Account name (optional)" bind:value={newName} /><button class="small" onclick={addAccount}>Add account</button></div>
@@ -390,11 +379,3 @@
       <p class="version">Quota Widget v{appVersion}</p>
     {/if}
   </div>
-{:else}
-  <div class="empty">
-    <p>{loadError || 'Loading…'}</p>
-    {#if loadError}
-      <button class="small" onclick={loadSettings}>Retry</button>
-    {/if}
-  </div>
-{/if}
