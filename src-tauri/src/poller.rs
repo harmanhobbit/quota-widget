@@ -66,23 +66,20 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
         }
     }
 
-    // Tray icon: each account contributes the value selected for its compact
-    // mini summary. Automatic retains the old "worst real quota" behaviour;
-    // an explicit headline makes that one value the account's tray signal.
-    // `in_tray` opts that signal out, while `tray_color` is the global-style
-    // alert opt-out that keeps the account visible but neutral in the icon.
+    // Tray icon: each account contributes the value its tray picker names —
+    // the worst of its selected mini-summary headlines by default, or one
+    // pinned headline. "None" opts the account out, while `tray_color` is the
+    // global-style alert opt-out that keeps it visible but neutral in the icon.
     let mut worst = Status::Ok;
     let mut worst_pct: f64 = 0.0;
     let mut tip_lines = Vec::new();
     for s in &fresh {
-        let thr = cfg.effective_thresholds(&s.provider_id);
         let low = cfg
             .providers
             .get(&s.provider_id)
             .and_then(|p| p.low_balance_warn);
-        if cfg.counts_in_tray(&s.provider_id) && cfg.effective_alerts(&s.provider_id).tray_color {
-            if let Some((st, pct)) = mini_tray_status(s, &cfg, thr.warn_pct, thr.critical_pct, low)
-            {
+        if cfg.effective_alerts(&s.provider_id).tray_color {
+            if let Some((st, pct)) = cfg.mini_tray_status(s, low) {
                 worst = worst.max(st);
                 if let Some(pct) = pct {
                     worst_pct = worst_pct.max(pct);
@@ -126,60 +123,6 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
     drop(engine);
 
     crate::emit_snapshots(app, &fresh);
-}
-
-/// Return the status and optional gauge percentage for the configured
-/// mini-summary headline. `none` deliberately contributes nothing; this lets
-/// an account remain enabled in the main popup without appearing in either
-/// compact surface.
-fn mini_tray_status(
-    snapshot: &UsageSnapshot,
-    config: &quota_core::config::Config,
-    warn_pct: f64,
-    critical_pct: f64,
-    low_balance_warn: Option<f64>,
-) -> Option<(Status, Option<f64>)> {
-    let selected = config
-        .providers
-        .get(&snapshot.provider_id)
-        .and_then(|provider| provider.mini_summary_metric.as_deref());
-    if selected == Some("none") {
-        return None;
-    }
-    if snapshot.error.is_some() {
-        return Some((Status::Stale, None));
-    }
-    if let Some(metric_id) = selected.and_then(|value| value.strip_prefix("window:")) {
-        let window = snapshot
-            .windows
-            .iter()
-            .find(|window| window.metric_id == metric_id)?;
-        let status = if window.used_pct >= critical_pct {
-            Status::Critical
-        } else if window.used_pct >= warn_pct {
-            Status::Warn
-        } else {
-            Status::Ok
-        };
-        return Some((status, Some(window.used_pct)));
-    }
-    if selected == Some("credits") {
-        return Some((
-            snapshot.status(warn_pct, critical_pct, low_balance_warn),
-            None,
-        ));
-    }
-
-    let pct = snapshot
-        .windows
-        .iter()
-        .filter(|window| !window.informational)
-        .map(|window| window.used_pct)
-        .max_by(f64::total_cmp);
-    Some((
-        snapshot.status(warn_pct, critical_pct, low_balance_warn),
-        pct,
-    ))
 }
 
 fn tooltip_line(s: &UsageSnapshot) -> String {

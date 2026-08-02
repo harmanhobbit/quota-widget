@@ -28,7 +28,7 @@ const WORK = join(ROOT, '.smoke-mount');
 // Config shaped like what get_snapshots returns. Keep in sync with
 // crates/quota-core/src/config.rs if fields are added.
 const CONFIG = {
-  version: 1,
+  version: 2,
   poll_interval_secs: 60,
   autostart: false,
   hide_on_blur: false,
@@ -36,11 +36,13 @@ const CONFIG = {
   thresholds: { warn_pct: 80, critical_pct: 95 },
   alerts: { toast: true, tray_color: true, auto_popup: false },
   providers: {
-    claude: provider({ enabled: true, mini_summary_metric: 'window:five_hour' }),
-    // The unavailable weekly selection must fall back to this returned 5-hour window.
-    codex: provider({ enabled: true, mini_summary_metric: 'window:weekly' }),
+    // Two headlines: both must render, with the account name on the first row only.
+    claude: provider({ enabled: true, mini_summary_metrics: ['window:five_hour', 'window:weekly'] }),
+    // The selected weekly window is absent from the snapshot, so this account
+    // has nothing left to show and says so rather than reading as 0%.
+    codex: provider({ enabled: true, mini_summary_metrics: ['window:weekly'] }),
     openrouter: provider({}),
-    hermes: provider({ mini_summary_metric: 'window:monthly_allowance' }),
+    hermes: provider({ mini_summary_metrics: ['window:monthly_allowance'] }),
   },
 };
 
@@ -54,6 +56,8 @@ function provider(over) {
     alerts: null,
     low_balance_warn: null,
     mini_summary_metric: null,
+    mini_summary_metrics: null,
+    tray_metric: null,
     settings: {},
     ...over,
   };
@@ -98,17 +102,53 @@ const SNAPSHOTS = [
 // arrives as a proxy — mirror that exactly, since it is what broke it before.
 const CASES = [
   { file: 'src/App.svelte', props: () => ({}), buildBranch: 'smoke-branch', expect: ['smoke-branch'] },
-  // Verifies a chosen lower 5-hour headline wins over Automatic's 88% weekly
-  // value, while an unavailable selected Codex weekly falls back to its 5-hour value.
-  { file: 'src/lib/MiniSummary.svelte', props: () => ({}), expect: ['42% 5h', '70% 5h', '3.42 USD', '100% Monthly allowance (Plus)'] },
+  // Claude shows both selected headlines as separate rows; Codex's only
+  // selected window is missing from its snapshot, so it reads "no data";
+  // OpenRouter is Automatic and falls through to its credit balance.
+  {
+    file: 'src/lib/MiniSummary.svelte',
+    props: () => ({}),
+    expect: ['42%', '5h', '88%', 'Weekly', 'no data', '$3.42', 'USD', '100%', 'Monthly allowance (Plus)'],
+    verify: ({ target }) => {
+      const names = [...target.querySelectorAll('.hover-name')].map((el) => el.textContent);
+      // Claude's second row must leave the name blank rather than repeat it.
+      if (names.slice(0, 3).join('|') !== 'Claude||Codex') {
+        throw new Error(`name column was ${names.join('|')}`);
+      }
+    },
+  },
   { file: 'src/lib/MiniSummary.svelte', props: () => ({}), snapshotsError: true, expect: ['Could not load summary'] },
   { file: 'src/lib/MiniSummary.svelte', props: () => ({}), buildBranch: 'smoke-branch', expect: ['smoke-branch'] },
   {
     file: 'src/lib/Settings.svelte',
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
-    expect: ['Providers', 'Mini-summary headline', 'Automatic', 'None', 'Thresholds', 'Alerts', 'Save'],
+    expect: ['Providers', 'Mini-summary headlines', 'Tray icon status', 'Worst of selected', 'Thresholds', 'Alerts', 'Save'],
     verify: async ({ target, flushSync }) => {
       const findButton = (text) => [...target.querySelectorAll('button')].find((button) => button.textContent.trim() === text);
+      // The headline menu is built by hand rather than being a native control,
+      // so open it and toggle an item to prove the wiring.
+      const picker = target.querySelector('.metric-picker');
+      if (picker.querySelector('.metric-menu')) throw new Error('headline menu started open');
+      picker.querySelector('.metric-toggle').click();
+      flushSync();
+      const items = [...picker.querySelectorAll('.metric-item input')];
+      if (items.length < 3) throw new Error(`headline menu had ${items.length} items`);
+      // [0] is Automatic; Claude's two headlines follow, both checked.
+      if (items[0].checked || !items[1].checked || !items[2].checked) {
+        throw new Error('headline menu did not reflect the configured selection');
+      }
+      items[1].click();
+      flushSync();
+      if (picker.querySelector('.metric-toggle').textContent.trim() !== 'Weekly ▾') {
+        throw new Error(`unchecking left the summary as ${picker.querySelector('.metric-toggle').textContent.trim()}`);
+      }
+      items[0].click();
+      flushSync();
+      if (picker.querySelector('.metric-toggle').textContent.trim() !== 'Automatic ▾') {
+        throw new Error('checking Automatic did not clear the metric selection');
+      }
+      picker.querySelector('.metric-toggle').click();
+      flushSync();
       findButton('+ Add account').click();
       flushSync();
       const addName = target.querySelector('.add-account input');
