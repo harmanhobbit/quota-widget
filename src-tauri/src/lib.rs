@@ -73,7 +73,8 @@ fn config_dir() -> PathBuf {
 async fn get_snapshots(state: tauri::State<'_, Arc<AppState>>) -> Result<InitialState, String> {
     let map = state.snapshots.read().await;
     let cfg = state.config.read().await;
-    // Stable registry order, enabled providers only.
+    // Configured display order, enabled providers only. `providers_for()`
+    // iterates the ordered config map, while the HashMap is lookup-only.
     let mut out = Vec::new();
     for p in providers_for(&cfg) {
         if cfg

@@ -205,6 +205,7 @@ fn collect_windows(v: &Value, out: &mut Vec<(f64, UsageWindow)>) {
                 out.push((
                     minutes,
                     UsageWindow {
+                        metric_id: metric_id_for_minutes(minutes),
                         label: label_for_minutes(minutes),
                         used_pct: pct,
                         resets_at,
@@ -238,6 +239,20 @@ fn label_for_minutes(minutes: f64) -> String {
     }
 }
 
+/// The API supplies durations rather than stable names. Normalizing the
+/// duration makes selections survive response ordering and wording changes.
+fn metric_id_for_minutes(minutes: f64) -> String {
+    if (minutes - 10_080.0).abs() < 1_500.0 {
+        "weekly".into()
+    } else if (minutes - 300.0).abs() < 30.0 {
+        "five_hour".into()
+    } else if minutes > 0.0 {
+        format!("duration_{}m", minutes.round() as i64)
+    } else {
+        "usage".into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,9 +272,11 @@ mod tests {
         let w = parse_usage(&body);
         assert_eq!(w.len(), 2);
         assert_eq!(w[0].label, "5-hour");
+        assert_eq!(w[0].metric_id, "five_hour");
         assert_eq!(w[0].used_pct, 12.5);
         assert!(w[0].resets_at.is_some());
         assert_eq!(w[1].label, "Weekly");
+        assert_eq!(w[1].metric_id, "weekly");
     }
 
     #[test]

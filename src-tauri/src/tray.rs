@@ -118,14 +118,10 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 } => {
                     // The tray click is deliberately a compact, transient
                     // summary. The context menu's Open item leads to the full
-                    // usage/settings window.
-                    hide_hover(app);
+                    // usage/settings window. Hover is handled entirely by the
+                    // shell's native tooltip, so no Enter/Leave handling here.
                     toggle_mini(app, Some(position));
                 }
-                // Hover peek. Linux appindicator trays never deliver these,
-                // so this is a no-op there rather than a broken feature.
-                TrayIconEvent::Enter { position, .. } => show_hover(app, position),
-                TrayIconEvent::Leave { .. } => hide_hover(app),
                 _ => {}
             }
         })
@@ -133,37 +129,14 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+/// `tooltip` is the same detailed multiline string `ksni` publishes on Linux,
+/// so both platforms show one hover surface listing every reported window and
+/// balance.
 #[cfg(not(target_os = "linux"))]
-pub fn set_status<R: Runtime>(app: &AppHandle<R>, status: Status, fill: f64, _tooltip: &str) {
+pub fn set_status<R: Runtime>(app: &AppHandle<R>, status: Status, fill: f64, tooltip: &str) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_icon(Some(icon_for(status, fill)));
-    }
-}
-
-/// Show the hover peek near the cursor. Deliberately never focused: taking
-/// focus would blur the main popup and trip its click-away hide.
-#[cfg(not(target_os = "linux"))]
-fn show_hover<R: Runtime>(app: &AppHandle<R>, at: PhysicalPosition<f64>) {
-    let Some(win) = app.get_webview_window("hover") else {
-        return;
-    };
-    // Don't peek over either interactive window — it is already showing more
-    // detail than this read-only hover view.
-    let interactive_window_visible = ["main", "mini"].into_iter().any(|label| {
-        app.get_webview_window(label)
-            .and_then(|w| w.is_visible().ok())
-            .unwrap_or(false)
-    });
-    if interactive_window_visible {
-        return;
-    }
-    place_near_tray(&win, at);
-    let _ = win.show();
-}
-
-pub fn hide_hover<R: Runtime>(app: &AppHandle<R>) {
-    if let Some(win) = app.get_webview_window("hover") {
-        let _ = win.hide();
+        let _ = tray.set_tooltip(Some(tooltip));
     }
 }
 
@@ -213,12 +186,11 @@ pub fn anchor_above_panel<R: Runtime>(win: &tauri::WebviewWindow<R>) {
 }
 
 /// Show the always-on-top popup, positioned near the tray click when we know
-/// it. Dismisses any hover peek first so the two never overlap.
+/// it. Dismisses the mini summary first so the two never overlap.
 pub fn show_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f64>>) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
-    hide_hover(app);
     if let Some(mini) = app.get_webview_window("mini") {
         let _ = mini.hide();
     }
@@ -239,7 +211,6 @@ pub fn show_mini<R: Runtime>(app: &AppHandle<R>, _near: Option<PhysicalPosition<
     let Some(win) = app.get_webview_window("mini") else {
         return;
     };
-    hide_hover(app);
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.hide();
     }

@@ -1,5 +1,5 @@
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -54,6 +54,9 @@ pub struct ProviderConfig {
     pub alerts: Option<AlertToggles>,
     /// Warn when a credit balance drops to/below this value.
     pub low_balance_warn: Option<f64>,
+    /// Headline shown for this account in the compact tray-click summary.
+    /// `None` preserves the automatic worst-window/credits selection.
+    pub mini_summary_metric: Option<String>,
     /// Provider-specific knobs (endpoint overrides, token price, …).
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
@@ -68,6 +71,7 @@ impl Default for ProviderConfig {
             thresholds: None,
             alerts: None,
             low_balance_warn: None,
+            mini_summary_metric: None,
             settings: Default::default(),
         }
     }
@@ -90,12 +94,13 @@ pub struct Config {
     pub hide_on_blur: bool,
     /// Show usage bars in the compact tray-click summary.
     pub mini_summary_bars: bool,
-    pub providers: BTreeMap<String, ProviderConfig>,
+    /// Account iteration order is the user-selected display order everywhere.
+    pub providers: IndexMap<String, ProviderConfig>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        let mut providers = BTreeMap::new();
+        let mut providers = IndexMap::new();
         // Claude and Codex work out of the box when their CLIs are logged in.
         providers.insert(
             "claude".into(),
@@ -221,5 +226,27 @@ mod tests {
         assert_eq!(cfg.version, 1);
         assert_eq!(cfg.providers["claude"].kind, None);
         assert_eq!(cfg.providers["claude"].label, None);
+    }
+
+    #[test]
+    fn saved_provider_order_and_new_metric_setting_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        let claude = cfg.providers.shift_remove("claude").unwrap();
+        let codex = cfg.providers.shift_remove("codex").unwrap();
+        cfg.providers.insert("codex".into(), codex);
+        cfg.providers.insert("claude".into(), claude);
+        cfg.providers["claude"].mini_summary_metric = Some("window:five_hour".into());
+        cfg.save(dir.path()).unwrap();
+
+        let loaded = Config::load(dir.path());
+        assert_eq!(
+            loaded.providers.keys().collect::<Vec<_>>(),
+            vec![&"openrouter", &"hermes", &"codex", &"claude"]
+        );
+        assert_eq!(
+            loaded.providers["claude"].mini_summary_metric.as_deref(),
+            Some("window:five_hour")
+        );
     }
 }

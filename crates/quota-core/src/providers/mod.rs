@@ -160,4 +160,21 @@ mod tests {
             "Claude"
         );
     }
+
+    #[test]
+    fn configured_account_order_is_provider_display_order() {
+        let mut cfg = Config::default();
+        let codex = cfg.providers.shift_remove("codex").unwrap();
+        let claude = cfg.providers.shift_remove("claude").unwrap();
+        cfg.providers.insert("codex".into(), codex);
+        cfg.providers.insert("claude".into(), claude);
+
+        assert_eq!(
+            providers_for(&cfg)
+                .iter()
+                .map(|provider| provider.id())
+                .collect::<Vec<_>>(),
+            vec!["openrouter", "hermes", "codex", "claude"]
+        );
+    }
 }

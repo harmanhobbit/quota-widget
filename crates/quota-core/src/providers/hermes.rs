@@ -427,6 +427,7 @@ fn parse_billing_state(
         if let (Some(limit), Some(spent)) = (cap.get("limitUsd").and_then(as_f64), spent) {
             if limit > 0.0 {
                 windows.push(UsageWindow {
+                    metric_id: "monthly_cap".into(),
                     label: "Monthly cap".into(),
                     used_pct: spent / limit * 100.0,
                     resets_at: None,
@@ -463,6 +464,7 @@ fn parse_subscription(body: &Value, balance: f64) -> Vec<UsageWindow> {
     // don't let an exhausted one paint everything red.
     let informational = balance > 0.0;
     vec![UsageWindow {
+        metric_id: "monthly_allowance".into(),
         label: format!("Monthly allowance ({tier})"),
         used_pct: ((monthly - remaining) / monthly * 100.0).clamp(0.0, 100.0),
         resets_at: cur["cycleEndsAt"]
@@ -549,6 +551,7 @@ mod tests {
         assert!((c.est_tokens_remaining.unwrap() - 71_250_000.0).abs() < 1.0);
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].label, "Monthly cap");
+        assert_eq!(w[0].metric_id, "monthly_cap");
         assert!((w[0].used_pct - 18.0).abs() < 1e-9);
     }
 
@@ -585,6 +588,7 @@ mod tests {
         let w = parse_subscription(&body, 0.0);
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].label, "Monthly allowance (Free)");
+        assert_eq!(w[0].metric_id, "monthly_allowance");
         assert_eq!(w[0].used_pct, 100.0);
         assert!(w[0].resets_at.is_some());
         // zero-allowance tiers and missing fields produce no window

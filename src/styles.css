@@ -241,24 +241,10 @@ button.primary {
   user-select: text;
 }
 
-/* ---- tray hover peek (the ?view=hover window) ---------------------------- */
+/* ---- tray-click mini summary (the ?view=mini window) --------------------- */
 
-/* This window is sized by Tauri, not by content, and is never scrolled or
-   interacted with — it just needs to fill the frame edge to edge. */
-body.hover-window {
-  border-radius: 8px;
-  cursor: default;
-}
-
-.hover {
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-/* The tray-click mini summary is interactive (unlike the hover peek), but
-   deliberately retains the same compact provider rows. */
+/* Tray *hover* is the shell's native tooltip on both platforms, so this is
+   the only compact window; the `.hover-*` row classes below are its rows. */
 .mini {
   padding: 6px 10px 8px;
   display: flex;
@@ -389,12 +375,25 @@ body.hover-window {
 }
 
 .provider {
-  padding: 6px 0;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 35%, var(--card));
+}
+
+.provider-header {
+  margin-top: 0;
+  padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
 }
 
-.provider:last-child {
-  border-bottom: none;
+.provider-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
 
 .row {

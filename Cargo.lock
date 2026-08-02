@@ -2820,11 +2820,12 @@ dependencies = [
 
 [[package]]
 name = "quota-core"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "indexmap 2.14.0",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -2835,7 +2836,7 @@ dependencies = [
 
 [[package]]
 name = "quota-widget"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "base64 0.22.1",
  "chrono",

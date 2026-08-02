@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct UsageWindow {
+    /// Stable machine-readable identity used by per-account UI selections.
+    /// Empty in old serialized snapshots; callers then use automatic fallback.
+    pub metric_id: String,
     pub label: String,
     /// 0.0–100.0. May exceed 100 if the provider reports overage.
     pub used_pct: f64,
@@ -18,6 +21,7 @@ pub struct UsageWindow {
 impl Default for UsageWindow {
     fn default() -> Self {
         Self {
+            metric_id: String::new(),
             label: String::new(),
             used_pct: 0.0,
             resets_at: None,

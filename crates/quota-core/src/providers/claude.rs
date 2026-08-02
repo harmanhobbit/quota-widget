@@ -300,6 +300,7 @@ fn parse_usage(body: &Value) -> Vec<UsageWindow> {
             continue;
         };
         windows.push(UsageWindow {
+            metric_id: metric_id_for(key),
             label: label_for(key),
             used_pct: pct,
             resets_at: w.get("resets_at").and_then(parse_timestamp),
@@ -326,6 +327,17 @@ fn label_for(key: &str) -> String {
     }
 }
 
+fn metric_id_for(key: &str) -> String {
+    match key {
+        "five_hour" => "five_hour".into(),
+        "seven_day" => "weekly".into(),
+        other => other
+            .strip_prefix("seven_day_")
+            .map(|model| format!("weekly_{model}"))
+            .unwrap_or_else(|| other.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,11 +358,14 @@ mod tests {
         let w = parse_usage(&body);
         assert_eq!(w.len(), 3);
         assert_eq!(w[0].label, "5-hour");
+        assert_eq!(w[0].metric_id, "five_hour");
         assert_eq!(w[0].used_pct, 62.5);
         assert!(w[0].resets_at.is_some());
         assert_eq!(w[1].label, "Weekly");
         assert_eq!(w[1].used_pct, 30.0);
         assert_eq!(w[2].label, "Weekly (Opus)");
+        assert_eq!(w[1].metric_id, "weekly");
+        assert_eq!(w[2].metric_id, "weekly_opus");
         assert_eq!(w[2].resets_at, None);
     }
 

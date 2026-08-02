@@ -1,15 +1,13 @@
 import { mount } from 'svelte';
 import App from './App.svelte';
-import HoverSummary from './lib/HoverSummary.svelte';
 import MiniSummary from './lib/MiniSummary.svelte';
 import './styles.css';
 
-// The tray hover peek is a second Tauri window pointed at ?view=hover. It
-// shares this bundle but mounts a compact read-only summary instead of the
-// full popup.
-const isHover = new URLSearchParams(location.search).get('view') === 'hover';
+// The tray-click mini summary is a second Tauri window pointed at ?view=mini.
+// It shares this bundle but mounts a compact summary instead of the full
+// popup. Tray hover is the shell's own native tooltip on both platforms, so
+// there is no third window for it.
 const isMini = new URLSearchParams(location.search).get('view') === 'mini';
 const target = document.getElementById('app');
-if (isHover) document.body.classList.add('hover-window');
 
-export default mount(isHover ? HoverSummary : isMini ? MiniSummary : App, { target });
+export default mount(isMini ? MiniSummary : App, { target });

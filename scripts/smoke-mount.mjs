@@ -36,10 +36,11 @@ const CONFIG = {
   thresholds: { warn_pct: 80, critical_pct: 95 },
   alerts: { toast: true, tray_color: true, auto_popup: false },
   providers: {
-    claude: provider({ enabled: true }),
-    codex: provider({ enabled: true }),
+    claude: provider({ enabled: true, mini_summary_metric: 'window:five_hour' }),
+    // The unavailable weekly selection must fall back to this returned 5-hour window.
+    codex: provider({ enabled: true, mini_summary_metric: 'window:weekly' }),
     openrouter: provider({}),
-    hermes: provider({}),
+    hermes: provider({ mini_summary_metric: 'window:monthly_allowance' }),
   },
 };
 
@@ -52,6 +53,7 @@ function provider(over) {
     thresholds: null,
     alerts: null,
     low_balance_warn: null,
+    mini_summary_metric: null,
     settings: {},
     ...over,
   };
@@ -63,7 +65,31 @@ const SNAPSHOTS = [
     provider_name: 'Claude',
     error: null,
     credits: null,
-    windows: [{ label: '5h', used_pct: 42, informational: false }],
+    windows: [
+      { metric_id: 'five_hour', label: '5h', used_pct: 42, informational: false },
+      { metric_id: 'weekly', label: 'Weekly', used_pct: 88, informational: false },
+    ],
+  },
+  {
+    provider_id: 'codex',
+    provider_name: 'Codex',
+    error: null,
+    credits: null,
+    windows: [{ metric_id: 'five_hour', label: '5h', used_pct: 70, informational: false }],
+  },
+  {
+    provider_id: 'openrouter',
+    provider_name: 'OpenRouter',
+    error: null,
+    credits: { balance: 3.42, unit: 'USD' },
+    windows: [],
+  },
+  {
+    provider_id: 'hermes',
+    provider_name: 'Hermes Portal',
+    error: null,
+    credits: { balance: 12, unit: 'USD' },
+    windows: [{ metric_id: 'monthly_allowance', label: 'Monthly allowance (Plus)', used_pct: 100, informational: true }],
   },
 ];
 
@@ -72,12 +98,37 @@ const SNAPSHOTS = [
 // arrives as a proxy — mirror that exactly, since it is what broke it before.
 const CASES = [
   { file: 'src/App.svelte', props: () => ({}) },
-  { file: 'src/lib/HoverSummary.svelte', props: () => ({}) },
-  { file: 'src/lib/MiniSummary.svelte', props: () => ({}) },
+  // Verifies a chosen lower 5-hour headline wins over Automatic's 88% weekly
+  // value, while an unavailable selected Codex weekly falls back to its 5-hour value.
+  { file: 'src/lib/MiniSummary.svelte', props: () => ({}), expect: ['5h 42%', '5h 70%', '3.42 USD', 'Monthly allowance (Plus) 100%'] },
+  { file: 'src/lib/MiniSummary.svelte', props: () => ({}), snapshotsError: true, expect: ['Could not load summary'] },
   {
     file: 'src/lib/Settings.svelte',
-    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), onclose() {} }),
-    expect: ['Providers', 'Thresholds', 'Alerts', 'Save'],
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    expect: ['Providers', 'Mini-summary headline', 'Automatic', 'Thresholds', 'Alerts', 'Save'],
+    verify: async ({ target, flushSync }) => {
+      const findButton = (text) => [...target.querySelectorAll('button')].find((button) => button.textContent.trim() === text);
+      const addName = target.querySelector('.settings > section > .row input');
+      addName.value = 'Work Claude';
+      addName.dispatchEvent(new window.Event('input', { bubbles: true }));
+      findButton('Add account').click();
+      flushSync();
+      target.querySelector('button[aria-label="Move Codex up"]').click();
+      [...target.querySelectorAll('.provider')]
+        .find((card) => card.querySelector('strong').textContent.trim() === 'OpenRouter')
+        .querySelector('.provider-footer button').click();
+      await Promise.resolve(); // let Remove's secret-clear await finish
+      flushSync();
+      target.querySelector('.primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const saved = globalThis.__SMOKE_LAST_CONFIG__;
+      if (!saved || Object.keys(saved.providers).join(',') !== 'codex,claude,hermes,claude#2') {
+        throw new Error(`saved account order was ${saved ? Object.keys(saved.providers).join(',') : 'missing'}`);
+      }
+      if (saved.providers['claude#2'].label !== 'Work Claude') {
+        throw new Error('new account label was not saved');
+      }
+    },
   },
   {
     file: 'src/lib/ProviderCard.svelte',
@@ -89,12 +140,13 @@ function stubTauri() {
   mkdirSync(join(WORK, '@tauri-apps/api'), { recursive: true });
   const w = (p, s) => writeFileSync(join(WORK, p), s);
   w('@tauri-apps/api/core.js', `
-export async function invoke(cmd) {
+export async function invoke(cmd, args) {
   switch (cmd) {
-    case 'get_snapshots': return ${JSON.stringify({ snapshots: SNAPSHOTS, config: CONFIG })};
+    case 'get_snapshots': if (globalThis.__SMOKE_SNAPSHOTS_ERROR__) throw new Error('IPC unavailable'); return ${JSON.stringify({ snapshots: SNAPSHOTS, config: CONFIG })};
     case 'app_version': return '0.0.0-test';
     case 'has_secret': return false;
     case 'on_wayland': return true;
+    case 'set_config': globalThis.__SMOKE_LAST_CONFIG__ = args.config; return null;
     default: return null;
   }
 }`);
@@ -151,10 +203,12 @@ for (const c of CASES) {
   dom.window.document.body.appendChild(target);
   let app;
   try {
+    globalThis.__SMOKE_SNAPSHOTS_ERROR__ = Boolean(c.snapshotsError);
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle
     flushSync();
+    await c.verify?.({ target, flushSync });
   } catch (e) {
     console.error(`FAIL ${c.file}\n      ${String(e.message).split('\n')[0]}`);
     failed++;
@@ -172,6 +226,7 @@ for (const c of CASES) {
     console.log(`ok   ${c.file} (${html.length} bytes)`);
   }
   try { unmount(app); } catch {}
+  globalThis.__SMOKE_SNAPSHOTS_ERROR__ = false;
   target.remove();
 }
 

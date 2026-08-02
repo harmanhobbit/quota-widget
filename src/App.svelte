@@ -46,6 +46,10 @@
     });
     const unlisten = [];
     listen('snapshots', (e) => (snapshots = e.payload)).then((u) => unlisten.push(u));
+    // Settings saves through Rust, which broadcasts the canonical persisted
+    // config. Keep the next Settings visit in sync without replacing the
+    // active component's local draft while it is being edited.
+    listen('config', (e) => (appConfig = e.payload)).then((u) => unlisten.push(u));
     listen('navigate', (e) => (view = e.payload)).then((u) => unlisten.push(u));
     // Hiding to tray doesn't unload the page, so `view` would otherwise
     // persist: reopening after a visit to Settings would land back in
@@ -99,7 +103,7 @@
     </div>
   {:else}
     {#if appConfig}
-      <Settings initialConfig={appConfig} onclose={() => (view = 'popup')} />
+      <Settings initialConfig={appConfig} {snapshots} onclose={() => (view = 'popup')} />
     {:else}
       <p class="empty">Loading…</p>
     {/if}

@@ -3,7 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
 
-  let { onclose, initialConfig } = $props();
+  let { onclose, initialConfig, snapshots = [] } = $props();
 
   const PROVIDERS = [
     { id: 'claude', name: 'Claude', secret: null, note: 'Uses the Claude Code CLI login if present, or the built-in browser sign-in below.' },
@@ -30,6 +30,11 @@
   let onWayland = $state(false);
   let newKind = $state('claude');
   let newName = $state('');
+  let saveError = $state('');
+  let removalError = $state('');
+  // Removal clears secrets before deleting the config entry. Save must wait
+  // for that async work so a fast Remove → Save click cannot resurrect it.
+  const pendingRemovals = new Set();
 
   async function initialiseSettings() {
     // Normalize configured accounts only. Do not recreate removed defaults.
@@ -138,6 +143,8 @@
   // Write settings without leaving the panel — used by Test, which needs the
   // pasted secret persisted before it runs.
   async function persist() {
+    await Promise.all([...pendingRemovals]);
+    if (removalError) throw new Error(removalError);
     for (const [id, value] of Object.entries(secretInputs)) {
       if (value) {
         await invoke('set_secret', { provider: id, value });
@@ -150,6 +157,10 @@
     config.thresholds.warn_pct = Number(config.thresholds.warn_pct) || 80;
     config.thresholds.critical_pct = Number(config.thresholds.critical_pct) || 95;
     for (const p of Object.values(config.providers)) {
+      if (p.label != null) {
+        p.label = p.label.trim();
+        if (!p.label) throw new Error('Account name cannot be empty');
+      }
       if (p.low_balance_warn === '' || p.low_balance_warn == null) p.low_balance_warn = null;
       else p.low_balance_warn = Number(p.low_balance_warn);
       // Drop empty settings values so Rust-side defaults apply.
@@ -162,8 +173,13 @@
 
   // Save & close: the single commit action for the panel.
   async function save() {
-    await persist();
-    onclose();
+    saveError = '';
+    try {
+      await persist();
+      onclose();
+    } catch (error) {
+      saveError = String(error.message ?? error);
+    }
   }
 
   async function test(id) {
@@ -188,23 +204,62 @@
   }
 
   function addAccount() {
-    const n = Object.values(config.providers).filter((p) => (p.kind ?? '') === newKind).length + 1;
+    const n = Object.entries(config.providers).filter(([id, p]) => (p.kind ?? id) === newKind).length + 1;
     let key = `${newKind}#${n}`;
     while (config.providers[key]) key = `${newKind}#${Number(key.split('#')[1]) + 1}`;
     const info = providerInfo(newKind);
     // Start extra accounts with the same provider configuration as the first
     // configured account of this kind. Credentials remain account-specific.
     const template = Object.entries(config.providers).find(([id, p]) => (p.kind ?? id) === newKind)?.[1];
-    config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, settings: $state.snapshot(template?.settings ?? {}) };
+    config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, mini_summary_metric: null, settings: $state.snapshot(template?.settings ?? {}) };
     ensureFlows();
     newName = '';
   }
 
-  async function removeAccount(id) {
-    const kind = config.providers[id].kind ?? id;
-    await invoke('clear_secret', { provider: id });
-    if (kind === 'claude' || kind === 'codex') await invoke('clear_secret', { provider: `${id}_oauth` });
-    delete config.providers[id];
+  function removeAccount(id) {
+    removalError = '';
+    const task = (async () => {
+      const kind = config.providers[id].kind ?? id;
+      await invoke('clear_secret', { provider: id });
+      if (kind === 'claude' || kind === 'codex') await invoke('clear_secret', { provider: `${id}_oauth` });
+      delete config.providers[id];
+    })();
+    pendingRemovals.add(task);
+    // Keep the original error for `persist()` to report, without creating an
+    // ignored rejected promise from `finally`.
+    void task.then(
+      () => pendingRemovals.delete(task),
+      (error) => {
+        pendingRemovals.delete(task);
+        removalError = `Could not remove account: ${String(error)}`;
+      },
+    );
+  }
+
+  function moveAccount(id, direction) {
+    const entries = Object.entries($state.snapshot(config.providers));
+    const index = entries.findIndex(([key]) => key === id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= entries.length) return;
+    const [entry] = entries.splice(index, 1);
+    entries.splice(target, 0, entry);
+    config.providers = Object.fromEntries(entries);
+  }
+
+  function metricOptions(id, account) {
+    const kind = account.kind ?? id;
+    const known = {
+      claude: [{ id: 'window:five_hour', label: '5-hour' }, { id: 'window:weekly', label: 'Weekly' }],
+      codex: [{ id: 'window:weekly', label: 'Weekly' }],
+      openrouter: [{ id: 'credits', label: 'Credit balance' }],
+      hermes: [{ id: 'credits', label: 'Purchased credit balance' }, { id: 'window:monthly_cap', label: 'Monthly cap' }, { id: 'window:monthly_allowance', label: 'Monthly allowance' }],
+    }[kind] ?? [];
+    const live = snapshots.find((snap) => snap.provider_id === id)?.windows ?? [];
+    const choices = [{ id: '', label: 'Automatic' }, ...known];
+    for (const window of live) {
+      if (window.metric_id) choices.push({ id: `window:${window.metric_id}`, label: window.label });
+    }
+    return choices.filter((choice, index, all) => all.findIndex((other) => other.id === choice.id) === index);
   }
 </script>
 
@@ -212,15 +267,20 @@
     <section>
       <h2>Providers</h2>
       <div class="row"><select bind:value={newKind}>{#each PROVIDERS as p}<option value={p.id}>{p.name}</option>{/each}</select><input placeholder="Account name (optional)" bind:value={newName} /><button class="small" onclick={addAccount}>Add account</button></div>
-      {#each Object.entries(config.providers) as [id, account] (id)}
+      {#each Object.entries(config.providers) as [id, account], index (id)}
         {@const p = providerInfo(account.kind ?? id)}
         <div class="provider">
-          <label class="row">
-            <input type="checkbox" bind:checked={account.enabled} />
+          <div class="provider-header row">
+            <label class="inline">
+              <input type="checkbox" bind:checked={account.enabled} />
+              Enabled
+            </label>
             <strong>{account.label ?? p.name}</strong>
             <span class="spacer"></span>
             <button class="small" onclick={() => test(id)}>Test</button>
-          </label>
+            <button class="small" title="Move account up" aria-label={`Move ${account.label ?? p.name} up`} disabled={index === 0} onclick={() => moveAccount(id, -1)}>↑</button>
+            <button class="small" title="Move account down" aria-label={`Move ${account.label ?? p.name} down`} disabled={index === Object.keys(config.providers).length - 1} onclick={() => moveAccount(id, 1)}>↓</button>
+          </div>
           <p class="note">{p.note}</p>
           <label class="field">Account name <input maxlength="40" bind:value={account.label} placeholder={p.name} /></label>
           {#if account.enabled}
@@ -229,6 +289,13 @@
               Include in tray icon
             </label>
           {/if}
+          <label class="field">Mini-summary headline
+            <select value={account.mini_summary_metric ?? ''} onchange={(event) => (account.mini_summary_metric = event.currentTarget.value || null)}>
+              {#each metricOptions(id, account) as metric}
+                <option value={metric.id}>{metric.label}</option>
+              {/each}
+            </select>
+          </label>
           {#if p.secret}
             <div class="row">
               <input
@@ -355,8 +422,10 @@
               {testResults[id].pending ? 'testing…' : testResults[id].msg}
             </p>
           {/if}
+          <div class="provider-footer">
+            <button class="small" onclick={() => removeAccount(id)}>Remove account</button>
           </div>
-          <button class="small" onclick={() => removeAccount(id)}>Remove account</button>
+          </div>
       {/each}
     </section>
 
@@ -397,6 +466,9 @@
     <div class="actions">
       <button class="primary" onclick={save}>Save &amp; close</button>
     </div>
+    {#if saveError}
+      <p class="test bad">{saveError}</p>
+    {/if}
     {#if appVersion}
       <p class="version">Quota Widget v{appVersion}</p>
     {/if}

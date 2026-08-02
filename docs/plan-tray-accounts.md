@@ -1,282 +1,337 @@
-# quota-widget: Linux tray parity, pinnable popup, multi-account
+# quota-widget: account cards, ordering, mini-summary metrics, and tray tooltip
 
-## Context
+## Goal
 
-Three things are wrong or missing today:
+Finish the account-oriented Settings experience and make the compact
+tray-click summary useful and reliable:
 
-1. **The native tray tooltip overlays the hover peek on Windows.** `tray.rs:136` calls
-   `tray.set_tooltip(...)` on every poll while `show_hover()` (`tray.rs:142`) opens the
-   custom `hover` window. Both fire on `TrayIconEvent::Enter`, so the OS tooltip draws
-   over the nicer peek window. The peek is the keeper; the tooltip is the intruder.
+- every configured account is an unambiguous Settings card;
+- saving an addition, removal, rename, reorder, or mini-summary choice is
+  immediately reflected when Settings is reopened;
+- user order is the display order everywhere;
+- every account can choose its compact-summary headline independently;
+- Windows and Linux both show a detailed native tooltip on tray hover, while
+  left-click opens the interactive mini-summary.
 
-2. **Neither works on Linux.** `tray-icon 0.24.2`'s Linux backend is libappindicator
-   (`platform_impl/gtk/mod.rs:12`), which delivers menu activations and *nothing else* —
-   no `Click`, no `Enter`, no `Leave`. So `tray.rs:108-128` is dead code on Linux, hence
-   the `show_menu_on_left_click(cfg!(target_os = "linux"))` workaround at `tray.rs:90`.
+This document describes the state of the repository now. Earlier tray,
+multi-account, `ksni`, and pinning work is already present; do not re-plan or
+reimplement it as though it were absent.
 
-3. **Only one account per provider.** Adapters are unit structs with `&'static str` ids
-   (`providers/mod.rs:43-58`) and every adapter reads its settings by string literal, e.g.
-   `provider_setting("claude", "auth_mode")` (`claude.rs:44`).
+## Scope and decisions
 
-### Two hard constraints that shape the design
+### Account identity remains immutable
 
-**Hover events do not exist in the tray protocol.** StatusNotifierItem exposes only
-`Activate(x,y)`, `SecondaryActivate(x,y)`, `ContextMenu(x,y)` and `Scroll`. There is no
-enter/leave concept at any layer. What Plasma shows when you hover the battery applet is
-the applet's *own* SNI `ToolTip` property, rendered by Plasma — the app never learns a
-hover happened. So on Linux the peek is a **published tooltip**, not a window we control:
-we set the text, Plasma draws it. That is exactly the battery-applet behaviour asked for,
-and it is reachable — but it requires leaving libappindicator, which exposes no tooltip
-and no activation. **Swap the Linux tray to `ksni` (0.3.6)**, a native SNI implementation
-that gives us `tool_tip()`, `activate(x, y)` and `context_menu(x, y)`.
+The config map key is the account key, for example `claude#work`. It is used by
+the secret store, snapshots, and alert-engine state. It must never change when
+the user changes a label or moves an account. The editable account name only
+writes `ProviderConfig.label`.
 
-**Native Wayland cannot position or raise its own windows.** `xdg-shell` has no
-self-positioning and no always-on-top; `tao`'s `set_outer_position` (linux/window.rs:457)
-is a no-op there. Already documented at `README.md:149-164` (tao#1134, tauri#3117). Per
-decision: **ship under XWayland** — bake `GDK_BACKEND=x11` into the launcher so placement
-and always-on-top work. The `on_wayland()` probe at `lib.rs:220-227` already honours that
-override.
+Removing an account continues to clear its account-specific secrets before
+deleting the config entry. Moving an account changes only order; it neither
+rekeys nor copies secrets.
 
-### Target behaviour
+### Settings order is canonical
 
-| | Windows 11 | Linux (KDE Plasma) |
-|---|---|---|
-| Hover | Custom peek window (tooltip removed) | Plasma-drawn SNI tooltip, same per-provider lines |
-| Left-click | Toggle popup | Toggle popup |
-| Right-click | Menu | Menu |
-| Pin | Button top-right of popup | Same |
+`Config.providers` is currently a `BTreeMap`, which sorts account keys and
+therefore cannot preserve a user-selected order. Replace it with a
+serde-enabled `IndexMap<String, ProviderConfig>`.
 
-Pinned = stays through focus loss, always-on-top, anchored just above the panel.
-Unpinned popups still vanish on blur/Esc. Pin is per-session UI state, not persisted.
+JSON object order then becomes the saved account order. Existing config files
+deserialize in their existing textual order; configs historically written from
+the `BTreeMap` simply retain their old sorted order until the user reorders
+them. No migration or secret rewrite is required.
 
----
+`providers_for()` already drives the poller, `get_snapshots`, and snapshot
+events. Once it iterates the `IndexMap`, the full popup, mini-summary,
+tooltips, and Settings list can all use the same order.
 
-## Part 1 — Tooltip and hover peek
+### Mini-summary statistic is a per-account selection
 
-**`src-tauri/src/tray.rs`**
-- `set_status()` (`:133-138`): keep `set_icon`, drop `set_tooltip` on Windows only.
-  Keep the text flowing on Linux, where it becomes the ksni tooltip (Part 2).
-  `poller.rs:79-82` and `tooltip_line()` (`poller.rs:106-118`) stay as-is — the text is
-  now consumed by two different sinks.
-- Leave `show_hover`/`hide_hover` (`:142-156`) and the `hover` window
-  (`tauri.conf.json:27-41`) untouched; they remain Windows-only.
+The chosen headline applies only to the compact mini-summary. It does **not**
+change the full provider card, alert thresholds, tray status/gauge, or detailed
+hover tooltip.
 
-**Verify while here:** `capabilities/hover.json` grants only `core:event:default`, but
-`HoverSummary.svelte:9` calls `invoke('get_snapshots')`. Commit `648d00c` was fixing this —
-confirm the grant covers invoke, else the peek is empty until the first poll push.
+Add `ProviderConfig.mini_summary_metric: Option<String>`:
 
-## Part 2 — Linux tray via ksni
+- `None` means **Automatic**, preserving current behaviour: choose the worst
+  non-informational quota window, otherwise credit balance.
+- `credits` selects a credit balance.
+- `window:<metric_id>` selects a particular usage window.
 
-New module **`src-tauri/src/tray_linux.rs`**, behind `#[cfg(target_os = "linux")]`.
-`tray.rs` keeps the Windows path; `lib.rs:295` dispatches to one or the other.
+Do not persist display text as the choice. Add a backward-compatible
+`UsageWindow.metric_id: String` and have adapters supply stable identifiers:
 
-- Add `ksni = "0.3"` (default tokio feature — Tauri already runs on tokio).
-- A `QuotaTray` struct holding current `Status`, gauge `fill`, and the tooltip lines,
-  implementing `ksni::Tray`:
-  - `icon_pixmap()` — reuse `badge_icon()` (`tray.rs:14-63`) verbatim; it already produces
-    raw RGBA. ksni wants ARGB32, so add a small channel-order shim rather than a second
-    renderer.
-  - `tool_tip()` — `description` = the newline-joined `tooltip_line()` output. This is the
-    Plasma hover peek.
-  - `activate(x, y)` — `toggle_popup(app, Some(PhysicalPosition::new(x, y)))`.
-  - `context_menu()` / `menu()` — mirror the four existing items (`tray.rs:77-81`):
-    Open / Refresh now / Settings / Quit, with the same handlers, including the
-    show-then-`emit("navigate","settings")` ordering from `tray.rs:94-98`.
-- `spawn()` returns a `Handle`; stash it in `AppState`. Linux `set_status` becomes
-  `handle.update(|t| { t.status = …; t.fill = …; t.lines = … })`.
-- Delete the `show_menu_on_left_click(cfg!(target_os = "linux"))` workaround — left-click
-  is now the popup, right-click the menu, as on Windows.
+| Provider | Metrics exposed to the mini-summary |
+| --- | --- |
+| Claude | `five_hour`, `weekly`, and any additional returned limits |
+| Codex | `weekly`, plus any other rate-limit window the API currently returns |
+| OpenRouter | `credits` |
+| Hermes Portal | `credits`, `monthly_cap`, `monthly_allowance` |
 
-**Launcher:** already done — `nix/package.nix` emits a `.desktop` entry with
-`Exec=env GDK_BACKEND=x11 quota-widget` (commit `554daec`), and `README.md:149-164`
-documents the fractional-scaling blur caveat. Nothing to change here; just don't
-regress it.
+Hermes’s monthly cap and monthly allowance are distinct choices. The latter is
+currently labelled with the subscription tier, such as `Monthly allowance
+(Plus)`, so matching its changing display label would be incorrect. Selecting
+an informational Hermes allowance is allowed: the choice changes a headline,
+not status or alert semantics.
 
-**Note on `libayatana-appindicator`:** `nix/package.nix` lists it in `buildInputs` and
-adds it to `LD_LIBRARY_PATH` in `preFixup` because the tray dlopens it at runtime. Once
-the tray moves to ksni (pure D-Bus via zbus, no C library), that dependency and the
-`LD_LIBRARY_PATH` prefix can be dropped — but only after confirming nothing else in the
-GTK stack pulls it in.
+If a provider temporarily does not return a selected metric, the mini-summary
+falls back to Automatic rather than rendering blank. Fetch/auth errors remain
+visible as errors.
 
-## Part 3 — Pin button
+### Tray interaction
 
-**`src/App.svelte`** — add a pin toggle in the header next to `✕`, `let pinned = $state(false)`.
-On toggle `invoke('set_pinned', { pinned })`. Show pinned state visually (filled vs outline).
-Reset to unpinned when the window is hidden, so a fresh popup is always transient.
+The detailed `poller::tooltip_line()` output is the one source for hover text:
+all reported quota windows and credits are included.
 
-**`src-tauri/src/lib.rs`** — new `set_pinned` command:
-- `state.hide_on_blur` (already an `AtomicBool`, consulted at `lib.rs:305`) is forced off
-  while pinned and restored from config when unpinned. Keep the user's config setting
-  separate from the pin override.
-- `window.set_always_on_top(pinned)`.
-- When pinning, reposition via a new `anchor_above_panel(&win)` helper in `tray.rs`,
-  alongside `place_near_tray` (`:160-175`).
+- **Windows:** restore the native multiline tray tooltip and remove the custom
+  hover-peek window completely, so no two hover surfaces disagree or overlap.
+- **Linux/KDE Plasma:** keep the existing `ksni` StatusNotifier tooltip and
+  left-click activation unchanged; it already consumes the same detailed text.
+- **Both:** left-click toggles the interactive mini-summary. Its existing pin
+  behaviour remains session-only and out of scope for this change.
 
-**`anchor_above_panel`** — the existing helper uses `monitor.size()` despite its doc
-comment claiming work area, so it ignores panels. Use
-`monitor.work_area()` (available in Tauri 2.11.5, `window/mod.rs:96`) and place the window
-flush to the work-area bottom edge, horizontally near the tray x. Fix `place_near_tray` to
-use `work_area()` too — that's the bug behind popups landing under the panel.
+## Implementation work
 
-Esc handling (`App.svelte:49-54`) should no-op while pinned.
+### 1. Synchronize saved configuration in the frontend
 
-## Part 4 — Multiple accounts per provider
+Files: `src/App.svelte`, `src/lib/Settings.svelte`
 
-`Config.providers` is already `BTreeMap<String, ProviderConfig>` (`config.rs:63-77`) and
-`UsageSnapshot.provider_id` is already `String`, so the container, the alert engine
-(keyed `(provider_id, window_label)`, `alerts.rs:49`), the tray maths, `ProviderCard.svelte`
-and `HoverSummary.svelte` all work unchanged with extra keys. The work is in the adapter
-registry and the UI.
+`set_config` already saves the config, replaces `AppState.config`, emits a
+global `config` event, and wakes the poller. `App.svelte` currently does not
+consume that event, leaving `appConfig` stale after Settings closes. This is
+why newly added accounts and removed OpenRouter accounts appear to come back.
 
-**Account key = config map key.** Existing keys (`claude`, `codex`, …) keep working
-untouched — no re-keying, no migration. New accounts get `claude#work`-style keys.
+- Listen for `config` alongside the existing snapshot/navigation listeners and
+  replace `appConfig` with the event payload; clean the listener up on unmount.
+- Keep Settings’ local editable config as `$state.snapshot(initialConfig)`;
+  do not clone a Svelte proxy with `structuredClone`.
+- Save before closing. A normal test/persist action may emit `config`, but it
+  must not discard the active Settings component’s unsaved local edits.
 
-**`crates/quota-core/src/config.rs`** — add two optional fields to `ProviderConfig`:
-```rust
-pub kind: Option<String>,   // adapter to use; defaults to the map key
-pub label: Option<String>,  // user-facing account name; defaults to the adapter's name
-```
+### 2. Build clearly bounded provider account cards
 
-### Account naming (user-editable)
+Files: `src/lib/Settings.svelte`, `src/styles.css`
 
-Each account carries a **user-chosen display name**, typed freely by the user — e.g.
-"Work Claude", "Home Codex", "Personal Claude". That name is what appears on the popup
-card, the hover peek, the tooltip and any toast; the user should never see the internal
-key. This is the whole point of multi-account — two cards both reading "Claude" would be
-useless — so naming is a first-class part of the feature, not a nicety.
+- Keep the outer Providers section and its Add account control.
+- Make every `.provider` an individually bordered, padded, rounded card with
+  separation from its neighbours.
+- Place enabled state, account label, Test, and Up/Down buttons in a card
+  header. Do not nest buttons inside a checkbox label.
+- Keep credentials, provider-specific configuration, tray inclusion, and the
+  new mini-summary selector in the card body.
+- Put Remove account in a card footer. It must be inside that card, not after
+  the closing element as it is today.
+- Add accessible Move up and Move down actions, disabled for the first and
+  last account. Rebuild `config.providers` from ordered entries using
+  proxy-safe snapshots, `splice`, and `Object.fromEntries`.
 
-**Two identifiers, deliberately separate:**
+### 3. Persist and propagate account order
 
-| | Purpose | Mutable? |
-|---|---|---|
-| **Account key** (`BTreeMap` key, e.g. `claude#work`) | Config key, snapshot `provider_id`, secret-name prefix, alert-engine key | **No** — renaming would orphan secrets and reset alert state |
-| **Label** (`ProviderConfig.label`) | Everything the user sees | **Yes** — freely editable any time |
+Files: root `Cargo.toml`, `crates/quota-core/Cargo.toml`, `Cargo.lock`,
+`crates/quota-core/src/config.rs`, `crates/quota-core/src/providers/mod.rs`,
+`src/lib/Settings.svelte`
 
-Renaming an account must therefore only ever write `label`. Never re-key the map on
-rename: the key is load-bearing across the secret store (which the Windows keyring cannot
-enumerate to fix up), the edge-triggered alert engine (`alerts.rs:49`), and any stale
-snapshot already in `state.snapshots`.
+- Add `indexmap` with its `serde` feature to the workspace/core dependencies.
+- Change the config field and default construction from `BTreeMap` to
+  `IndexMap`.
+- Keep `providers_for()` in map iteration order and document it as display
+  order, not merely stable registry order.
+- Verify `poller`’s `join_all` and `get_snapshots` retain this input order; no
+  `HashMap` iteration may be used to construct a display list.
 
-**Where the label surfaces.** `UsageSnapshot.provider_name` (`model.rs:64`) is already a
-`String` and already reaches every display site, so this needs no new plumbing — just set
-it from the label instead of the adapter's static name:
+### 4. Add stable metric identifiers and configuration
 
-- `ProviderCard.svelte:42` — the popup card heading
-- `HoverSummary.svelte:48` — the Windows hover peek row
-- `poller.rs:117` / `:108` — tooltip lines (`"{name}: {…}"` / `"{name}: unavailable"`),
-  which on Linux become the Plasma-drawn SNI tooltip
-- `poller.rs:90-91` — toast alert titles (`"{name} — critical"`), via
-  `AlertEvent.provider_name` (`alerts.rs:17`)
+Files: `crates/quota-core/src/model.rs`, `crates/quota-core/src/config.rs`,
+`crates/quota-core/src/providers/{claude,codex,hermes,openrouter}.rs`
 
-So `Provider::name()` returns the instance label, falling back to the adapter's built-in
-name when `label` is unset. That fallback is what keeps existing single-account configs
-rendering exactly as they do today.
+- Add `metric_id` to `UsageWindow`, with serde/default support so old snapshot
+  and test data remain accepted.
+- Emit IDs when parsing provider responses. Preserve the existing human-facing
+  `label`; do not change user-visible wording just to support selection.
+- Add the optional `mini_summary_metric` config field. Missing values keep
+  Automatic behaviour, so existing config files remain compatible.
+- Claude should identify its five-hour and weekly windows independently,
+  including any distinct per-model weekly limits. Codex should identify windows
+  from their reported duration rather than assume its API will always expose
+  only weekly. Hermes must explicitly emit `monthly_cap` and
+  `monthly_allowance`.
 
-**Rules for the Settings UI:**
-- The name is a **free-text field**, not a picker — the user types "Work Claude" or
-  "Home Codex" or anything else. Default it to `"{Kind} {n}"` (e.g. "Claude 2") so it is
-  never blank, but expect it to be overwritten immediately.
-- Trim whitespace; reject empty. Warn on duplicates but allow them — they're confusing,
-  not corrupting, since the key is what's unique.
-- **Keep labels short.** The hover peek window is 300 px wide (`tauri.conf.json:27-41`)
-  and `.hover-row` (`styles.css:246`) lays out name / bar / value on one line. Long names
-  will need ellipsis truncation — check `styles.css:230-295` renders sanely with a
-  ~20-character name before calling this done.
-- Derive the account key from the kind plus a slug or counter, not from the label. A label
-  typed as "Ian's work 💼" must not become a config key or a keyring entry name.
-Both `Option` + `#[serde(default)]`, so old configs parse identically. Add a
-`version: u32` field now (currently absent) as insurance for future changes — noting
-`load()` (`config.rs:123`) silently discards the whole config on any parse error, and
-`save()` is a non-atomic `fs::write`; both are worth tightening in the same pass.
+### 5. Expose selected metrics in Settings and the mini-summary
 
-**`crates/quota-core/src/providers/mod.rs`** — the core change. Split identity:
-```rust
-fn kind(&self) -> &'static str;   // "claude" — which adapter
-fn id(&self) -> &str;             // account key — snapshot id, config key, secret prefix
-fn name(&self) -> &str;           // display label
-```
-Replace `all_providers()` with `providers_for(cfg: &Config) -> Vec<Box<dyn Provider>>`,
-constructing one instance per config entry in map order. Keep a
-`fn adapter_kinds() -> &[(&str, &str)]` listing the four kinds for the UI's "add account"
-picker.
+Files: `src/App.svelte`, `src/lib/Settings.svelte`,
+`src/lib/MiniSummary.svelte`, `scripts/smoke-mount.mjs`
 
-**Each adapter** (`claude.rs`, `codex.rs`, `openrouter.rs`, `hermes.rs`) — unit struct
-becomes `pub struct Claude { pub key: String, pub label: Option<String> }`, and every
-literal-keyed lookup takes the instance key instead:
-`provider_setting("claude", "auth_mode")` → `provider_setting(&self.key, "auth_mode")`.
-Same pattern at `codex.rs:30,78`, `openrouter.rs:22,27`, and the ~9 sites in `hermes.rs`.
+- Pass current snapshots from App into Settings so each account can show
+  choices actually returned by the provider, including future API windows.
+- Offer the known choices even before a first successful poll:
+  - Claude: Automatic, 5-hour, Weekly.
+  - Codex: Automatic, Weekly; add currently returned alternatives when present.
+  - OpenRouter: Automatic, credit balance.
+  - Hermes: Automatic, purchased credit balance, Monthly cap, Monthly
+    allowance.
+- Deduplicate static and live choices by metric ID. Show the live window label
+  for any newly reported provider metric.
+- Refactor MiniSummary’s selection helper to resolve the account setting,
+  selected credits/window, and Automatic fallback. It should deliberately
+  allow a selected informational window.
+- Preserve `mini_summary_bars` as the global switch controlling whether the
+  selected percentage metric has a bar. It is independent from selecting the
+  metric itself.
 
-**Secrets** (`src-tauri/src/secrets.rs`) — key names derive from the account key:
-`claude` → `claude_oauth` (unchanged for existing installs), `claude#work` →
-`claude#work_oauth`; bare key for OpenRouter/Hermes. The fixed `PROVIDERS` allow-list at
-`secrets.rs:10` cannot enumerate dynamic keys — replace it with a charset/length
-validation on the key. This also fixes a live bug: `codex_oauth` is missing from that list,
-so `load_all` never surfaces it and `Codex::stored_auth` (`codex.rs:110-115`) always
-returns `None` — the built-in Codex device sign-in stores a token the poller can never
-read, while `Settings.svelte:40` still reports "signed in". The Windows keyring has no
-enumeration API, so `load_all` must derive its key set from `Config.providers`.
+### 6. Fix the mini window’s capability and error state
 
-**Sign-in plumbing** (`src-tauri/src/lib.rs`) — `oauth_pending`
-(`lib.rs:26`, a single `Mutex<Option<PendingLogin>>`) becomes a
-`Mutex<HashMap<String, PendingLogin>>` keyed by account key. `claude_oauth_start/finish`
-(`lib.rs:139-170`) and the Codex device flow (`lib.rs:176-214`) take an account key and
-write to the derived secret key instead of the hardcoded constants at `lib.rs:165,198`.
-The `codex-oauth` event payload must carry the account key so the right UI row updates.
+Files: `src-tauri/capabilities/mini.json` (new),
+`src/lib/MiniSummary.svelte`, `scripts/smoke-mount.mjs`
 
-**CLI credential sources are inherently single-account** — one `~/.claude/.credentials.json`,
-one `~/.codex/auth.json`. Offer the *CLI* and *Auto* auth modes only when the account key
-equals the kind (the original account); additional accounts are built-in sign-in only.
-Worth flagging: Claude self-refreshes (`claude.rs:221-252`) so extra accounts stay alive
-indefinitely, but **Codex has no refresh implementation** — a second Codex account will
-need periodic re-authentication until that's added.
+The `mini` window is not assigned to a capability: `default.json` applies only
+to `main`, and `hover.json` only to `hover`. Its invokes/events can therefore
+be denied, which explains the blank summary.
 
-**`get_snapshots`** (`lib.rs:56-70`) and the poller loop (`poller.rs:31-41`) switch from
-`all_providers()` to `providers_for(&cfg)`; `test_provider`'s id match (`lib.rs:126-135`)
-keys on `kind()`. Note the poller fetches **sequentially** — with N accounts that's N
-serial round-trips per cycle, so make this pass concurrent (`join_all`) at the same time.
+- Add a narrow `mini` capability with `windows: ["mini"]`, `core:default`, and
+  `core:event:default`. Rust performs all positioning/topmost work, so no
+  additional frontend window-management permission is needed.
+- Catch a failed initial `get_snapshots` call and display an explicit loading
+  or error state, never an empty-looking summary.
+- Update smoke fixtures with `metric_id` fields and assert that MiniSummary
+  mounts with snapshot data and can render its error state.
 
-**`src/lib/Settings.svelte`** — the hardcoded `PROVIDERS` const (`:8-13`) becomes a list
-derived from the config map. The per-provider `{#if}` islands (`:178`, `:211`, `:242`,
-`:278`) switch from `p.id === 'claude'` to `p.kind === 'claude'`. The singleton OAuth UI
-state (`:19-22`) and the fixed `has_secret` probes (`:39-40`) become maps keyed by account
-key. Add an **Add account** control (pick a kind, then name it), a **Remove** per
-non-default account, and an editable **name field** on every account row that writes
-`label` only — see *Account naming* above for why the key must never be re-keyed on
-rename. Removing an account must also clear its secrets, or the credentials linger in the
-keyring/`secrets.json` with nothing referencing them.
+### 7. Replace Windows custom hover with the native tooltip
 
----
+Files: `src-tauri/src/tray.rs`, `src-tauri/tauri.conf.json`,
+`src-tauri/capabilities/hover.json` (delete), `src/main.js`,
+`src/lib/HoverSummary.svelte` (delete), `src/styles.css`,
+`scripts/smoke-mount.mjs`, `README.md`
 
-## Suggested order
+- In non-Linux `tray::set_status`, set both the status icon and native tooltip
+  from the poller-provided multiline string. The current parameter is ignored.
+- Remove Windows `TrayIconEvent::Enter`/`Leave`, `show_hover`, `hide_hover`,
+  and calls that only exist to hide that window.
+- Remove the `hover` Tauri window, its capability, frontend route/import/body
+  class, hover component, hover-only CSS, and smoke-mount case.
+- Do not change `tray_linux.rs` or the Linux `poller.rs` dispatch: `ksni`
+  already publishes the same string as the native SNI tooltip and maps left
+  activation to `toggle_mini`.
+- Update README’s platform table, interaction description, architecture list,
+  and caveats to describe native detailed tooltips on both platforms.
 
-1. Part 1 + `work_area()` positioning fix — small, independently verifiable.
-2. Part 2 ksni — biggest Linux unknown; land it before building the pin on top.
-3. Part 3 pin.
-4. Part 4 multi-account — largest diff, touches every layer, but the least risky
-   architecturally since the config container is already a map.
+### 8. Version and documentation
+
+Files: root `Cargo.toml`, `README.md`, this document
+
+- Bump the application version in the workspace `Cargo.toml` only, following
+  the repository’s single-source version rule.
+- Do not change `package.json` dependencies; no `npmDeps.hash` regeneration is
+  expected.
+- Keep README accurate about mini-summary selection, account ordering, and the
+  Windows/Linux hover implementation.
+
+## Parallel implementation protocol
+
+The workspace is shared. Parallel agents must avoid overlapping edits and must
+not use destructive Git commands, change remotes/credentials, push, or bump
+the version independently. The coordinating agent performs final integration,
+the version bump, documentation reconciliation, and the complete test pass.
+
+### Codex workstream — config and Settings
+
+Owns:
+
+- `Cargo.toml`, `crates/quota-core/Cargo.toml`, `Cargo.lock`
+- `crates/quota-core/src/config.rs`, `model.rs`, provider parsers, and core
+  provider tests
+- `src/App.svelte` and `src/lib/Settings.svelte`
+
+Tasks:
+
+1. Introduce `IndexMap`, persistent order, `metric_id`, and
+   `mini_summary_metric` with backward-compatible defaults.
+2. Implement metric IDs in all adapters, especially Hermes cap versus
+   allowance.
+3. Fix App’s `config` event synchronization, account cards, add/remove
+   persistence, selector UI, and Up/Down ordering.
+4. Add core and frontend smoke fixtures/tests for order and metric choices.
+
+Constraints:
+
+- Never rekey accounts while renaming or ordering them.
+- Use `$state.snapshot` at Svelte proxy boundaries.
+- Do not edit tray/capability files owned by the Claude workstream.
+
+### Claude workstream — tray and mini runtime
+
+Owns:
+
+- `src-tauri/src/tray.rs`
+- `src-tauri/capabilities/mini.json`
+- `src-tauri/tauri.conf.json` and deletion of `hover.json`
+- `src/lib/MiniSummary.svelte`, `src/main.js`, and deletion of
+  `src/lib/HoverSummary.svelte`
+
+Tasks:
+
+1. Grant the mini window its minimal invoke/event capability and give it a
+   visible initial-load failure state.
+2. Restore the detailed native Windows tooltip and remove the custom hover
+   window path completely.
+3. Preserve existing Linux `ksni` behaviour and left-click mini-summary
+   activation.
+
+Constraints:
+
+- Do not modify config/model/parser logic or Settings account ordering.
+- Do not weaken capability scope beyond what the mini window actually needs.
+- Coordinate stylesheet and smoke-script cleanup with the integrator to avoid
+  concurrent edits to shared frontend files.
+
+### Integration order
+
+1. Codex lands the config/model/UI changes and reports the exact new metric
+   payload shape.
+2. Claude lands the capability/tray changes against that shape.
+3. The coordinating agent resolves any overlap in `styles.css`,
+   `scripts/smoke-mount.mjs`, README, and this plan; bumps the version; then
+   runs the full verification suite.
 
 ## Verification
 
-- `cargo test -p quota-core` — 19 existing tests must stay green. Add cases for:
-  key→secret-name derivation (`claude` still maps to `claude_oauth`), `providers_for`
-  building N instances from a config with two Claude entries, an old
-  config.json (no `kind`/`label`/`version`) round-tripping unchanged, and
-  **label fallback** — `label: None` yields the adapter's built-in name, `label: Some("Work")`
-  yields "Work" in `UsageSnapshot.provider_name`.
-- `cargo build` in `src-tauri` — needs `clang`/`lld` locally per the project notes; if it
-  can't build here, CI covers it.
-- `npm run build` for the Svelte side.
-- Manual on Plasma: hover tray → tooltip lines appear (Plasma-drawn); left-click →
-  popup toggles; right-click → menu; pin → survives clicking another window, sits above
-  the panel, stays on top; unpin → blur-hides again.
-- Manual multi-account: add a second Claude account, **name it "Work"**, sign in via the
-  built-in flow, and confirm the name appears in all four surfaces — popup card, hover
-  peek row, tooltip line, and any toast it fires. Confirm the tray colour reflects the
-  worse of the two accounts and respects each one's *Include in tray icon*.
-- Rename an account in Settings and confirm the label updates everywhere **without**
-  losing its sign-in state — that's the check that proves rename didn't re-key the map.
-- Windows: confirm via CI artifact that the OS tooltip is gone and the peek window is
-  unobscured.
+Automated checks:
 
-**Do not push** — per standing instruction, every push burns a Windows CI run. Commit
-locally and let Ian choose when to build.
+- `cargo test -p quota-core`
+  - old config with no order/metric fields still loads;
+  - save/load preserves an explicit account order;
+  - `providers_for()` preserves that order;
+  - labels do not affect keys;
+  - Claude/Codex/Hermes parser metric IDs are stable;
+  - Hermes exposes distinct monthly-cap and monthly-allowance IDs;
+  - selected metric, informational allowance, unavailable-metric fallback, and
+    Automatic selection behave correctly.
+- `cargo check -p quota-core`.
+- `npm run build`.
+- `npm run check-versions`.
+- `npm i -D jsdom --no-save && npm run smoke-mount`.
+- Build/check the Tauri crate when local `clang`/`lld` are available; otherwise
+  report that limitation plainly. Capability JSON must be schema-validated by
+  the Tauri build/check path.
+
+Manual Windows checks:
+
+1. Hover shows one native multiline tooltip containing all provider windows
+   and balances; no custom hover window appears.
+2. Left-click toggles the mini-summary; right-click keeps the normal menu.
+3. Toggle bars, then select Claude 5-hour versus Weekly and confirm only the
+   mini-summary headline changes.
+4. Confirm Hermes can select credit balance, Monthly cap, and Monthly
+   allowance independently.
+5. Add, remove, rename, reorder, Save, reopen Settings, and restart the app;
+   all changes persist and popup/mini order matches Settings.
+
+Manual KDE Plasma checks:
+
+1. Hover shows the detailed Plasma SNI tooltip.
+2. Left-click toggles the mini-summary and right-click opens the menu.
+3. The mini-summary order and selected headlines match Settings.
+4. Existing pin/unpin, focus-loss, and XWayland placement behaviour remains
+   unchanged.
+
+Do not push. Commit locally only when the implementation is complete and let
+Ian explicitly choose whether to run the Windows CI build.

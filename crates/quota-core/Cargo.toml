@@ -11,6 +11,7 @@ chrono.workspace = true
 thiserror.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
+indexmap.workspace = true
 async-trait = "0.1"
 base64 = "0.22"
 

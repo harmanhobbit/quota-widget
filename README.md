@@ -14,7 +14,7 @@ Platform differences are small but real:
 | | Windows 11 | Linux |
 |---|---|---|
 | Tray left-click | Toggles the mini summary | Toggles the mini summary |
-| Tray hover peek | Custom peek window | Plasma-drawn tooltip |
+| Tray hover | Native detailed tooltip | Plasma-drawn native SNI tooltip |
 | Secret storage | Credential Manager | `0600` file in the config dir |
 | Autostart | `HKCU` run entry | XDG autostart entry |
 
@@ -28,8 +28,9 @@ Platform differences are small but real:
   It hides when it loses focus unless you pin it with its circle button; the
   pin lasts only for the current app session. A Settings checkbox controls
   whether the mini summary includes usage bars.
-- **Hover** the tray icon for a one-line-per-provider peek without opening the
-  full window (a custom window on Windows, Plasma's native tooltip on Linux).
+- **Hover** the tray icon for one native multiline tooltip that lists every
+  provider's reported quota windows and balances. Windows draws its standard
+  tray tooltip; Plasma draws the StatusNotifierItem tooltip.
 - **Right-click** for Open / Refresh now / Settings / Quit. **Open** shows the
   full usage/settings window; reopening it always lands on the usage list.
 - A background poller (default every 60 s) refreshes all enabled providers and
@@ -51,6 +52,11 @@ account name is shown everywhere; its internal key stays fixed so changing a
 name never loses its stored sign-in. New accounts copy an existing account's
 provider settings, while their API keys and OAuth sign-ins remain separate.
 Every account, including the original defaults, can be removed.
+Accounts can be moved up and down in Settings; that order is saved and is the
+order used in the full popup, mini summary, and tray tooltip. Each account can
+also choose its own mini-summary headline: Automatic picks the worst real quota
+window (or credits), while a specific window or credit balance keeps that
+compact row focused without changing alerts, cards, or tray status.
 
 Secrets (API keys, cookies, OAuth tokens) are stored in the **Windows Credential
 Manager**, not on disk. On Linux they fall back to a `0600` `secrets.json` in the
@@ -80,9 +86,9 @@ In a device flake, either add the overlay
 (`nixpkgs.overlays = [ quota-widget.overlays.default ];` →
 `environment.systemPackages = [ pkgs.quota-widget ];`) or take
 `quota-widget.packages.${system}.default` directly. The package wraps the
-binary with `libayatana-appindicator` (dlopened by the tray) and puts
-`ssh` on PATH for the Hermes remote source. Bumping npm deps later means
-refreshing `npmDeps.hash` in `nix/package.nix`.
+binary with the GTK/WebKit runtime and puts `ssh` on PATH for the Hermes remote
+source. The tray itself uses the native D-Bus StatusNotifierItem protocol.
+Bumping npm deps later means refreshing `npmDeps.hash` in `nix/package.nix`.
 
 ### Locally
 
@@ -103,7 +109,7 @@ version at all. Bumping a release is a one-line edit to `Cargo.toml` followed by
 
 - **On Windows**: install Rust + Node, then the two commands above just work.
 - **On Linux** (dev runs): install the Tauri prerequisites first:
-  `sudo apt install libwebkit2gtk-4.1-dev build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev`
+  `sudo apt install libwebkit2gtk-4.1-dev build-essential pkg-config libgtk-3-dev librsvg2-dev`
 - **Cross-compiling Windows EXEs from Linux** is possible but officially
   experimental: `cargo install cargo-xwin`, add the `x86_64-pc-windows-msvc`
   target, install `nsis` + `lld`, then
@@ -127,14 +133,14 @@ crates/quota-core   pure Rust, no UI deps — fully unit-tested
   alerts.rs         edge-triggered alert engine
   providers/        one adapter per provider behind a common trait
 src-tauri           the Tauri shell
-  tray.rs           runtime-generated status icons, full window + mini summary + hover peek
+  tray.rs           runtime-generated status icons, full window + mini summary placement
   poller.rs         poll loop → state → tray/toasts/events
   oauth.rs          built-in Claude sign-in (PKCE paste-back)
   codex_oauth.rs    built-in Codex sign-in (device code)
   secrets.rs        Credential Manager (Windows) / 0600 file (elsewhere)
 src/                Svelte UI
   App.svelte        popup shell (usage list / settings)
-  lib/              ProviderCard, Settings, HoverSummary (peek), MiniSummary
+  lib/              ProviderCard, Settings, MiniSummary
 scripts/            icon generation, version-drift guard
 ```
 
@@ -152,9 +158,10 @@ scripts/            icon generation, version-drift guard
   reason.
 - The Claude "weekly" window's reset cadence is whatever the API reports —
   observed in the wild resetting more often than every 7 days.
-- Linux hover uses the StatusNotifierItem tooltip Plasma draws; it is not a
-  window the widget can position or style. The Linux launcher uses XWayland so
-  pinned mini-summary placement and always-on-top work.
+- Tray hover is always a native tooltip, not a widget window: Windows renders
+  the standard tray tooltip and Linux Plasma renders the StatusNotifierItem
+  tooltip. The Linux launcher uses XWayland so pinned mini-summary placement
+  and always-on-top work.
 - **Always-on-top does not work on native Wayland**, so the popup slips behind
   other windows when they take focus — regardless of the *Hide when clicking
   outside* setting, which is a separate mechanism. This is a protocol gap, not

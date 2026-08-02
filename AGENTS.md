@@ -12,7 +12,7 @@ end to end, and you should.
 ```
 crates/quota-core/   pure Rust: config, providers, alerts, model. Has all the tests.
 src-tauri/           Tauri shell: tray, poller, secrets, OAuth, IPC commands.
-src/                 Svelte 5 frontend (App, Settings, ProviderCard, HoverSummary).
+src/                 Svelte 5 frontend (App, Settings, ProviderCard, MiniSummary).
 nix/package.nix      Linux packaging. Also emits the .desktop entry.
 ```
 
@@ -160,8 +160,8 @@ The StatusNotifierItem D-Bus spec exposes only `Activate(x,y)`,
 `SecondaryActivate(x,y)`, `ContextMenu(x,y)` and `Scroll`. **There is no
 enter/leave concept at any layer of the stack.** Worse, the current backend —
 `tray-icon 0.24.2` uses libappindicator (`platform_impl/gtk/mod.rs:12`) —
-delivers only menu activations, so the `TrayIconEvent::Click` / `Enter` / `Leave`
-handlers at `tray.rs:110-128` are **dead code on Linux** — which is why the
+delivers only menu activations, so the `TrayIconEvent::Click` handler in
+`create_tray` is **dead code on Linux** — which is why the
 Linux tray is now a separate `ksni` implementation in `tray_linux.rs`, gated
 `#[cfg(target_os = "linux")]` at `lib.rs:6`. The items in `tray.rs` carry the
 matching `#[cfg(not(target_os = "linux"))]`, so that path is Windows/macOS only
@@ -204,9 +204,12 @@ under-panel bug.
 A full implementation plan lives at **`docs/plan-tray-accounts.md`** in this
 repo. Read it before starting. Summary of intent:
 
-1. **Remove the native tray tooltip on Windows only** (`tray.rs:136`) — it draws
-   over the nicer custom hover-peek window. Keep publishing the text on Linux,
-   where it becomes the SNI tooltip.
+1. **Use the native tray tooltip on both platforms.** The custom hover-peek
+   window is gone: `tray::set_status` now sets the detailed multiline
+   `poller::tooltip_line()` text as the Windows tooltip, and `ksni` publishes
+   the same string as the Linux SNI tooltip. (An earlier revision of this plan
+   suppressed the Windows tooltip in favour of the peek window; two disagreeing
+   hover surfaces was the worse trade.)
 2. **Give Linux tray parity** by swapping to `ksni` — hover shows a
    Plasma-drawn tooltip, left-click toggles the popup, right-click opens the menu.
 3. **Add a pin button** to the popup: pinned means it survives focus loss, stays
