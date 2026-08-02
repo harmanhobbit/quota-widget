@@ -249,4 +249,32 @@ mod tests {
             Some("window:five_hour")
         );
     }
+
+    /// Saving from Settings does not go straight from struct to file: the
+    /// config crosses IPC as a `serde_json::Value` first. Without serde_json's
+    /// `preserve_order` feature that intermediate `Map` is a `BTreeMap`, which
+    /// silently re-sorts the account keys alphabetically and threw away every
+    /// reorder the user made. The file round-trip above cannot catch this
+    /// because it never builds a `Value`.
+    #[test]
+    fn provider_order_survives_a_round_trip_through_serde_json_value() {
+        let mut cfg = Config::default();
+        let claude = cfg.providers.shift_remove("claude").unwrap();
+        cfg.providers.insert("claude".into(), claude); // move claude last
+        let before: Vec<String> = cfg.providers.keys().cloned().collect();
+        assert_ne!(
+            before,
+            {
+                let mut sorted = before.clone();
+                sorted.sort();
+                sorted
+            },
+            "test is only meaningful if the order is not already alphabetical"
+        );
+
+        let via_value = serde_json::to_value(&cfg).unwrap();
+        let back: Config = serde_json::from_value(via_value).unwrap();
+
+        assert_eq!(back.providers.keys().cloned().collect::<Vec<_>>(), before);
+    }
 }

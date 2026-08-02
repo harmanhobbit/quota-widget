@@ -33,6 +33,9 @@
       config = e.payload;
       showBars = e.payload.mini_summary_bars;
     }).then((u) => unlisten.push(u));
+    // Hiding the window resets the pin in Rust; the webview survives that, so
+    // the button has to follow or it reopens looking pinned when it isn't.
+    listen('mini-pinned', (e) => (pinned = e.payload)).then((u) => unlisten.push(u));
     return () => unlisten.forEach((u) => u());
   });
 
@@ -85,15 +88,21 @@
   {:else if snapshots.length === 0}
     <p class="hover-empty">No providers enabled</p>
   {:else}
-    {#each snapshots as snap (snap.provider_id)}
-      {@const s = summarize(snap)}
-      <div class="hover-row">
+    <!-- One shared grid, not per-row flex: the bar and value columns must line
+         up across accounts whose names differ in width. -->
+    <div class="hover-rows">
+      {#each snapshots as snap (snap.provider_id)}
+        {@const s = summarize(snap)}
         <span class="hover-name">{snap.provider_name}</span>
-        {#if showBars && s.pct != null}
-          <span class="hover-bar"><i class="fill {s.level}" style="width: {s.pct}%"></i></span>
-        {/if}
+        <!-- Always rendered so a row without a bar (an error, or a credit
+             balance) still holds the column open and keeps the value aligned. -->
+        <span class="hover-bar" class:empty={!(showBars && s.pct != null)}>
+          {#if showBars && s.pct != null}
+            <i class="fill {s.level}" style="width: {s.pct}%"></i>
+          {/if}
+        </span>
         <span class="hover-val {s.level}">{s.text}</span>
-      </div>
-    {/each}
+      {/each}
+    </div>
   {/if}
 </div>

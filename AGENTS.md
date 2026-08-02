@@ -26,7 +26,8 @@ aspiration.
 
 **Do not `git push` unless explicitly asked.** Every push triggers a Windows CI
 build that the repo owner budgets by hand. Commit locally and wait for explicit
-authorization before pushing.
+authorization before pushing. **When authorized, always push a feature branch,
+never `main`;** let the repo owner choose when to merge it.
 
 **Do not add a git remote, change remotes, or touch credentials.** There is a
 repo-local credential helper reading `~/.gh_token`, deliberately configured with

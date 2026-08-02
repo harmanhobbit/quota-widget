@@ -267,25 +267,32 @@ button.primary {
   font-size: 13px;
 }
 
-.hover-row {
-  display: flex;
+/* Name / bar / value as three shared columns. A grid rather than one flex row
+   per account, so bar starts and ends — and the values after them — line up
+   even when account names differ in width. */
+.hover-rows {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
   align-items: center;
-  gap: 8px;
+  gap: 5px 8px;
   font-size: 12px;
 }
 
 .hover-name {
-  flex: 0 0 auto;
   color: var(--muted);
 }
 
 .hover-bar {
-  flex: 1 1 auto;
   height: 5px;
   min-width: 30px;
   background: var(--border);
   border-radius: 3px;
   overflow: hidden;
+}
+
+/* Holds the column open for rows with no percentage to show. */
+.hover-bar.empty {
+  background: none;
 }
 
 .hover-bar .fill {
@@ -295,8 +302,8 @@ button.primary {
 }
 
 .hover-val {
-  flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .hover-val.warn {
@@ -446,7 +453,9 @@ select {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 4px 6px;
+  /* Extra right padding leaves room for the platform-drawn dropdown arrow,
+     which otherwise overlaps the selected option's text. */
+  padding: 4px 22px 4px 6px;
   max-width: 100%;
   min-width: 0;
 }
