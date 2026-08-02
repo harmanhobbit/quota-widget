@@ -46,7 +46,7 @@ verifies this. Update the version number for every change, bumping it in
 ## Build and test
 
 ```sh
-cargo test -p quota-core   # 19 tests, all pure Rust — this is your main feedback loop
+cargo test -p quota-core   # 34 tests, all pure Rust — this is your main feedback loop
 npm run build              # vite build of the Svelte frontend
 npm run check-versions     # version consistency across the four files
 npm i -D jsdom --no-save && npm run smoke-mount   # does the UI actually render?
@@ -107,44 +107,45 @@ Neither is caught by the compiler, `npm run build`, or CI. Both are caught by
 
 ### Provider identity is a string, not an enum
 
-`Config.providers` is `BTreeMap<String, ProviderConfig>` (`config.rs:63-77`) and
-`UsageSnapshot.provider_id` is a `String`. There is **no `ProviderId` enum**.
-Adapters are unit structs whose `id()` returns `&'static str`
-(`providers/mod.rs:43-58`), and each adapter reads its own settings by string
-literal, e.g. `provider_setting("claude", "auth_mode")` (`claude.rs:44`).
+`Config.providers` is `BTreeMap<String, ProviderConfig>` (`config.rs:93`, with
+`ProviderConfig` at `config.rs:41`) and `UsageSnapshot.provider_id` is a
+`String`. There is **no `ProviderId` enum**. The `Provider` trait
+(`providers/mod.rs:50-53`) splits identity three ways: `kind()` is the
+`&'static str` adapter family, while `id()` and `name()` return owned per-account
+values. Adapters are instantiated one per config entry and hold their own key,
+so settings are read by that key rather than a literal, e.g.
+`provider_setting(key, "auth_mode")` (`claude.rs:47`).
 
 ### Config has no versioning and fails silently
 
-`Config::load` (`config.rs:123`) does `serde_json::from_str(&text).unwrap_or_default()`
-— **any parse error silently discards the entire config**, and there's a test
-asserting that behaviour (`config.rs:156-162`). `save()` is a non-atomic
-`fs::write`. Forward-compat rests entirely on `#[serde(default)]`. Adding fields
-is safe; renaming or re-keying anything is not, without a migration step that
-does not currently exist.
+`Config::load` (`config.rs:157`) does `serde_json::from_str(&text).unwrap_or_default()`
+(`config.rs:160`) — **any parse error silently discards the entire config**, and
+there's a test asserting that behaviour
+(`missing_or_corrupt_file_yields_defaults`, `config.rs:194`). `save()`
+(`config.rs:165`) writes to `config.json.tmp` and renames, so a torn write can't
+corrupt an existing config. Forward-compat rests entirely on `#[serde(default)]`.
+Adding fields is safe; renaming or re-keying anything is not, without a migration
+step that does not currently exist.
 
-### Known live bug — `codex_oauth` secret is unreadable
+### Secret keys are derived from config, never enumerated
 
-`secrets.rs:10` has a hardcoded allow-list:
+The Windows keyring backend has **no enumeration API**, so the set of secret
+keys must be derived from `Config.providers` keys rather than discovered from
+the store. `load_all` (`secrets.rs:118`) does exactly that: it walks the config
+and, for `claude`/`codex` accounts, additionally derives `oauth_key(key)`.
+Validation is a predicate, `valid_key` (`secrets.rs:12`) — there is no hardcoded
+provider allow-list, and adding one would break multi-account, whose keys are
+user-generated (`claude#2`).
 
-```rust
-const PROVIDERS: &[&str] = &["claude", "codex", "openrouter", "hermes", "claude_oauth"];
-```
-
-`"codex_oauth"` is missing, so `load_all` never surfaces it and
-`Codex::stored_auth` (`codex.rs:110-115`) always returns `None` — the built-in
-Codex device sign-in stores a token the poller can never read, while
-`Settings.svelte:40` still reports "signed in" because it calls `secrets::get`
-directly. Fix this if you touch the secrets layer.
-
-Also note: the Windows keyring backend has **no enumeration API**, so any dynamic
-set of secret keys must be derived from `Config.providers` keys, never discovered
-from the store.
+This is why account *keys* are immutable and separate from editable *labels*:
+renaming an account must only ever write `label`, because the key is
+load-bearing for secret names that cannot be enumerated to fix up afterwards.
 
 ### Codex has no token refresh
 
-Claude self-refreshes (`claude.rs:221-252`). Codex implements only initial device
-auth — no refresh path. Any design that assumes a long-lived Codex session is
-wrong.
+Claude self-refreshes (`refresh`, `claude.rs:245`). Codex implements only initial
+device auth — `stored_auth` (`codex.rs:128`) reads a token but there is no
+refresh path. Any design that assumes a long-lived Codex session is wrong.
 
 ---
 
@@ -160,8 +161,11 @@ The StatusNotifierItem D-Bus spec exposes only `Activate(x,y)`,
 enter/leave concept at any layer of the stack.** Worse, the current backend —
 `tray-icon 0.24.2` uses libappindicator (`platform_impl/gtk/mod.rs:12`) —
 delivers only menu activations, so the `TrayIconEvent::Click` / `Enter` / `Leave`
-handlers at `tray.rs:108-128` are **dead code on Linux**. That is why
-`tray.rs:90` sets `show_menu_on_left_click(cfg!(target_os = "linux"))`.
+handlers at `tray.rs:110-128` are **dead code on Linux** — which is why the
+Linux tray is now a separate `ksni` implementation in `tray_linux.rs`, gated
+`#[cfg(target_os = "linux")]` at `lib.rs:6`. The items in `tray.rs` carry the
+matching `#[cfg(not(target_os = "linux"))]`, so that path is Windows/macOS only
+and sets `show_menu_on_left_click(false)` unconditionally (`tray.rs:92`).
 
 What Plasma shows when you hover its battery applet is the applet's own SNI
 `ToolTip` **property**, rendered by Plasma — the app never learns a hover
@@ -180,17 +184,18 @@ tauri#3117), both labelled *upstream*.
 
 **The chosen workaround is XWayland**, and it is already in place:
 `nix/package.nix` emits a `.desktop` entry with `Exec=env GDK_BACKEND=x11 quota-widget`.
-The `on_wayland()` probe (`lib.rs:220-227`) already honours that override.
+The `on_wayland()` probe (`lib.rs:271-277`) already honours that override.
 Fractional scaling can look blurry under XWayland; that trade-off was accepted.
 
 Do **not** add gtk-layer-shell or a compositor-specific protocol without asking.
 
-### 3. Positioning ignores panels (a real bug worth fixing)
+### 3. Positioning respects panels — keep it that way
 
-`place_near_tray` (`tray.rs:160-175`) uses `monitor.size()` — full monitor bounds
-— despite a doc comment claiming work area. Tauri 2.11.5 does expose
-`monitor.work_area()` (`tauri/src/window/mod.rs:96`). Using it is the fix for
-popups landing under the panel.
+`place_near_tray` (`tray.rs:172`) uses `monitor.work_area()`, not
+`monitor.size()`, so popups clamp inside the panel-excluded area rather than
+landing under the panel. The mini-summary placement (`tray.rs:209`) does the
+same. Both must keep using `work_area()`; switching to `size()` reintroduces the
+under-panel bug.
 
 ---
 
@@ -228,7 +233,7 @@ several behaviours cannot be unit-tested.
 
 Match the surrounding code. This codebase has a consistent voice: comments
 explain *why*, particularly where a platform quirk forced a decision (see
-`tray.rs:87-89`, `secrets.rs`, `nix/package.nix`). Preserve that — a future
+`tray.rs:126`, `tray_linux.rs:1-2`, `secrets.rs`, `nix/package.nix`). Preserve that — a future
 reader hitting the same constraint should find the reason in place rather than
 rediscovering it. Keep `README.md`'s platform-differences table and Caveats
 section accurate when behaviour changes.
