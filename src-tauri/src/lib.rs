@@ -282,7 +282,8 @@ fn hide_window(window: tauri::Window) {
     // The mini summary's close button must also drop the pin, so it takes the
     // shared path rather than hiding itself directly.
     if window.label() == "mini" {
-        tray::hide_mini(&window.app_handle().clone());
+        use tauri::Manager;
+        tray::hide_mini(window.app_handle());
         return;
     }
     let _ = window.hide();
@@ -398,7 +399,7 @@ pub fn run() {
                     // separate user-configured click-away preference.
                     if window.label() == "mini" {
                         if !state.mini_pinned.load(Relaxed) {
-                            tray::hide_mini(&window.app_handle().clone());
+                            tray::hide_mini(window.app_handle());
                         }
                         return;
                     }
