@@ -165,12 +165,11 @@ async fn exchange(http: &reqwest::Client, code: &str, verifier: &str) -> Result<
     // either source with one parser. account_id isn't returned by any
     // endpoint — it comes out of the id_token's claims.
     //
-    // The id_token itself is deliberately NOT stored. Windows Credential
-    // Manager caps a credential blob at CRED_MAX_CREDENTIAL_BLOB_SIZE (2560
-    // bytes, counted as UTF-16), and access_token + id_token together exceed
-    // it, so keyring rejected the whole write with "password encoded as
-    // UTF-16 is longer than platform limit of 2560 chars" and sign-in failed.
-    // Resolving account_id here means nothing downstream needs the id_token.
+    // The id_token itself is deliberately NOT stored: resolving account_id
+    // here means nothing downstream needs it, so there is no reason to keep a
+    // third JWT around. Note this is no longer what keeps the secret within
+    // the Windows credential blob limit — access_token + refresh_token exceed
+    // it on their own, and `secrets` splits oversized values across entries.
     Ok(serde_json::json!({
         "tokens": {
             "access_token": access,
