@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
 
+  const APP_VERSION = __QUOTA_WIDGET_VERSION__;
   let snapshots = $state([]);
   let showBars = $state(true);
   let pinned = $state(false);
@@ -42,7 +43,7 @@
 
 <div class="mini">
   <header data-tauri-drag-region>
-    <span data-tauri-drag-region>Quota Widget</span>
+    <span data-tauri-drag-region>Quota Widget <small class="build-version" data-tauri-drag-region>v{APP_VERSION}</small></span>
     <span class="spacer" data-tauri-drag-region></span>
     <button class="icon mini-pin" title={pinned ? 'Unpin summary' : 'Pin summary'} onclick={togglePin}>{pinned ? '●' : '○'}</button>
     <button class="icon mini-close" title="Hide summary" onclick={() => invoke('hide_window')}>✕</button>
