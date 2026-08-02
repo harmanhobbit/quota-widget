@@ -22,7 +22,9 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "visible": false,
-        "center": true
+        "center": true,
+        "shadow": true,
+        "transparent": true
       },
       {
         "label": "mini",
@@ -36,7 +38,7 @@
         "skipTaskbar": true,
         "visible": false,
         "shadow": true,
-        "transparent": false
+        "transparent": true
       }
     ],
     "security": {

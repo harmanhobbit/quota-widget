@@ -24,10 +24,20 @@ aspiration.
 
 ## Ground rules
 
-**Do not `git push` unless explicitly asked.** Every push triggers a Windows CI
-build that the repo owner budgets by hand. Commit locally and wait for explicit
-authorization before pushing. **When authorized, always push a feature branch,
-never `main`;** let the repo owner choose when to merge it.
+**Never push to `main`.** This is the one hard rule. `main` is what the repo
+owner merges into deliberately, and `.github/workflows/build.yml` builds every
+push to it on a Windows runner the owner budgets by hand. Work on a feature
+branch and let the owner choose when to merge.
+
+**Commit freely, at logical intervals.** Commits are cheap and local — make one
+whenever a coherent unit of work is done and the tests you can run still pass,
+rather than accumulating one enormous commit at the end. A version bump plus its
+change is a good unit; so is a self-contained refactor. This keeps changes
+reviewable and makes a bad step easy to back out.
+
+**Push a branch only when asked.** Branch pushes don't trigger CI, but they are
+still outward-facing. The metered step is dispatching a build
+(`gh workflow run build.yml --ref <branch>`) — never do that unattended.
 
 **Do not add a git remote, change remotes, or touch credentials.** There is a
 repo-local credential helper reading `~/.gh_token`, deliberately configured with
@@ -202,34 +212,28 @@ under-panel bug.
 
 ## Current task
 
-A full implementation plan lives at **`docs/plan-tray-accounts.md`** in this
-repo. Read it before starting. Summary of intent:
+The active plan is **`docs/plan-updates-and-providers.md`**. Read it before
+starting. It covers two tracks:
 
-1. **Use the native tray tooltip on both platforms.** The custom hover-peek
-   window is gone: `tray::set_status` now sets the detailed multiline
-   `poller::tooltip_line()` text as the Windows tooltip, and `ksni` publishes
-   the same string as the Linux SNI tooltip. (An earlier revision of this plan
-   suppressed the Windows tooltip in favour of the peek window; two disagreeing
-   hover surfaces was the worse trade.)
-2. **Give Linux tray parity** by swapping to `ksni` — hover shows a
-   Plasma-drawn tooltip, left-click toggles the popup, right-click opens the menu.
-3. **Add a pin button** to the popup: pinned means it survives focus loss, stays
-   always-on-top, and anchors just above the panel. Unpinned popups still hide on
-   blur/Esc. Pin is per-session UI state, not persisted.
-4. **Support multiple accounts per provider** (two Claude, two Codex, etc.) by
-   splitting adapter identity into `kind()` / `id()` / `name()` and instantiating
-   one adapter per config entry. **Each account gets a user-typed name** —
-   "Work Claude", "Home Codex" — shown on the popup card, hover peek, tooltip and
-   toasts. Note the plan keeps the account *key* immutable and separate from the
-   editable *label*: renaming must only ever write `label`, because the key is
-   load-bearing for secret names (the Windows keyring can't be enumerated to fix
-   them up) and for alert-engine state.
+1. **Finesse patches (0.5.23–0.5.27).** Cosmetic only: rounded corners on the
+   mini and main windows, mini-summary row alignment and percentage-first
+   labels, a content-fitted mini height, and a collapsed "Add account" form.
+2. **Feature minors (0.6.0+).** Branch builds with a visible dev badge, upstream
+   update detection, native Windows install, a Nix-aware update prompt, a
+   Tailscale-vs-plain-SSH transport toggle, and new provider adapters.
 
-Parts 1–3 are one coherent milestone. Part 4 is independent and can land
-separately — it shares no code with the tray work beyond `poller.rs`.
+**Numbering is a hard requirement:** finesse items are patch bumps, features are
+minor bumps, and **no revision introduces more than one feature**. Task
+ownership between the Claude and Codex workstreams is defined in the plan; keep
+to it, since the split exists to stop two agents editing the same file.
 
-Verification steps are in the plan. Manual testing on KDE Plasma matters here:
-several behaviours cannot be unit-tested.
+Verification steps are in the plan. Manual testing on KDE Plasma and Windows 11
+matters here — several behaviours cannot be unit-tested, and the corner-radius
+work is entirely visual.
+
+`docs/plan-tray-accounts.md` is the **previous, completed** plan. It remains a
+good record of why tray, multi-account, `ksni`, and pinning work look the way
+they do, but it is not a to-do list — do not reimplement from it.
 
 ---
 

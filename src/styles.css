@@ -34,13 +34,20 @@ body {
   height: 100%;
 }
 
+/* Both windows are transparent (tauri.conf.json), which is what lets a rounded
+   shape show the desktop through its corners. That only works if nothing
+   behind the shape paints, so the document stays see-through and the
+   background/border/radius live on the element that actually draws the
+   window — `main` for the popup, `.mini` for the summary. */
+html,
+body {
+  background: transparent;
+}
+
 body {
   font-family: 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
-  background: var(--bg);
   color: var(--text);
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 10px;
   user-select: none;
 }
 
@@ -48,6 +55,11 @@ main {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  /* Keeps the scrolling card list from squaring off the bottom corners. */
+  overflow: hidden;
 }
 
 header {
@@ -250,6 +262,12 @@ button.primary {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  /* This element *is* the window's visible shape — see `.mini-view` above.
+     `overflow: hidden` keeps children from squaring off the corners. */
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
 }
 
 .mini header {
@@ -278,8 +296,13 @@ button.primary {
   font-size: 12px;
 }
 
+/* Names right-aligned and values left-aligned pulls both columns in against
+   the bars, closing the ragged gutter an outward alignment leaves at the
+   window edges. With percentage-first values that puts every number in one
+   column immediately after the bars. */
 .hover-name {
   color: var(--muted);
+  text-align: right;
 }
 
 .hover-bar {
@@ -303,7 +326,7 @@ button.primary {
 
 .hover-val {
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  text-align: left;
 }
 
 .hover-val.warn {
