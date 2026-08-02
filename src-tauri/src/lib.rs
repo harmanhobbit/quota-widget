@@ -307,6 +307,20 @@ fn set_mini_pinned(
     }
 }
 
+/// Fit the mini summary's height to its rendered content.
+///
+/// The main window does this from JS with `setSize`, but `mini`'s capability
+/// deliberately grants no window-management permissions — Rust owns all of its
+/// sizing and positioning — so the frontend reports a measurement and Rust
+/// performs the move. Guarded on the label so nothing else can drive it.
+#[tauri::command]
+fn set_mini_height(window: tauri::WebviewWindow, height: f64) {
+    if window.label() != "mini" {
+        return;
+    }
+    tray::resize_mini_to(&window, height);
+}
+
 /// Fired by the frontend on a title-bar mousedown, just before the native
 /// drag begins — arms the blur grace period.
 #[tauri::command]
@@ -367,6 +381,7 @@ pub fn run() {
             on_wayland,
             hide_window,
             set_mini_pinned,
+            set_mini_height,
             note_drag,
             quit,
         ])

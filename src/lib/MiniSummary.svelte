@@ -1,10 +1,11 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
 
   const APP_VERSION = __QUOTA_WIDGET_VERSION__;
   let snapshots = $state([]);
+  let miniEl = $state(null);
   let showBars = $state(true);
   let pinned = $state(false);
   let config = $state(null);
@@ -37,6 +38,27 @@
     // the button has to follow or it reopens looking pinned when it isn't.
     listen('mini-pinned', (e) => (pinned = e.payload)).then((u) => unlisten.push(u));
     return () => unlisten.forEach((u) => u());
+  });
+
+  // The window is a fixed height in tauri.conf.json, which leaves dead space
+  // under a short account list. Unlike App this cannot call `setSize` itself —
+  // the mini capability grants no window-management permissions — so it
+  // measures and lets Rust resize and re-anchor in one step.
+  async function fitHeight() {
+    if (!miniEl) return;
+    try {
+      await invoke('set_mini_height', { height: miniEl.offsetHeight });
+    } catch {
+      // sizing is cosmetic — never let it break the UI
+    }
+  }
+
+  $effect(() => {
+    void snapshots;
+    void showBars;
+    void loadError;
+    void loaded;
+    tick().then(fitHeight);
   });
 
   function levelOf(pct) {
@@ -76,7 +98,7 @@
   }
 </script>
 
-<div class="mini">
+<div class="mini" bind:this={miniEl}>
   <header data-tauri-drag-region>
     <span data-tauri-drag-region>Quota Widget <small class="build-version" data-tauri-drag-region>v{APP_VERSION}</small></span>
     <span class="spacer" data-tauri-drag-region></span>
