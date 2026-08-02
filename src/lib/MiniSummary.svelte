@@ -65,7 +65,9 @@
     return { text: 'no data', level: 'stale' };
   }
 
-  const windowSummary = (window) => ({ text: `${window.label} ${window.used_pct.toFixed(0)}%`, level: levelOf(window.used_pct), pct: Math.min(window.used_pct, 100) });
+  // Percentage first, so every number lands in one scannable column right
+  // after the bars rather than sitting behind a variable-width label.
+  const windowSummary = (window) => ({ text: `${window.used_pct.toFixed(0)}% ${window.label}`, level: levelOf(window.used_pct), pct: Math.min(window.used_pct, 100) });
   const creditSummary = (credits) => ({ text: `${credits.balance.toFixed(2)} ${credits.unit}`, level: 'ok' });
 
   async function togglePin() {

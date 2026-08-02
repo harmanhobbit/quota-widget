@@ -296,8 +296,13 @@ button.primary {
   font-size: 12px;
 }
 
+/* Names right-aligned and values left-aligned pulls both columns in against
+   the bars, closing the ragged gutter an outward alignment leaves at the
+   window edges. With percentage-first values that puts every number in one
+   column immediately after the bars. */
 .hover-name {
   color: var(--muted);
+  text-align: right;
 }
 
 .hover-bar {
@@ -321,7 +326,7 @@ button.primary {
 
 .hover-val {
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  text-align: left;
 }
 
 .hover-val.warn {
