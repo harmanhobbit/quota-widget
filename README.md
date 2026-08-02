@@ -20,10 +20,11 @@ Platform differences are small but real:
 
 ## How it works
 
-- A tray icon shows worst-case status at a glance: 🟢 ok, 🟡 past your warn
-  threshold, 🔴 past critical, ⚪ grey when data is stale or auth failed. Each
-  provider has an **Include in tray icon** checkbox in Settings — clear it to
-  keep a provider on the popup without letting it drive the tray.
+- A tray icon shows the selected mini-summary values' worst-case status at a
+  glance: 🟢 ok, 🟡 past your warn threshold, 🔴 past critical, ⚪ grey when
+  data is stale or auth failed. Each enabled account can exclude its selected
+  value from that calculation in Settings while remaining visible in the
+  popup.
 - **Left-click** the tray icon to toggle a compact mini summary near the tray.
   It hides when it loses focus unless you pin it with its circle button; the
   pin lasts only for the current app session. A Settings checkbox controls
@@ -56,7 +57,9 @@ Accounts can be moved up and down in Settings; that order is saved and is the
 order used in the full popup, mini summary, and tray tooltip. Each account can
 also choose its own mini-summary headline: Automatic picks the worst real quota
 window (or credits), while a specific window or credit balance keeps that
-compact row focused without changing alerts, cards, or tray status.
+compact row focused. Choose None to omit the account from the compact summary.
+The selected value can also contribute to the tray icon's status and gauge;
+this does not change alerts or card status.
 
 Secrets (API keys, cookies, OAuth tokens) are stored in the **Windows Credential
 Manager**, not on disk. On Linux they fall back to a `0600` `secrets.json` in the

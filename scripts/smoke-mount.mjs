@@ -106,7 +106,7 @@ const CASES = [
   {
     file: 'src/lib/Settings.svelte',
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
-    expect: ['Providers', 'Mini-summary headline', 'Automatic', 'Thresholds', 'Alerts', 'Save'],
+    expect: ['Providers', 'Mini-summary headline', 'Automatic', 'None', 'Thresholds', 'Alerts', 'Save'],
     verify: async ({ target, flushSync }) => {
       const findButton = (text) => [...target.querySelectorAll('button')].find((button) => button.textContent.trim() === text);
       findButton('+ Add account').click();

@@ -257,7 +257,7 @@
       hermes: [{ id: 'credits', label: 'Purchased credit balance' }, { id: 'window:monthly_cap', label: 'Monthly cap' }, { id: 'window:monthly_allowance', label: 'Monthly allowance' }],
     }[kind] ?? [];
     const live = snapshots.find((snap) => snap.provider_id === id)?.windows ?? [];
-    const choices = [{ id: '', label: 'Automatic' }, ...known];
+    const choices = [{ id: '', label: 'Automatic' }, { id: 'none', label: 'None' }, ...known];
     for (const window of live) {
       if (window.metric_id) choices.push({ id: `window:${window.metric_id}`, label: window.label });
     }
@@ -300,12 +300,6 @@
           </div>
           <p class="note">{p.note}</p>
           <label class="field">Account name <input maxlength="40" bind:value={account.label} placeholder={p.name} /></label>
-          {#if account.enabled}
-            <label class="row sub-toggle">
-              <input type="checkbox" bind:checked={account.in_tray} />
-              Include in tray icon
-            </label>
-          {/if}
           <label class="field">Mini-summary headline
             <select value={account.mini_summary_metric ?? ''} onchange={(event) => (account.mini_summary_metric = event.currentTarget.value || null)}>
               {#each metricOptions(id, account) as metric}
@@ -313,6 +307,12 @@
               {/each}
             </select>
           </label>
+          {#if account.enabled}
+            <label class="row sub-toggle">
+              <input type="checkbox" bind:checked={account.in_tray} disabled={account.mini_summary_metric === 'none'} />
+              Selected mini-summary value contributes to tray icon status
+            </label>
+          {/if}
           {#if p.secret}
             <div class="row">
               <input

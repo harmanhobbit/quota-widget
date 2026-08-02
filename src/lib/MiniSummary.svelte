@@ -69,8 +69,9 @@
   }
 
   function summarize(snap) {
-    if (snap.error) return { text: 'unavailable', level: 'stale' };
     const selected = config?.providers?.[snap.provider_id]?.mini_summary_metric;
+    if (selected === 'none') return null;
+    if (snap.error) return { text: 'unavailable', level: 'stale' };
     if (selected === 'credits' && snap.credits) return creditSummary(snap.credits);
     if (selected?.startsWith('window:')) {
       const metricId = selected.slice('window:'.length);
@@ -118,15 +119,17 @@
     <div class="hover-rows">
       {#each snapshots as snap (snap.provider_id)}
         {@const s = summarize(snap)}
-        <span class="hover-name">{snap.provider_name}</span>
-        <!-- Always rendered so a row without a bar (an error, or a credit
-             balance) still holds the column open and keeps the value aligned. -->
-        <span class="hover-bar" class:empty={!(showBars && s.pct != null)}>
-          {#if showBars && s.pct != null}
-            <i class="fill {s.level}" style="width: {s.pct}%"></i>
-          {/if}
-        </span>
-        <span class="hover-val {s.level}">{s.text}</span>
+        {#if s}
+          <span class="hover-name">{snap.provider_name}</span>
+          <!-- Always rendered so a row without a bar (an error, or a credit
+               balance) still holds the column open and keeps the value aligned. -->
+          <span class="hover-bar" class:empty={!(showBars && s.pct != null)}>
+            {#if showBars && s.pct != null}
+              <i class="fill {s.level}" style="width: {s.pct}%"></i>
+            {/if}
+          </span>
+          <span class="hover-val {s.level}">{s.text}</span>
+        {/if}
       {/each}
     </div>
   {/if}
