@@ -4,6 +4,7 @@
   import { listen } from '@tauri-apps/api/event';
 
   const APP_VERSION = __QUOTA_WIDGET_VERSION__;
+  const BUILD_BRANCH = __QUOTA_WIDGET_BRANCH__;
   let snapshots = $state([]);
   let miniEl = $state(null);
   let showBars = $state(true);
@@ -100,7 +101,7 @@
 
 <div class="mini" bind:this={miniEl}>
   <header data-tauri-drag-region>
-    <span data-tauri-drag-region>Quota Widget <small class="build-version" data-tauri-drag-region>v{APP_VERSION}</small></span>
+    <span data-tauri-drag-region>Quota Widget <small class="build-version" data-tauri-drag-region>v{APP_VERSION}</small>{#if BUILD_BRANCH} <small class="build-branch" data-tauri-drag-region>{BUILD_BRANCH}</small>{/if}</span>
     <span class="spacer" data-tauri-drag-region></span>
     <button class="icon mini-pin" title={pinned ? 'Unpin summary' : 'Pin summary'} onclick={togglePin}>{pinned ? '●' : '○'}</button>
     <button class="icon mini-close" title="Hide summary" onclick={() => invoke('hide_window')}>✕</button>

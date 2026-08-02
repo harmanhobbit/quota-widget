@@ -97,11 +97,12 @@ const SNAPSHOTS = [
 // takes its config as a prop that has been through $state in App, so it
 // arrives as a proxy — mirror that exactly, since it is what broke it before.
 const CASES = [
-  { file: 'src/App.svelte', props: () => ({}) },
+  { file: 'src/App.svelte', props: () => ({}), buildBranch: 'smoke-branch', expect: ['smoke-branch'] },
   // Verifies a chosen lower 5-hour headline wins over Automatic's 88% weekly
   // value, while an unavailable selected Codex weekly falls back to its 5-hour value.
   { file: 'src/lib/MiniSummary.svelte', props: () => ({}), expect: ['42% 5h', '70% 5h', '3.42 USD', '100% Monthly allowance (Plus)'] },
   { file: 'src/lib/MiniSummary.svelte', props: () => ({}), snapshotsError: true, expect: ['Could not load summary'] },
+  { file: 'src/lib/MiniSummary.svelte', props: () => ({}), buildBranch: 'smoke-branch', expect: ['smoke-branch'] },
   {
     file: 'src/lib/Settings.svelte',
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
@@ -195,6 +196,7 @@ for (const k of ['window', 'document', 'HTMLElement', 'Element', 'Node', 'Event'
   globalThis[k] = dom.window[k];
 }
 globalThis.__QUOTA_WIDGET_VERSION__ = '0.0.0-test';
+globalThis.__QUOTA_WIDGET_BRANCH__ = '';
 
 rmSync(WORK, { recursive: true, force: true });
 stubTauri();
@@ -209,6 +211,7 @@ for (const c of CASES) {
   let app;
   try {
     globalThis.__SMOKE_SNAPSHOTS_ERROR__ = Boolean(c.snapshotsError);
+    globalThis.__QUOTA_WIDGET_BRANCH__ = c.buildBranch ?? '';
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle
