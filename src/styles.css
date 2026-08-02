@@ -298,12 +298,12 @@ button.primary {
   font-size: 13px;
 }
 
-/* Name / bar / value as three shared columns. A grid rather than one flex row
-   per account, so bar starts and ends — and the values after them — line up
-   even when account names differ in width. */
+/* Name / bar / number / label as four shared columns. A grid rather than one
+   flex row per account, so bars, numbers, and labels all line up even when
+   account names differ in width. */
 .hover-rows {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr auto auto;
   grid-auto-rows: 16px;
   align-items: center;
   gap: 5px 8px;
@@ -311,10 +311,8 @@ button.primary {
   line-height: 16px;
 }
 
-/* Names right-aligned and values left-aligned pulls both columns in against
-   the bars, closing the ragged gutter an outward alignment leaves at the
-   window edges. With percentage-first values that puts every number in one
-   column immediately after the bars. */
+/* Names right-aligned pulls the column in against the bars, closing the ragged
+   gutter an outward alignment leaves at the window edge. */
 .hover-name {
   color: var(--muted);
   text-align: right;
@@ -339,20 +337,47 @@ button.primary {
   border-radius: 3px;
 }
 
+/* Its own column, right-aligned, so a "0%" ends where a "100%" does and every
+   label after it starts in the same place. */
 .hover-val {
   font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Nothing to align against a bar, so the amount takes the bar column too and
+   ends flush with the percentages above it. */
+.hover-amount {
+  grid-column: 2 / span 2;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.hover-label {
   text-align: left;
 }
 
-.hover-val.warn {
+/* Status text ("unavailable", "no data") is one phrase, not a number and a
+   label. */
+.hover-val.span {
+  grid-column: 3 / span 2;
+  text-align: left;
+}
+
+.hover-val.warn,
+.hover-label.warn,
+.hover-amount.warn {
   color: var(--warn);
 }
 
-.hover-val.critical {
+.hover-val.critical,
+.hover-label.critical,
+.hover-amount.critical {
   color: var(--critical);
 }
 
-.hover-val.stale {
+.hover-val.stale,
+.hover-label.stale,
+.hover-amount.stale {
   color: var(--muted);
 }
 

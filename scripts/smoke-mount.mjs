@@ -100,7 +100,7 @@ const CASES = [
   { file: 'src/App.svelte', props: () => ({}), buildBranch: 'smoke-branch', expect: ['smoke-branch'] },
   // Verifies a chosen lower 5-hour headline wins over Automatic's 88% weekly
   // value, while an unavailable selected Codex weekly falls back to its 5-hour value.
-  { file: 'src/lib/MiniSummary.svelte', props: () => ({}), expect: ['42% 5h', '70% 5h', '3.42 USD', '100% Monthly allowance (Plus)'] },
+  { file: 'src/lib/MiniSummary.svelte', props: () => ({}), expect: ['42%', '5h', '70%', '$3.42', 'USD', '100%', 'Monthly allowance (Plus)'] },
   { file: 'src/lib/MiniSummary.svelte', props: () => ({}), snapshotsError: true, expect: ['Could not load summary'] },
   { file: 'src/lib/MiniSummary.svelte', props: () => ({}), buildBranch: 'smoke-branch', expect: ['smoke-branch'] },
   {

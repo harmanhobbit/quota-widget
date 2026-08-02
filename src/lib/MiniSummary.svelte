@@ -89,10 +89,24 @@
     return { text: 'no data', level: 'stale' };
   }
 
-  // Percentage first, so every number lands in one scannable column right
-  // after the bars rather than sitting behind a variable-width label.
-  const windowSummary = (window) => ({ text: `${window.used_pct.toFixed(0)}% ${window.label}`, level: levelOf(window.used_pct), pct: Math.min(window.used_pct, 100) });
-  const creditSummary = (credits) => ({ text: `${credits.balance.toFixed(2)} ${credits.unit}`, level: 'ok' });
+  const CURRENCY_SYMBOLS = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
+
+  // The number is its own right-aligned column so a "0%" lines up under a
+  // "100%" and every label after it still starts in the same place.
+  const windowSummary = (window) => ({
+    value: `${window.used_pct.toFixed(0)}%`,
+    label: window.label,
+    level: levelOf(window.used_pct),
+    pct: Math.min(window.used_pct, 100),
+  });
+  // The currency is the row's label, matching "5-hour" on a window row, so the
+  // amount only needs the bar column — dead space on a credit row — plus the
+  // number column, where right-aligning lands it under the percentages.
+  const creditSummary = (credits) => ({
+    amount: `${CURRENCY_SYMBOLS[credits.unit] ?? ''}${credits.balance.toFixed(2)}`,
+    label: credits.unit,
+    level: 'ok',
+  });
 
   async function togglePin() {
     pinned = !pinned;
@@ -121,14 +135,28 @@
         {@const s = summarize(snap)}
         {#if s}
           <span class="hover-name">{snap.provider_name}</span>
-          <!-- Always rendered so a row without a bar (an error, or a credit
-               balance) still holds the column open and keeps the value aligned. -->
-          <span class="hover-bar" class:empty={!(showBars && s.pct != null)}>
-            {#if showBars && s.pct != null}
-              <i class="fill {s.level}" style="width: {s.pct}%"></i>
+          {#if s.amount != null}
+            <!-- The bar column is dead space on a credit row, so the amount
+                 spans it and the number column, ending flush with the
+                 percentages; the currency sits in the label column. -->
+            <span class="hover-amount {s.level}">{s.amount}</span>
+            <span class="hover-label {s.level}">{s.label}</span>
+          {:else}
+            <!-- Always rendered so a row without a bar (an error) still holds
+                 the column open and keeps the numbers aligned. -->
+            <span class="hover-bar" class:empty={!(showBars && s.pct != null)}>
+              {#if showBars && s.pct != null}
+                <i class="fill {s.level}" style="width: {s.pct}%"></i>
+              {/if}
+            </span>
+            {#if s.value != null}
+              <span class="hover-val {s.level}">{s.value}</span>
+              <span class="hover-label {s.level}">{s.label}</span>
+            {:else}
+              <!-- Status text is one phrase, so it spans number and label. -->
+              <span class="hover-val span {s.level}">{s.text}</span>
             {/if}
-          </span>
-          <span class="hover-val {s.level}">{s.text}</span>
+          {/if}
         {/if}
       {/each}
     </div>
