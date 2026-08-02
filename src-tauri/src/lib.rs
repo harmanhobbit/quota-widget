@@ -84,7 +84,7 @@ async fn get_snapshots(
 }
 
 #[tauri::command]
-async fn get_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config, String> {
+async fn load_config(state: tauri::State<'_, Arc<AppState>>) -> Result<Config, String> {
     Ok(state.config.read().await.clone())
 }
 
@@ -341,7 +341,7 @@ pub fn run() {
         .manage(state.clone())
         .invoke_handler(tauri::generate_handler![
             get_snapshots,
-            get_config,
+            load_config,
             app_version,
             set_config,
             set_secret,

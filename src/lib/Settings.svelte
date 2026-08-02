@@ -32,7 +32,7 @@
   async function loadSettings() {
     loadError = '';
     try {
-      const cfg = await invoke('get_config');
+      const cfg = await invoke('load_config');
       // Normalize configured accounts only. Do not recreate removed defaults.
       for (const account of Object.values(cfg.providers)) {
         account.settings ??= {};
