@@ -1,10 +1,11 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
 
   const APP_VERSION = __QUOTA_WIDGET_VERSION__;
   let snapshots = $state([]);
+  let miniEl = $state(null);
   let showBars = $state(true);
   let pinned = $state(false);
   let config = $state(null);
@@ -39,6 +40,27 @@
     return () => unlisten.forEach((u) => u());
   });
 
+  // The window is a fixed height in tauri.conf.json, which leaves dead space
+  // under a short account list. Unlike App this cannot call `setSize` itself —
+  // the mini capability grants no window-management permissions — so it
+  // measures and lets Rust resize and re-anchor in one step.
+  async function fitHeight() {
+    if (!miniEl) return;
+    try {
+      await invoke('set_mini_height', { height: miniEl.offsetHeight });
+    } catch {
+      // sizing is cosmetic — never let it break the UI
+    }
+  }
+
+  $effect(() => {
+    void snapshots;
+    void showBars;
+    void loadError;
+    void loaded;
+    tick().then(fitHeight);
+  });
+
   function levelOf(pct) {
     if (pct >= 95) return 'critical';
     if (pct >= 80) return 'warn';
@@ -65,7 +87,9 @@
     return { text: 'no data', level: 'stale' };
   }
 
-  const windowSummary = (window) => ({ text: `${window.label} ${window.used_pct.toFixed(0)}%`, level: levelOf(window.used_pct), pct: Math.min(window.used_pct, 100) });
+  // Percentage first, so every number lands in one scannable column right
+  // after the bars rather than sitting behind a variable-width label.
+  const windowSummary = (window) => ({ text: `${window.used_pct.toFixed(0)}% ${window.label}`, level: levelOf(window.used_pct), pct: Math.min(window.used_pct, 100) });
   const creditSummary = (credits) => ({ text: `${credits.balance.toFixed(2)} ${credits.unit}`, level: 'ok' });
 
   async function togglePin() {
@@ -74,7 +98,7 @@
   }
 </script>
 
-<div class="mini">
+<div class="mini" bind:this={miniEl}>
   <header data-tauri-drag-region>
     <span data-tauri-drag-region>Quota Widget <small class="build-version" data-tauri-drag-region>v{APP_VERSION}</small></span>
     <span class="spacer" data-tauri-drag-region></span>

@@ -218,7 +218,7 @@ and the artifact names collide.
   CI build") is no longer true for branches — pushing a branch is now free and
   the *dispatch* is the metered step.
 
-**Owner: Claude** (build plumbing; the App.svelte touch is a two-line badge, not
+**Owner: Codex** (build plumbing; the App.svelte touch is a two-line badge, not
 worth splitting).
 
 ### 0.7.0 — Upstream update detection

@@ -6,7 +6,7 @@ use tauri::image::Image;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 #[cfg(not(target_os = "linux"))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, PhysicalPosition, Runtime};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Runtime};
 
 #[cfg(not(target_os = "linux"))]
 pub const TRAY_ID: &str = "quota-tray";
@@ -205,6 +205,30 @@ pub fn anchor_above_panel<R: Runtime>(win: &tauri::WebviewWindow<R>) {
     let x = area.position.x + area.size.width as i32 - size.width as i32 - 12;
     let y = area.position.y + area.size.height as i32 - size.height as i32;
     let _ = win.set_position(PhysicalPosition::new(x.max(area.position.x), y));
+}
+
+/// Resize the mini summary to fit its content and immediately re-anchor it.
+///
+/// These are one operation, not two: `anchor_above_panel` pins the window's
+/// *bottom* edge to the work area, so changing the height moves the top edge.
+/// Resizing without re-anchoring in the same step leaves the window sitting
+/// wherever its old top-left put it, and the summary visibly jumps.
+pub fn resize_mini_to<R: Runtime>(win: &tauri::WebviewWindow<R>, logical_height: f64) {
+    let Ok(scale) = win.scale_factor() else {
+        return;
+    };
+    let Ok(size) = win.inner_size() else {
+        return;
+    };
+    // Clamped rather than trusted: the height comes from a DOM measurement, so
+    // a mid-render zero or a runaway account list must not produce a window
+    // that cannot be seen or cannot be dismissed.
+    let height = (logical_height * scale).round().clamp(60.0, 800.0) as u32;
+    if height == size.height {
+        return;
+    }
+    let _ = win.set_size(PhysicalSize::new(size.width, height));
+    anchor_above_panel(win);
 }
 
 /// Show the always-on-top popup, positioned near the tray click when we know
