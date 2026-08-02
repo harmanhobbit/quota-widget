@@ -27,7 +27,13 @@ aspiration.
 **Never push to `main`.** This is the one hard rule. `main` is what the repo
 owner merges into deliberately, and `.github/workflows/build.yml` builds every
 push to it on a Windows runner the owner budgets by hand. Work on a feature
-branch and let the owner choose when to merge.
+branch and let the owner choose when to merge. Pushing a branch itself is free:
+only a manual build dispatch (`gh workflow run build.yml --ref <branch>`) spends
+the Windows-runner budget.
+
+**Branch-build badges are CI-driven.** `QUOTA_WIDGET_BRANCH` is the sole source
+of the visible branch badge. Never hardcode or strip it: local and `main`
+builds correctly leave it empty, while dispatched branch builds show their ref.
 
 **Commit freely, at logical intervals.** Commits are cheap and local — make one
 whenever a coherent unit of work is done and the tests you can run still pass,

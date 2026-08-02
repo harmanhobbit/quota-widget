@@ -8,6 +8,7 @@
   import Settings from './lib/Settings.svelte';
 
   const APP_VERSION = __QUOTA_WIDGET_VERSION__;
+  const BUILD_BRANCH = __QUOTA_WIDGET_BRANCH__;
   let view = $state('popup'); // 'popup' | 'settings'
   let snapshots = $state([]);
   let appConfig = $state(null);
@@ -78,7 +79,7 @@
 
 <main>
   <header role="toolbar" aria-label="Window controls" tabindex="-1" data-tauri-drag-region bind:this={headerEl} onmousedown={() => invoke('note_drag')}>
-    <span class="title" data-tauri-drag-region>Quota Widget <small class="build-version" data-tauri-drag-region>v{APP_VERSION}</small></span>
+    <span class="title" data-tauri-drag-region>Quota Widget <small class="build-version" data-tauri-drag-region>v{APP_VERSION}</small>{#if BUILD_BRANCH} <small class="build-branch" data-tauri-drag-region>{BUILD_BRANCH}</small>{/if}</span>
     <span class="spacer" data-tauri-drag-region></span>
     {#if view === 'popup'}
       <button class="icon" title="Refresh now" class:spin={refreshing} onclick={refresh}>⟳</button>

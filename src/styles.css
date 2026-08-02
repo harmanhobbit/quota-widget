@@ -80,6 +80,19 @@ header {
   font-weight: 400;
 }
 
+/* CI provides this only for branch builds, making a test EXE unmistakable
+   without changing the appearance of local or main/release builds. */
+.build-branch {
+  display: inline-block;
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: #fff;
+  background: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
 .spacer {
   flex: 1;
 }
