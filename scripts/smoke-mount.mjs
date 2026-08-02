@@ -108,11 +108,16 @@ const CASES = [
     expect: ['Providers', 'Mini-summary headline', 'Automatic', 'Thresholds', 'Alerts', 'Save'],
     verify: async ({ target, flushSync }) => {
       const findButton = (text) => [...target.querySelectorAll('button')].find((button) => button.textContent.trim() === text);
-      const addName = target.querySelector('.settings > section > .row input');
+      findButton('+ Add account').click();
+      flushSync();
+      const addName = target.querySelector('.add-account input');
       addName.value = 'Work Claude';
       addName.dispatchEvent(new window.Event('input', { bubbles: true }));
       findButton('Add account').click();
       flushSync();
+      if (target.querySelector('.add-account') || !findButton('+ Add account')) {
+        throw new Error('add-account panel did not collapse after adding an account');
+      }
       target.querySelector('button[aria-label="Move Codex up"]').click();
       [...target.querySelectorAll('.provider')]
         .find((card) => card.querySelector('strong').textContent.trim() === 'OpenRouter')
