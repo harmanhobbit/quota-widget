@@ -3,13 +3,17 @@ resolver = "2"
 members = ["crates/quota-core", "src-tauri"]
 
 [workspace.package]
-version = "0.5.19"
+version = "0.5.21"
 edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` is load-bearing, not a preference: without it serde_json's
+# Map is a BTreeMap that re-sorts object keys, so the user's account order is
+# destroyed at every JSON boundary (IPC deserialize, config save, event emit)
+# even though Config.providers is an IndexMap.
+serde_json = { version = "1", features = ["preserve_order"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

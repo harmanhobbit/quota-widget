@@ -167,10 +167,32 @@ pub fn toggle_mini<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition
         return;
     };
     if win.is_visible().unwrap_or(false) {
-        let _ = win.hide();
+        hide_mini(app);
     } else {
         show_mini(app, near);
     }
+}
+
+/// Hide the mini summary and drop its pin. Pinning is deliberately a
+/// per-showing state, not a sticky one: closing the summary is the user
+/// dismissing it, so the next tray click should open an ordinary transient
+/// summary rather than silently reinstating always-on-top. Every path that
+/// hides this window must go through here, or the flag outlives the window.
+pub fn hide_mini<R: Runtime>(app: &AppHandle<R>) {
+    let Some(win) = app.get_webview_window("mini") else {
+        return;
+    };
+    let _ = win.hide();
+    if let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() {
+        state
+            .mini_pinned
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    let _ = win.set_always_on_top(false);
+    // The webview survives hiding, so tell the frontend to un-light its pin
+    // button; otherwise it would reopen showing pinned while it is not.
+    use tauri::Emitter;
+    let _ = app.emit("mini-pinned", false);
 }
 
 /// Pin to the work area's lower edge: this is immediately above a bottom
@@ -191,9 +213,7 @@ pub fn show_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
-    if let Some(mini) = app.get_webview_window("mini") {
-        let _ = mini.hide();
-    }
+    hide_mini(app);
     if let Some(pos) = near {
         place_near_tray(&win, pos);
     }

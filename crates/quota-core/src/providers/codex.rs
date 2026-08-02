@@ -101,7 +101,11 @@ pub fn auth_mode(ctx: &ProviderCtx, key: &str) -> AuthMode {
 pub const OAUTH_SECRET_KEY: &str = "codex_oauth";
 
 /// Parse the `tokens` object shared by the CLI's auth.json and our own stored
-/// secret: `{access_token, refresh_token, id_token, account_id}`.
+/// secret: `{access_token, refresh_token, id_token?, account_id?}`.
+///
+/// `id_token` is present in the CLI's file but deliberately absent from what
+/// we store (it would blow the Windows credential size limit), so `account_id`
+/// is resolved at sign-in time and the JWT fallback below serves the CLI only.
 pub fn parse_codex_tokens(tokens: &Value) -> Option<CodexAuth> {
     let access = tokens["access_token"].as_str().filter(|s| !s.is_empty())?;
     let account_id = tokens["account_id"]
