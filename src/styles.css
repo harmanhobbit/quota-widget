@@ -44,6 +44,18 @@ body {
   user-select: none;
 }
 
+/* The `mini` window is transparent (tauri.conf.json), which is what lets a
+   rounded shape show the desktop through its corners. That only works if
+   nothing behind the shape paints: the document has to be see-through and the
+   border/radius/background must live on `.mini`, which is the element actually
+   drawing the window. `main.js` sets this class from `?view=mini`. */
+.mini-view,
+.mini-view body {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+
 main {
   display: flex;
   flex-direction: column;
@@ -250,6 +262,12 @@ button.primary {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  /* This element *is* the window's visible shape — see `.mini-view` above.
+     `overflow: hidden` keeps children from squaring off the corners. */
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
 }
 
 .mini header {
