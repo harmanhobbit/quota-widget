@@ -30,6 +30,7 @@
   let onWayland = $state(false);
   let newKind = $state('claude');
   let newName = $state('');
+  let addingAccount = $state(false);
   let saveError = $state('');
   let removalError = $state('');
   // Removal clears secrets before deleting the config entry. Save must wait
@@ -214,6 +215,7 @@
     config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, mini_summary_metric: null, settings: $state.snapshot(template?.settings ?? {}) };
     ensureFlows();
     newName = '';
+    addingAccount = false;
   }
 
   function removeAccount(id) {
@@ -266,7 +268,22 @@
 <div class="settings">
     <section>
       <h2>Providers</h2>
-      <div class="row"><select bind:value={newKind}>{#each PROVIDERS as p}<option value={p.id}>{p.name}</option>{/each}</select><input placeholder="Account name (optional)" bind:value={newName} /><button class="small" onclick={addAccount}>Add account</button></div>
+      {#if addingAccount}
+        <div class="add-account">
+          <label class="field">Account name (optional)
+            <input placeholder="Account name (optional)" bind:value={newName} />
+          </label>
+          <label class="field">Provider
+            <select bind:value={newKind}>{#each PROVIDERS as p}<option value={p.id}>{p.name}</option>{/each}</select>
+          </label>
+          <div class="add-account-actions">
+            <button onclick={addAccount}>Add account</button>
+            <button onclick={() => (addingAccount = false)}>Cancel</button>
+          </div>
+        </div>
+      {:else}
+        <button class="add-account-toggle" onclick={() => (addingAccount = true)}>+ Add account</button>
+      {/if}
       {#each Object.entries(config.providers) as [id, account], index (id)}
         {@const p = providerInfo(account.kind ?? id)}
         <div class="provider">

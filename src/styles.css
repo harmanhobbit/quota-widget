@@ -483,6 +483,34 @@ select option {
   color: var(--text);
 }
 
+/* Account creation is expanded only on demand, keeping the narrow popup's
+   provider list uncluttered while giving its controls a comfortable target. */
+.add-account {
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.add-account-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.add-account-actions button,
+.add-account-toggle {
+  min-height: 32px;
+  padding: 6px 10px;
+}
+
+.add-account .field input,
+.add-account .field select {
+  min-height: 34px;
+  box-sizing: border-box;
+}
+
 .wrap {
   word-break: break-all;
   user-select: text;
