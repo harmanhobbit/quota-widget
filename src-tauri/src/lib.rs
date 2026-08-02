@@ -13,7 +13,7 @@ use quota_core::providers::{providers_for, ProviderCtx};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{Emitter, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
 use tokio::sync::{Mutex, Notify, RwLock};
 
