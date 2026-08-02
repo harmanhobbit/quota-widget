@@ -49,6 +49,7 @@ verifies this. Update the version number for every change, bumping it in
 cargo test -p quota-core   # 19 tests, all pure Rust — this is your main feedback loop
 npm run build              # vite build of the Svelte frontend
 npm run check-versions     # version consistency across the four files
+npm i -D jsdom --no-save && npm run smoke-mount   # does the UI actually render?
 ```
 
 **Building `src-tauri` locally may not work.** It needs `clang` and `lld`, which
@@ -59,6 +60,46 @@ claiming a change is verified. Do not push to get CI to check your work.
 
 CI (`.github/workflows/build.yml`) runs the core tests on Linux and builds the
 Windows portable EXE + NSIS installer.
+
+### `npm run build` passing does NOT mean the UI works
+
+This has now shipped two user-visible breakages in a row, both of which built
+clean. Svelte 5 has runtime-only failure modes that compile without a warning
+and then **throw during render**, and a component that throws mid-render leaves
+the previously rendered DOM on screen. The app-level symptom is "the page
+doesn't open" or "clicking the button changes the header but not the body" —
+never a build error, never anything in the terminal.
+
+Run `npm run smoke-mount` for any frontend change. It mounts every top-level
+component under jsdom with the Tauri IPC stubbed and fails if one throws or
+renders nothing. It needs `npm i -D jsdom --no-save` first — jsdom is
+deliberately not a `package.json` dependency, because adding one forces an
+`npmDeps.hash` regen in `nix/package.nix` (see Ground rules). The
+`--conditions=browser` flag in the npm script is load-bearing: without it Node
+resolves Svelte's server build and every mount dies with
+`lifecycle_function_unavailable`.
+
+When adding a component, add it to `CASES` in `scripts/smoke-mount.mjs` with
+the props its real parent passes. If a prop comes from a parent's `$state`,
+pass it through `$.proxy()` there — that distinction is exactly what broke
+Settings, and a plain object will not reproduce it.
+
+The two runtime traps that have actually bitten this repo:
+
+**`structuredClone` on a `$state` proxy throws `DataCloneError`.** Anything
+that has been through `$state` — including a prop a parent holds in `$state` —
+is a proxy, and `structuredClone` refuses to clone it. Use `$state.snapshot`,
+which is the proxy-aware deep clone. This is also what you must pass over IPC:
+`invoke('set_config', { config: $state.snapshot(config) })`.
+
+**`{@const}` compiles to a derived, and deriveds must not write state.** A
+lazy-init helper like `oauth[id] ??= {...}` is a state write, so calling it
+from `{@const}` throws `state_unsafe_mutation`. Keep template helpers pure and
+create entries eagerly (`ensureFlows()` in `Settings.svelte` is the pattern);
+the same applies to any function called from `$derived`.
+
+Neither is caught by the compiler, `npm run build`, or CI. Both are caught by
+`smoke-mount`.
 
 ---
 
