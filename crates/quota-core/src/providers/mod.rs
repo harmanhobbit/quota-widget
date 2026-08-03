@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod codex;
+pub mod elevenlabs;
 pub mod hermes;
 pub mod openrouter;
 
@@ -60,6 +61,7 @@ pub fn adapter_kinds() -> &'static [(&'static str, &'static str)] {
         ("claude", "Claude"),
         ("codex", "Codex"),
         ("openrouter", "OpenRouter"),
+        ("elevenlabs", "ElevenLabs"),
         ("hermes", "Hermes Portal"),
     ]
 }
@@ -81,6 +83,10 @@ pub fn providers_for(cfg: &Config) -> Vec<Box<dyn Provider>> {
                 }
                 "openrouter" => {
                     Some(Box::new(openrouter::OpenRouter::new(key.clone(), label))
+                        as Box<dyn Provider>)
+                }
+                "elevenlabs" => {
+                    Some(Box::new(elevenlabs::ElevenLabs::new(key.clone(), label))
                         as Box<dyn Provider>)
                 }
                 "hermes" => {
@@ -174,7 +180,7 @@ mod tests {
                 .iter()
                 .map(|provider| provider.id())
                 .collect::<Vec<_>>(),
-            vec!["openrouter", "hermes", "codex", "claude"]
+            vec!["openrouter", "elevenlabs", "hermes", "codex", "claude"]
         );
     }
 }
