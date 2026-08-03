@@ -225,8 +225,9 @@ starting. It covers two tracks:
    mini and main windows, mini-summary row alignment and percentage-first
    labels, a content-fitted mini height, and a collapsed "Add account" form.
 2. **Feature minors (0.6.0+).** Branch builds with a visible dev badge, a
-   Tailscale-vs-plain-SSH transport toggle, upstream update detection, native
-   Windows install, a Nix-aware update prompt, and new provider adapters.
+   Tailscale-vs-plain-SSH transport toggle, scroll-to-fade window opacity,
+   upstream update detection, native Windows install, a Nix-aware update
+   prompt, and new provider adapters.
 
 **Numbering is a hard requirement:** finesse items are patch bumps, features are
 minor bumps, and **no revision introduces more than one feature**. Task
