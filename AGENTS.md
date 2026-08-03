@@ -69,11 +69,25 @@ npm run check-versions     # version consistency across the four files
 npm i -D jsdom --no-save && npm run smoke-mount   # does the UI actually render?
 ```
 
-**Building `src-tauri` locally may not work.** It needs `clang` and `lld`, which
-are not always installed on the dev machine. `cargo check -p quota-core` covers
-the pure-Rust crate and is where most logic lives — lean on it. If the Tauri
-crate cannot be compiled locally, say so plainly in your report rather than
-claiming a change is verified. Do not push to get CI to check your work.
+**Building `src-tauri` needs the dev shell.** On a bare checkout the GTK/WebKit
+`-sys` crates fail in their build scripts at `pkg-config --libs gdk-3.0`, so the
+whole crate is uncompilable. The flake's `devShells.default` supplies those
+system libraries:
+
+```sh
+nix develop                          # or automatically, via direnv + .envrc
+nix develop -c cargo check --workspace
+```
+
+With direnv installed (`direnv allow` once), `cd`ing into the repo enters that
+shell and plain `cargo` works. Prefer local Linux builds over pushing: GitHub's
+Windows runner bills at a **2x** minute multiplier against a 2,000-minute
+monthly quota, and Linux catches nearly everything that isn't platform-specific.
+
+Without nix, `cargo check -p quota-core` still covers the pure-Rust crate where
+most logic lives — lean on it. **If the Tauri crate cannot be compiled in your
+environment, say so plainly in your report rather than claiming a change is
+verified.** Do not push to get CI to check your work.
 
 CI (`.github/workflows/build.yml`) runs the core tests on Linux and builds the
 Windows portable EXE + NSIS installer.
@@ -221,18 +235,22 @@ under-panel bug.
 The active plan is **`docs/plan-updates-and-providers.md`**. Read it before
 starting. It covers two tracks:
 
-1. **Finesse patches (0.5.23–0.5.27).** Cosmetic only: rounded corners on the
-   mini and main windows, mini-summary row alignment and percentage-first
-   labels, a content-fitted mini height, and a collapsed "Add account" form.
-2. **Feature minors (0.6.0+).** Branch builds with a visible dev badge, a
+1. **Finesse patches.** Cosmetic only: rounded corners on the mini and main
+   windows, mini-summary row alignment and percentage-first labels, a
+   content-fitted mini height, and a collapsed "Add account" form. All shipped.
+2. **Feature minors.** Branch builds with a visible dev badge, a
    Tailscale-vs-plain-SSH transport toggle, scroll-to-fade window opacity,
    upstream update detection, native Windows install, a Nix-aware update
    prompt, and new provider adapters.
 
 **Numbering is a hard requirement:** finesse items are patch bumps, features are
-minor bumps, and **no revision introduces more than one feature**. Task
-ownership between the Claude and Codex workstreams is defined in the plan; keep
-to it, since the split exists to stop two agents editing the same file.
+minor bumps, and **no revision introduces more than one feature**. The plan
+deliberately does *not* assign version numbers to unshipped features — each
+takes the next available minor when it is built, read from `Cargo.toml` at that
+moment. Pre-assigned numbers went stale once (the plan's "0.9.0" was spent on a
+provider) and are not to be reintroduced. Task ownership between the Claude and
+Codex workstreams is defined in the plan; keep to it, since the split exists to
+stop two agents editing the same file.
 
 Verification steps are in the plan. Manual testing on KDE Plasma and Windows 11
 matters here — several behaviours cannot be unit-tested, and the corner-radius

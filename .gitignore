@@ -3,3 +3,14 @@ node_modules/
 dist/
 *.log
 src-tauri/gen/
+
+# Editor scratch. A .swp was committed once (7fdbef5) and lived in the tree
+# for several releases before anyone noticed.
+*.swp
+*.swo
+*~
+
+# direnv's per-checkout state. .envrc itself IS committed — it's the shared
+# entry point; this is the local cache and the personal override file.
+.direnv/
+.envrc.local
