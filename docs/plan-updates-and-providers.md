@@ -20,11 +20,15 @@ bumps, and **no revision introduces more than one feature**. Version lives only
 in the workspace `Cargo.toml`; run `cargo update -w` and
 `npm run check-versions` after every bump (`AGENTS.md`, "Ground rules").
 
-**Ordering rationale.** Branch builds land first (0.6.0) because they are what
-lets Ian test every later feature on Windows without merging to `main`. Update
-detection (0.7.0) is the foundation both the Windows installer (0.8.0) and the
-Nix prompt (0.9.0) build on. Tailscale (0.10.0) and the providers (0.11.0+) are
-independent and can be reordered freely.
+**Ordering rationale.** Branch builds landed first (0.6.0) because they are what
+lets Ian test every later feature on Windows without merging to `main`.
+Tailscale (0.7.0) comes next: it is independent of everything else here, and the
+update chain behind it is gated on manual steps only Ian can take (creating the
+dist repo, generating the signing key, adding the Actions secrets), so putting
+Tailscale first keeps work moving while that is set up. Update detection
+(0.8.0) is then the foundation both the Windows installer (0.9.0) and the Nix
+prompt (0.10.0) build on — those three are a strict chain. The providers
+(0.11.0+) are independent and can be reordered freely.
 
 ---
 
@@ -206,7 +210,7 @@ and the artifact names collide.
   `__QUOTA_WIDGET_VERSION__` plumbing (`vite.config.js:13`).
 - `src-tauri/build.rs` — add `cargo:rerun-if-env-changed=QUOTA_WIDGET_BRANCH`
   so Rust can read it via `option_env!` without a stale-cache surprise. Rust
-  needs it too: 0.7.0 must not nag a branch build about updates.
+  needs it too: 0.8.0 must not nag a branch build about updates.
 - `src/App.svelte:81` and `src/lib/MiniSummary.svelte:79` — render the branch
   next to the existing `v{APP_VERSION}` when the define is non-empty.
 - `src/styles.css` — a `.build-branch` chip, visually distinct from
@@ -221,7 +225,50 @@ and the artifact names collide.
 **Owner: Codex** (build plumbing; the App.svelte touch is a two-line badge, not
 worth splitting).
 
-### 0.7.0 — Upstream update detection
+### 0.7.0 — Tailscale SSH vs plain SSH per connection
+
+Moved ahead of the update chain: it shares no files with it, and 0.8.0 cannot
+start until the dist repo and signing secrets exist.
+
+Currently `run_ssh` (`crates/quota-core/src/providers/hermes.rs:158`) always
+builds `ssh -o BatchMode=yes -o ConnectTimeout=5 <host> <cmd>`.
+
+**Load-bearing finding, verified against the local `tailscale` 1.98.10 CLI:**
+`tailscale ssh` **rejects flags before the host** — `tailscale ssh -o
+BatchMode=yes host` fails with `flag provided but not defined: -o` — but
+**passes everything after the host straight through to the real `ssh`**
+(`tailscale ssh host -o BogusOption=1` produced OpenSSH's own
+`Bad configuration option`). So the argv must be *reordered*, not just have the
+program name swapped:
+
+```
+plain:     ssh -o BatchMode=yes -o ConnectTimeout=5 <host> <cmd>
+tailscale: tailscale ssh <host> -o BatchMode=yes -o ConnectTimeout=5 <cmd>
+```
+
+- `crates/quota-core/src/providers/hermes.rs` — a `transport` provider setting
+  (`"ssh"` default | `"tailscale"`), read via the existing
+  `provider_setting(key, …)` helper (`config.rs:260`). Branch the argv
+  construction in `run_ssh`. Add a `tailscale_program` override alongside the
+  existing `ssh_program` (`hermes.rs:164-168`) for Nix store paths — same
+  reasoning as `refresh_cmd`. Keep `CREATE_NO_WINDOW` on Windows
+  (`hermes.rs:173-174`).
+- Tests — extend the existing stub-script pattern (`hermes.rs:633-654`) with a
+  fake `tailscale` asserting the reordered argv. This is the whole reason the
+  ordering detail is worth a test.
+- `src/lib/Settings.svelte` — a Transport select in the Hermes block
+  (`Settings.svelte:496-531`), shown only when the source is not `cookie`/`hermes`
+  (i.e. inside the existing `{#if}` at `Settings.svelte:505`).
+- `nix/package.nix` — add `tailscale` to the `makeBinPath` list in `preFixup`
+  (`package.nix:84-89`), exactly as `openssh` is handled today.
+- `README.md` — the Hermes row's remote-SSH note.
+
+Note the `tailscale ssh` *server* is Linux/macOS-only, but the widget is always
+the client, and the client subcommand exists on Windows.
+
+**Owner: Codex** (core crate + Settings).
+
+### 0.8.0 — Upstream update detection
 
 Private source, public distribution — per Ian's decision.
 
@@ -256,9 +303,9 @@ write access to the dist repo as Actions secrets on the private repo.
 **Owner: Codex** (core crate, config, Settings) with **Claude** on the workflow
 and the `AppState`/IPC wiring.
 
-### 0.8.0 — Native Windows update
+### 0.9.0 — Native Windows update
 
-Builds directly on 0.7.0's manifest.
+Builds directly on 0.8.0's manifest.
 
 - `src-tauri/Cargo.toml` — add `tauri-plugin-updater`, registered in
   `lib.rs`'s builder chain alongside the existing plugins
@@ -278,9 +325,9 @@ Builds directly on 0.7.0's manifest.
 
 **Owner: Claude** (Tauri shell, capabilities, `tauri.conf.json`).
 
-### 0.9.0 — Nix-aware update prompt
+### 0.10.0 — Nix-aware update prompt
 
-0.7.0 detects the update everywhere; this makes the *instruction* correct per
+0.8.0 detects the update everywhere; this makes the *instruction* correct per
 install method, and gives Nix the prompt Ian asked for.
 
 - `src-tauri/src/lib.rs` — classify the install: `std::env::current_exe()`
@@ -290,49 +337,10 @@ install method, and gives Nix the prompt Ian asked for.
   (`nix profile upgrade quota-widget`) as selectable text, reusing the
   `.note code` style already used for `GDK_BACKEND=x11`
   (`styles.css:217-227`); non-Nix Linux shows a release link; Windows shows
-  0.8.0's install button.
+  0.9.0's install button.
 - `README.md` — an update matrix beside the existing platform-differences table.
 
 **Owner: Codex.**
-
-### 0.10.0 — Tailscale SSH vs plain SSH per connection
-
-Currently `run_ssh` (`crates/quota-core/src/providers/hermes.rs:158`) always
-builds `ssh -o BatchMode=yes -o ConnectTimeout=5 <host> <cmd>`.
-
-**Load-bearing finding, verified against the local `tailscale` 1.98.10 CLI:**
-`tailscale ssh` **rejects flags before the host** — `tailscale ssh -o
-BatchMode=yes host` fails with `flag provided but not defined: -o` — but
-**passes everything after the host straight through to the real `ssh`**
-(`tailscale ssh host -o BogusOption=1` produced OpenSSH's own
-`Bad configuration option`). So the argv must be *reordered*, not just have the
-program name swapped:
-
-```
-plain:     ssh -o BatchMode=yes -o ConnectTimeout=5 <host> <cmd>
-tailscale: tailscale ssh <host> -o BatchMode=yes -o ConnectTimeout=5 <cmd>
-```
-
-- `crates/quota-core/src/providers/hermes.rs` — a `transport` provider setting
-  (`"ssh"` default | `"tailscale"`), read via the existing
-  `provider_setting(key, …)` helper (`config.rs:158`). Branch the argv
-  construction in `run_ssh`. Add a `tailscale_program` override alongside the
-  existing `ssh_program` (`hermes.rs:164-168`) for Nix store paths — same
-  reasoning as `refresh_cmd`. Keep `CREATE_NO_WINDOW` on Windows
-  (`hermes.rs:173-174`).
-- Tests — extend the existing stub-script pattern (`hermes.rs:633-654`) with a
-  fake `tailscale` asserting the reordered argv. This is the whole reason the
-  ordering detail is worth a test.
-- `src/lib/Settings.svelte` — a Transport select in the Hermes block
-  (`Settings.svelte:377-412`), shown only when the source is not `cookie`/`hermes`.
-- `nix/package.nix` — add `tailscale` to the `makeBinPath` list in `preFixup`
-  (`package.nix:84-89`), exactly as `openssh` is handled today.
-- `README.md` — the Hermes row's remote-SSH note.
-
-Note the `tailscale ssh` *server* is Linux/macOS-only, but the widget is always
-the client, and the client subcommand exists on Windows.
-
-**Owner: Codex** (core crate + Settings).
 
 ### 0.11.0+ — One provider per minor
 
@@ -392,7 +400,7 @@ other's files:
 
 The patch series is strictly sequential, so ownership there is just *who does
 the work*. Real parallelism is available across features: Codex can take
-0.10.0 and the provider minors while Claude works 0.6.0–0.8.0.
+0.7.0 and the provider minors while Claude works the update chain (0.8.0–0.9.0).
 
 Also worth doing during this work: `AGENTS.md`'s "Current task" section still
 points at `docs/plan-tray-accounts.md`, which is finished. Repoint it here.
@@ -428,8 +436,8 @@ Manual checks that cannot be automated:
   summary does not jump when it resizes.
 - **0.6.0** — a dispatched branch build shows the badge; a `main` build does
   not.
-- **0.7.0 / 0.8.0** — an older build detects a newer `latest.json`; the
+- **0.8.0 / 0.9.0** — an older build detects a newer `latest.json`; the
   installer path completes and relaunches; a branch build stays silent.
-- **0.10.0** — both transports fetch Hermes against a real tailnet host.
+- **0.7.0** — both transports fetch Hermes against a real tailnet host.
 
 Do not push, and do not dispatch a Windows build, without Ian saying so.
