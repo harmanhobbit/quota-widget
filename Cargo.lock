@@ -2820,7 +2820,7 @@ dependencies = [
 
 [[package]]
 name = "quota-core"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2836,7 +2836,7 @@ dependencies = [
 
 [[package]]
 name = "quota-widget"
-version = "0.8.2"
+version = "0.8.3"
 dependencies = [
  "base64 0.22.1",
  "chrono",
