@@ -34,6 +34,14 @@ Platform differences are small but real:
   tray tooltip; Plasma draws the StatusNotifierItem tooltip.
 - **Right-click** for Open / Refresh now / Settings / Quit. **Open** shows the
   full usage/settings window; reopening it always lands on the usage list.
+- **Scroll** over either window to fade it: up towards transparent, down back
+  to opaque. The level is temporary and resets whenever the window is shown
+  again, so a faded widget is never left that way. Scrolling the card list or
+  the Settings form still scrolls normally, and the full popup stops at a
+  faint-but-visible floor rather than becoming an invisible thing that eats
+  clicks — as does a *pinned* mini summary, which ignores click-away. An
+  unpinned summary may fade all the way out, since clicking elsewhere
+  dismisses it. A Settings checkbox turns the whole behaviour off.
 - A background poller (default every 60 s) refreshes all enabled providers and
   fires alerts when usage *crosses* a threshold (edge-triggered — you get one
   toast at 80%, not one per poll). Toast, tray color, and auto-popup are each
