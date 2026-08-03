@@ -78,10 +78,13 @@ config dir. Config lives at `%APPDATA%\quota-widget\config.json`
 
 ## Building
 
-### CI (recommended)
+### CI
 
 Push to GitHub — `.github/workflows/build.yml` runs the core test suite on Linux
-and produces two artifacts on a Windows runner:
+and produces two artifacts on a Windows runner. Note the Windows runner bills at
+a **2x** minute multiplier against the account's monthly Actions quota, so it's
+worth doing routine work in the local dev shell and saving CI for the EXE you
+actually intend to test:
 
 - `quota-widget-portable` — the single portable `quota-widget.exe`
 - `quota-widget-installer` — an NSIS installer, if you'd rather have Start Menu
@@ -122,7 +125,13 @@ version at all. Bumping a release is a one-line edit to `Cargo.toml` followed by
 `cargo update -w`; `npm run check-versions` fails if a hardcoded copy reappears.
 
 - **On Windows**: install Rust + Node, then the two commands above just work.
-- **On Linux** (dev runs): install the Tauri prerequisites first:
+- **On Linux with Nix** (easiest): the flake ships a dev shell with the whole
+  toolchain — Rust, Node, `cargo-tauri`, and the GTK/WebKit libraries the
+  `-sys` crates need at build time. `nix develop`, or `direnv allow` once and
+  the committed `.envrc` enters it whenever you `cd` in. Install
+  [nix-direnv](https://github.com/nix-community/nix-direnv) so the shell is
+  cached rather than re-evaluated at every prompt.
+- **On Linux without Nix** (dev runs): install the Tauri prerequisites first:
   `sudo apt install libwebkit2gtk-4.1-dev build-essential pkg-config libgtk-3-dev librsvg2-dev`
 - **Cross-compiling Windows EXEs from Linux** is possible but officially
   experimental: `cargo install cargo-xwin`, add the `x86_64-pc-windows-msvc`

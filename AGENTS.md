@@ -69,11 +69,25 @@ npm run check-versions     # version consistency across the four files
 npm i -D jsdom --no-save && npm run smoke-mount   # does the UI actually render?
 ```
 
-**Building `src-tauri` locally may not work.** It needs `clang` and `lld`, which
-are not always installed on the dev machine. `cargo check -p quota-core` covers
-the pure-Rust crate and is where most logic lives — lean on it. If the Tauri
-crate cannot be compiled locally, say so plainly in your report rather than
-claiming a change is verified. Do not push to get CI to check your work.
+**Building `src-tauri` needs the dev shell.** On a bare checkout the GTK/WebKit
+`-sys` crates fail in their build scripts at `pkg-config --libs gdk-3.0`, so the
+whole crate is uncompilable. The flake's `devShells.default` supplies those
+system libraries:
+
+```sh
+nix develop                          # or automatically, via direnv + .envrc
+nix develop -c cargo check --workspace
+```
+
+With direnv installed (`direnv allow` once), `cd`ing into the repo enters that
+shell and plain `cargo` works. Prefer local Linux builds over pushing: GitHub's
+Windows runner bills at a **2x** minute multiplier against a 2,000-minute
+monthly quota, and Linux catches nearly everything that isn't platform-specific.
+
+Without nix, `cargo check -p quota-core` still covers the pure-Rust crate where
+most logic lives — lean on it. **If the Tauri crate cannot be compiled in your
+environment, say so plainly in your report rather than claiming a change is
+verified.** Do not push to get CI to check your work.
 
 CI (`.github/workflows/build.yml`) runs the core tests on Linux and builds the
 Windows portable EXE + NSIS installer.
