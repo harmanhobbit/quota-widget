@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { resetOpacity, stepOpacity } from './opacity.js';
 
   const APP_VERSION = __QUOTA_WIDGET_VERSION__;
   const BUILD_BRANCH = __QUOTA_WIDGET_BRANCH__;
@@ -16,6 +17,7 @@
   let loaded = $state(false);
 
   onMount(async () => {
+    resetOpacity();
     try {
       const initial = await invoke('get_snapshots');
       snapshots = initial.snapshots;
@@ -34,7 +36,13 @@
     listen('config', (e) => {
       config = e.payload;
       showBars = e.payload.mini_summary_bars;
+      // Turning the preference off must restore a window left mid-fade, not
+      // freeze it at whatever level it happened to be on.
+      if (!e.payload.scroll_opacity) resetOpacity();
     }).then((u) => unlisten.push(u));
+    // The webview survives hiding, so the fade level has to be cleared on
+    // every show or the summary reopens as invisible as it was left.
+    listen('mini-shown', resetOpacity).then((u) => unlisten.push(u));
     // Hiding the window resets the pin in Rust; the webview survives that, so
     // the button has to follow or it reopens looking pinned when it isn't.
     listen('mini-pinned', (e) => (pinned = e.payload)).then((u) => unlisten.push(u));
@@ -118,13 +126,24 @@
     level: 'ok',
   });
 
+  // The summary has no scrollable content of its own, so unlike the popup
+  // every wheel event over it is a fade. How far it may fade depends on the
+  // pin: an unpinned window is dismissed by the next click anywhere else, so
+  // fully transparent is recoverable. A pinned one is always-on-top and
+  // ignores click-away, so at zero it would be an invisible thing eating
+  // clicks with no way back — floor it where it stays findable.
+  function fadeOnWheel(event) {
+    if (!config?.scroll_opacity) return;
+    if (stepOpacity(event.deltaY, pinned ? 0.15 : 0)) event.preventDefault();
+  }
+
   async function togglePin() {
     pinned = !pinned;
     await invoke('set_mini_pinned', { pinned });
   }
 </script>
 
-<div class="mini" bind:this={miniEl}>
+<div class="mini" bind:this={miniEl} onwheel={fadeOnWheel}>
   <header data-tauri-drag-region>
     <span data-tauri-drag-region>Quota Widget <small class="build-version" data-tauri-drag-region>v{APP_VERSION}</small>{#if BUILD_BRANCH} <small class="build-branch" data-tauri-drag-region>{BUILD_BRANCH}</small>{/if}</span>
     <span class="spacer" data-tauri-drag-region></span>

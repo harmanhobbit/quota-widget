@@ -12,6 +12,10 @@
   /* Native controls (select popups, scrollbars) follow the OS theme instead of
      defaulting to light chrome with light text. */
   color-scheme: light dark;
+  /* Scroll-to-fade level, written by src/lib/opacity.js. It fades the whole
+     shell element rather than just its background: at low values the text has
+     to go with it, or a "transparent" widget still shows floating glyphs. */
+  --window-opacity: 1;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -60,6 +64,10 @@ main {
   border-radius: 10px;
   /* Keeps the scrolling card list from squaring off the bottom corners. */
   overflow: hidden;
+  opacity: var(--window-opacity);
+  /* Long enough that one wheel notch glides, short enough that a fast flick
+     still keeps up with the pointer. */
+  transition: opacity 120ms ease-out;
 }
 
 header {
@@ -281,6 +289,8 @@ button.primary {
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
+  opacity: var(--window-opacity);
+  transition: opacity 120ms ease-out;
 }
 
 .mini header {

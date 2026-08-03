@@ -319,4 +319,9 @@ pub fn show_mini<R: Runtime>(app: &AppHandle<R>, _near: Option<PhysicalPosition<
     // accepting the window manager's top-left default.
     anchor_above_panel(&win);
     let _ = win.set_focus();
+    // The webview survives hiding, so a summary scrolled to fully transparent
+    // would come back invisible — and an invisible window still eats clicks.
+    // `main` gets the same reset from `window-shown` above.
+    use tauri::Emitter;
+    let _ = app.emit("mini-shown", ());
 }

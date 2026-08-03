@@ -146,7 +146,38 @@ const CASES = [
       }
     },
   },
+  {
+    file: 'src/lib/MiniSummary.svelte',
+    props: () => ({}),
+    verify: ({ target, flushSync }) => {
+      const mini = target.querySelector('.mini');
+      const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
+      const wheel = () =>
+        mini.dispatchEvent(new window.WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }));
+      wheel();
+      flushSync();
+      if (opacity() !== '0.92') throw new Error(`scroll did not fade summary: ${opacity()}`);
+      // Unlike the popup the unpinned summary may reach zero: click-away
+      // dismisses it, so fully transparent is recoverable rather than a trap.
+      for (let i = 0; i < 20; i += 1) wheel();
+      flushSync();
+      if (Number(opacity()) !== 0) throw new Error(`unpinned summary floored at ${opacity()}`);
+    },
+  },
   { file: 'src/lib/MiniSummary.svelte', props: () => ({}), snapshotsError: true, expect: ['Could not load summary'] },
+  {
+    file: 'src/lib/MiniSummary.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, scroll_opacity: false },
+    verify: ({ target, flushSync }) => {
+      const mini = target.querySelector('.mini');
+      const before = document.documentElement.style.getPropertyValue('--window-opacity');
+      mini.dispatchEvent(new window.WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }));
+      flushSync();
+      const after = document.documentElement.style.getPropertyValue('--window-opacity');
+      if (after !== before) throw new Error('disabled opacity setting still changed the summary');
+    },
+  },
   { file: 'src/lib/MiniSummary.svelte', props: () => ({}), buildBranch: 'smoke-branch', expect: ['smoke-branch'] },
   {
     file: 'src/lib/Settings.svelte',
