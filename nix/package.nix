@@ -23,13 +23,39 @@ rustPlatform.buildRustPackage rec {
   # package.json derive from it too, so a bump is a one-line edit there.
   version = (lib.importTOML ../Cargo.toml).workspace.package.version;
 
-  src = lib.cleanSource ../.;
+  # `lib.cleanSource` only drops VCS and editor cruft — it keeps target/, which
+  # is ~7.6 GB in a working checkout and was being copied into the store on
+  # every evaluation. Filter to the inputs the build actually reads.
+  src =
+    let
+      keep = [
+        "Cargo.toml"
+        "Cargo.lock"
+        "package.json"
+        "package-lock.json"
+        "vite.config.js"
+        "index.html"
+        "crates"
+        "src"
+        "src-tauri"
+      ];
+      root = ../.;
+    in
+    lib.fileset.toSource {
+      inherit root;
+      fileset = lib.fileset.unions (map (p: root + "/${p}") keep);
+    };
 
   cargoLock.lockFile = ../Cargo.lock;
 
+  # Only the two lockfile-ish files decide the npm closure, so scoping this
+  # separately keeps the fixed-output hash stable when app source changes.
   npmDeps = fetchNpmDeps {
     name = "${pname}-${version}-npm-deps";
-    src = lib.cleanSource ../.;
+    src = lib.fileset.toSource {
+      root = ../.;
+      fileset = lib.fileset.unions [ ../package.json ../package-lock.json ];
+    };
     hash = "sha256-XqkPzGXTWiJU3l0M2YvNOFNw29nCDhc2HEI7zR6HY34=";
   };
 
