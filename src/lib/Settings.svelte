@@ -510,6 +510,12 @@
                   bind:value={account.settings.ssh_host}
                 />
               </label>
+              <label class="field">Transport
+                <select bind:value={account.settings.transport}>
+                  <option value={undefined}>Plain SSH</option>
+                  <option value="tailscale">Tailscale SSH</option>
+                </select>
+              </label>
             {/if}
             {#if account.settings.source === 'cookie'}
               <label class="field">Balance endpoint

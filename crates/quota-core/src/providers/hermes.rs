@@ -153,23 +153,47 @@ fn refresh_cmd(ctx: &ProviderCtx, key: &str) -> String {
         .unwrap_or_else(|| DEFAULT_REFRESH_CMD.into())
 }
 
-/// Run a command on the remote host over SSH (BatchMode — the user's existing
-/// keys/agent must authenticate; we never prompt).
+/// Run a command on the remote host over the selected SSH transport (BatchMode
+/// — the user's existing keys/agent must authenticate; we never prompt).
 async fn run_ssh(
     ctx: &ProviderCtx,
     key: &str,
     host: &str,
     remote_cmd: &str,
 ) -> Result<Vec<u8>, FetchError> {
-    let program = ctx
+    let transport = ctx
         .config
-        .provider_setting(key, "ssh_program")
-        .and_then(|v| v.as_str().map(String::from))
+        .provider_setting(key, "transport")
+        .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_else(|| "ssh".into());
+    let (program, tailscale) = if transport == "tailscale" {
+        (
+            ctx.config
+                .provider_setting(key, "tailscale_program")
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_else(|| "tailscale".into()),
+            true,
+        )
+    } else {
+        (
+            ctx.config
+                .provider_setting(key, "ssh_program")
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_else(|| "ssh".into()),
+            false,
+        )
+    };
     let mut cmd = tokio::process::Command::new(&program);
-    cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host])
-        .arg(remote_cmd)
-        .stdin(std::process::Stdio::null());
+    if tailscale {
+        // `tailscale ssh` accepts its own arguments only before the host and
+        // forwards everything after it to OpenSSH, including its `-o` flags.
+        cmd.args(["ssh", host, "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"])
+            .arg(remote_cmd);
+    } else {
+        cmd.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host])
+            .arg(remote_cmd);
+    }
+    cmd.stdin(std::process::Stdio::null());
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — no console flash
     let out = tokio::time::timeout(REFRESH_TIMEOUT, cmd.output())
@@ -177,7 +201,7 @@ async fn run_ssh(
         .map_err(|_| FetchError::Network(format!("ssh {host}: timed out")))?
         .map_err(|e| {
             FetchError::Network(format!(
-                "could not run `{program}`: {e} — is the OpenSSH client installed?"
+                "could not run `{program}`: {e} — is the selected SSH client installed?"
             ))
         })?;
     if !out.status.success() {
@@ -657,6 +681,38 @@ mod tests {
         let auth = remote_fresh_auth(&ctx, "hermes").await.unwrap().unwrap();
         assert_eq!(auth.access_token, "remote-tok");
         assert!(auth.is_fresh());
+    }
+
+    #[tokio::test]
+    async fn remote_auth_via_stub_tailscale_ssh() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("fake-tailscale.sh");
+        // Tailscale owns the leading `ssh <host>` arguments; its OpenSSH
+        // passthrough flags must follow the host.
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\ncase \"$1:$2:$3:$4:$5:$6:$7\" in\n  'ssh:ian@server:-o:BatchMode=yes:-o:ConnectTimeout=5:cat .hermes/auth.json') echo \"{FRESH}\" ;;\n  *) echo \"unexpected tailscale argv: $*\" >&2; exit 1 ;;\nesac\n"
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let mut cfg = crate::config::Config::default();
+        let settings = &mut cfg.providers.get_mut("hermes").unwrap().settings;
+        settings.insert("ssh_host".into(), "ian@server".into());
+        settings.insert("transport".into(), "tailscale".into());
+        settings.insert(
+            "tailscale_program".into(),
+            stub.to_string_lossy().into_owned().into(),
+        );
+        let ctx = ProviderCtx::new(dir.path().into(), Default::default(), cfg);
+        let auth = remote_fresh_auth(&ctx, "hermes").await.unwrap().unwrap();
+        assert_eq!(auth.access_token, "remote-tok");
     }
 
     /// Stale token → the adapter runs the refresh command on the "remote"
