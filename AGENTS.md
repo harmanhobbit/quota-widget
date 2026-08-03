@@ -221,18 +221,22 @@ under-panel bug.
 The active plan is **`docs/plan-updates-and-providers.md`**. Read it before
 starting. It covers two tracks:
 
-1. **Finesse patches (0.5.23–0.5.27).** Cosmetic only: rounded corners on the
-   mini and main windows, mini-summary row alignment and percentage-first
-   labels, a content-fitted mini height, and a collapsed "Add account" form.
-2. **Feature minors (0.6.0+).** Branch builds with a visible dev badge, a
+1. **Finesse patches.** Cosmetic only: rounded corners on the mini and main
+   windows, mini-summary row alignment and percentage-first labels, a
+   content-fitted mini height, and a collapsed "Add account" form. All shipped.
+2. **Feature minors.** Branch builds with a visible dev badge, a
    Tailscale-vs-plain-SSH transport toggle, scroll-to-fade window opacity,
    upstream update detection, native Windows install, a Nix-aware update
    prompt, and new provider adapters.
 
 **Numbering is a hard requirement:** finesse items are patch bumps, features are
-minor bumps, and **no revision introduces more than one feature**. Task
-ownership between the Claude and Codex workstreams is defined in the plan; keep
-to it, since the split exists to stop two agents editing the same file.
+minor bumps, and **no revision introduces more than one feature**. The plan
+deliberately does *not* assign version numbers to unshipped features — each
+takes the next available minor when it is built, read from `Cargo.toml` at that
+moment. Pre-assigned numbers went stale once (the plan's "0.9.0" was spent on a
+provider) and are not to be reintroduced. Task ownership between the Claude and
+Codex workstreams is defined in the plan; keep to it, since the split exists to
+stop two agents editing the same file.
 
 Verification steps are in the plan. Manual testing on KDE Plasma and Windows 11
 matters here — several behaviours cannot be unit-tested, and the corner-radius

@@ -1,4 +1,4 @@
-# quota-widget roadmap: finesse patches (0.5.23–0.5.27), then features (0.6.0+)
+# quota-widget roadmap: finesse patches, then features
 
 ## Context
 
@@ -21,17 +21,27 @@ bumps, and **no revision introduces more than one feature**. Version lives only
 in the workspace `Cargo.toml`; run `cargo update -w` and
 `npm run check-versions` after every bump (`AGENTS.md`, "Ground rules").
 
-**Ordering rationale.** Branch builds landed first (0.6.0) because they are what
-lets Ian test every later feature on Windows without merging to `main`.
-Tailscale (0.7.0) followed, being independent of everything else here.
-Scroll-to-fade opacity (0.8.0) is next by Ian's request; like Tailscale it
-blocks nothing and is blocked by nothing. Both sit ahead of the update chain
-because that chain is gated on manual steps only Ian can take (creating the dist
-repo, generating the signing key, adding the Actions secrets), so putting
-unblocked work first keeps things moving while that is set up. Update detection
-(0.9.0) is then the foundation both the Windows installer (0.10.0) and the Nix
-prompt (0.11.0) build on — those three are a strict chain. The providers
-(0.12.0+) are independent and can be reordered freely.
+**Features in this plan carry no version number.** Each one takes the next
+available minor at the time it is built — read the current version out of
+`Cargo.toml` and bump from there. Pre-assigning numbers here went wrong once
+already: this plan had update detection pencilled in as 0.9.0, and by the time
+anyone reached it, 0.9.0 had gone to the ElevenLabs provider, leaving every
+number after it a lie. Ordering is what this plan asserts; numbering is decided
+when the work lands. Shipped items below record the version they actually got,
+as history rather than as a reservation.
+
+**Ordering rationale.** Branch builds landed first because they are what lets
+Ian test every later feature on Windows without merging to `main`. Tailscale
+followed, being independent of everything else here. Scroll-to-fade opacity came
+next by Ian's request; like Tailscale it blocks nothing and is blocked by
+nothing. All three sit ahead of the update chain because that chain is gated on
+manual steps only Ian can take (creating the dist repo, generating the signing
+key, adding the Actions secrets), so putting unblocked work first keeps things
+moving while that is set up. Update detection is then the foundation both the
+Windows installer and the Nix prompt build on — those three are a strict chain
+and must ship in that order. The providers are independent of everything,
+including each other, and can be reordered freely or interleaved with the update
+chain.
 
 ---
 
@@ -52,7 +62,7 @@ is Ian's stated criterion. Confirmed: **DeepSeek**, **Moonshot/Kimi**,
 Dropped for now: **Z.AI**, **DeepInfra**, **Together**, **Groq**, **Mistral** —
 each exposes spend through a dashboard rather than a documented API endpoint.
 They are not planned; if one publishes an endpoint later it becomes a new minor
-at that point. See [0.12.0+](#0120--one-provider-per-minor).
+at that point. See [One provider per minor](#one-provider-per-minor).
 
 Separately: DeepSeek and Moonshot are ~95% identical to the existing
 `openrouter.rs` (108 lines: GET a URL with a bearer token, pluck two numbers).
@@ -60,8 +70,14 @@ Rather than three near-copies I recommend one `providers/simple_credits.rs`
 holding a static table of `(kind, display name, url, parse fn)`. This is **not**
 the generic config-driven adapter that was rejected — from the user's side each
 provider is still a named dropdown entry with a baked-in URL where you paste
-only a key. It is purely an internal deduplication, and it is worth doing at
-0.12.0 rather than retrofitting later.
+only a key. It is purely an internal deduplication, and it is worth doing with
+the first of those two providers rather than retrofitting later.
+
+**Also shipped, ahead of this list: ElevenLabs** (0.9.0) — official
+`GET /v1/user/subscription`, keyed by `xi-api-key`. It reports a per-cycle
+credit *allowance* rather than a balance, so it renders as a `UsageWindow` like
+Claude's weekly cap, not as `Credits`. It predates none of the table below; it
+was simply asked for first.
 
 ---
 
@@ -195,7 +211,7 @@ split in `docs/plan-tray-accounts.md`).
 
 ## Track 2 — Feature minors
 
-### 0.6.0 — Branch builds with a visible dev badge
+### Branch builds with a visible dev badge — shipped as 0.6.0
 
 **What already works:** `build.yml` has `workflow_dispatch`, and GitHub lets you
 pick any ref for a dispatch, so `gh workflow run build.yml --ref my-branch`
@@ -213,7 +229,7 @@ and the artifact names collide.
   `__QUOTA_WIDGET_VERSION__` plumbing (`vite.config.js:13`).
 - `src-tauri/build.rs` — add `cargo:rerun-if-env-changed=QUOTA_WIDGET_BRANCH`
   so Rust can read it via `option_env!` without a stale-cache surprise. Rust
-  needs it too: 0.9.0 must not nag a branch build about updates.
+  needs it too: update detection must not nag a branch build about updates.
 - `src/App.svelte:81` and `src/lib/MiniSummary.svelte:79` — render the branch
   next to the existing `v{APP_VERSION}` when the define is non-empty.
 - `src/styles.css` — a `.build-branch` chip, visually distinct from
@@ -228,10 +244,10 @@ and the artifact names collide.
 **Owner: Codex** (build plumbing; the App.svelte touch is a two-line badge, not
 worth splitting).
 
-### 0.7.0 — Tailscale SSH vs plain SSH per connection
+### Tailscale SSH vs plain SSH per connection — shipped as 0.7.0
 
-Shipped. Moved ahead of the update chain because it shares no files with it,
-and 0.9.0 cannot start until the dist repo and signing secrets exist.
+Moved ahead of the update chain because it shares no files with it, and the
+update work cannot start until the dist repo and signing secrets exist.
 
 Currently `run_ssh` (`crates/quota-core/src/providers/hermes.rs:158`) always
 builds `ssh -o BatchMode=yes -o ConnectTimeout=5 <host> <cmd>`.
@@ -271,21 +287,22 @@ the client, and the client subcommand exists on Windows.
 
 **Owner: Codex** (core crate + Settings).
 
-### 0.8.0 — Scroll-to-fade window opacity
+### Scroll-to-fade window opacity — shipped as 0.8.0–0.8.2
 
 Ian's request: with the pointer over the widget, scrolling down fades it all the
 way to fully transparent and scrolling up returns it to fully opaque, with a
 Settings toggle to disable the behaviour entirely.
 
-**Direction reversed after trying it (0.8.2):** scrolling *up* fades and *down*
+**Direction reversed after trying it:** scrolling *up* fades and *down*
 restores. On hardware the original way round felt backwards — the gesture reads
 as pushing the window back into the desktop, not as scrolling a document.
 
 **Load-bearing finding: do this in CSS, not through a window API.** Neither
 `tao` 0.35.3 nor `tauri` 2.11.5 exposes a `set_opacity` on the window (grepped
 both vendored trees; the symbol does not exist), so there is no native route in
-the current dependency set. Fortunately none is needed — 0.5.23/0.5.24 already
-set `"transparent": true` on **both** windows (`tauri.conf.json`), and the
+the current dependency set. Fortunately none is needed — the corner-radius
+patches already set `"transparent": true` on **both** windows
+(`tauri.conf.json`), and the
 visible shape is painted by a single element in each: `main` for the popup
 (`styles.css:54-63`) and `.mini` for the summary (`styles.css:273-284`). Fading
 that element's own background is genuinely see-through, not a fake blend against
@@ -350,7 +367,10 @@ still needs eyes on Plasma (a compositor must be running) and Windows 11.
 takes the `styles.css` edit, coordinating as that file already requires. Codex
 must land the helper before Claude's side starts.
 
-### 0.9.0 — Upstream update detection
+### Upstream update detection
+
+**Next available minor.** First of the three-step update chain; nothing below it
+can start until this ships.
 
 Private source, public distribution — per Ian's decision.
 
@@ -377,6 +397,7 @@ write access to the dist repo as Actions secrets on the private repo.
   hammer GitHub), plus `check_update_now` and `update_status` IPC commands and
   an `update` event. **Suppress the check entirely when `option_env!("QUOTA_WIDGET_BRANCH")`
   is set** — a branch build should not be told to "update" to a main release.
+  This is why the branch-badge work had to land first.
 - `src/App.svelte`, `src/lib/Settings.svelte` — an unobtrusive "Update
   available: vX.Y.Z" line plus a manual **Check now** button and the opt-out
   checkbox in the General section (`Settings.svelte:447-464`).
@@ -385,9 +406,10 @@ write access to the dist repo as Actions secrets on the private repo.
 **Owner: Codex** (core crate, config, Settings) with **Claude** on the workflow
 and the `AppState`/IPC wiring.
 
-### 0.10.0 — Native Windows update
+### Native Windows update
 
-Builds directly on 0.9.0's manifest.
+**Next available minor after update detection**, which it builds directly on —
+it consumes that feature's `latest.json` manifest and cannot ship before it.
 
 - `src-tauri/Cargo.toml` — add `tauri-plugin-updater`, registered in
   `lib.rs`'s builder chain alongside the existing plugins
@@ -407,10 +429,11 @@ Builds directly on 0.9.0's manifest.
 
 **Owner: Claude** (Tauri shell, capabilities, `tauri.conf.json`).
 
-### 0.11.0 — Nix-aware update prompt
+### Nix-aware update prompt
 
-0.9.0 detects the update everywhere; this makes the *instruction* correct per
-install method, and gives Nix the prompt Ian asked for.
+**Next available minor after the Windows installer.** Update detection reports a
+new version everywhere; this makes the *instruction* correct per install method,
+and gives Nix the prompt Ian asked for.
 
 - `src-tauri/src/lib.rs` — classify the install: `std::env::current_exe()`
   starting with `/nix/store/` means a Nix build. Expose it through the existing
@@ -419,33 +442,43 @@ install method, and gives Nix the prompt Ian asked for.
   (`nix profile upgrade quota-widget`) as selectable text, reusing the
   `.note code` style already used for `GDK_BACKEND=x11`
   (`styles.css:217-227`); non-Nix Linux shows a release link; Windows shows
-  0.10.0's install button.
+  the Windows install button.
 - `README.md` — an update matrix beside the existing platform-differences table.
 
 **Owner: Codex.**
 
-### 0.12.0+ — One provider per minor
+### One provider per minor
 
-Each new adapter is its own minor, honouring the one-feature-per-revision rule.
-Every provider here has a documented endpoint; the two plain balance APIs come
-first because they are the smallest and share the most code.
+Each new adapter is its own minor, honouring the one-feature-per-revision rule,
+and each takes **the next available minor when it is built**. The order below is
+a recommendation, not a queue: these are independent of each other and of the
+update chain, so pick whichever Ian wants next. The two plain balance APIs are
+listed first only because they are the smallest and share the most code.
 
-| Version | Provider | Endpoint | What it returns |
-|---|---|---|---|
-| 0.12.0 | DeepSeek | `GET https://api.deepseek.com/user/balance` | `balance_infos[]` with `total_balance`, `granted_balance`, `topped_up_balance`, and currency (CNY or USD) |
-| 0.13.0 | Moonshot / Kimi | `GET https://api.moonshot.ai/v1/users/me/balance` | `available_balance`, `cash_balance`, `voucher_balance`. Keys are platform-specific — a `platform.kimi.ai` key 401s against `.com`, so make the base URL an overridable setting |
-| 0.14.0 | Anthropic Admin | `GET /v1/organizations/cost_report` | Daily cost buckets. Needs an `sk-ant-admin-*` key, not a normal API key |
-| 0.15.0 | OpenAI Admin | `GET /v1/organization/costs` | Daily cost buckets. Needs an admin key |
-| 0.16.0 | Fireworks | `GET /v1/accounts/{account_id}/billingUsage` | Usage/cost. Needs an account id alongside the key |
+| Provider | Endpoint | What it returns |
+|---|---|---|
+| DeepSeek | `GET https://api.deepseek.com/user/balance` | `balance_infos[]` with `total_balance`, `granted_balance`, `topped_up_balance`, and currency (CNY or USD) |
+| Moonshot / Kimi | `GET https://api.moonshot.ai/v1/users/me/balance` | `available_balance`, `cash_balance`, `voucher_balance`. Keys are platform-specific — a `platform.kimi.ai` key 401s against `.com`, so make the base URL an overridable setting |
+| Anthropic Admin | `GET /v1/organizations/cost_report` | Daily cost buckets. Needs an `sk-ant-admin-*` key, not a normal API key |
+| OpenAI Admin | `GET /v1/organization/costs` | Daily cost buckets. Needs an admin key |
+| Fireworks | `GET /v1/accounts/{account_id}/billingUsage` | Usage/cost. Needs an account id alongside the key |
 
 Anthropic, OpenAI, and Fireworks report *spend over a period* rather than a
 remaining balance, so they surface as a cost figure (and, where a budget is
 configured, a percentage window) — not as `Credits`. Worth confirming that
-framing when 0.14.0 comes up.
+framing when the first of those three comes up.
+
+**Precedent from the shipped ElevenLabs adapter:** when a provider reports an
+allowance rather than a balance, emit a `UsageWindow` and leave `credits` as
+`None`. `Credits` is for a balance you draw down; a per-cycle allowance belongs
+in the same shape as Claude's weekly cap, which is what the tray, thresholds,
+and metric pickers already understand. See
+`crates/quota-core/src/providers/elevenlabs.rs`.
 
 Per-provider work, the same shape every time:
 
-- `crates/quota-core/src/providers/simple_credits.rs` (new, at 0.12.0) — the
+- `crates/quota-core/src/providers/simple_credits.rs` (new, with whichever of
+  DeepSeek/Moonshot lands first) — the
   shared table described above, covering DeepSeek and Moonshot. Anthropic,
   OpenAI, and Fireworks do **not** fit it (time-bucketed cost reports needing
   date ranges, and Fireworks needs an account id in the path), so they get
@@ -479,14 +512,17 @@ other's files:
   `src/lib/Settings.svelte`, `src/App.svelte`, `nix/package.nix`.
 - **Shared, coordinate before editing** — `src/styles.css`,
   `scripts/smoke-mount.mjs`, `README.md`, `AGENTS.md`, `Cargo.toml`, and (from
-  0.8.0) `src/lib/opacity.js`, which is imported by both windows. Codex authors
-  it; treat it as Codex-owned for later edits.
+  the scroll-to-fade work) `src/lib/opacity.js`, which is imported by both
+  windows. Codex authored it; treat it as Codex-owned for later edits.
 
 The patch series is strictly sequential, so ownership there is just *who does
 the work*. Real parallelism is available across features: Codex can take the
-provider minors while Claude works the update chain (0.9.0–0.10.0). 0.8.0 is
-the exception — it is split across both owners on a shared new file, so it is
-sequenced rather than parallel (see its Owner note).
+provider minors while Claude works the update chain. Scroll-to-fade was the
+exception — split across both owners on a shared new file, so it was sequenced
+rather than parallel (see its Owner note).
+
+When two features are in flight at once, whoever lands first takes the next
+minor and the other rebases onto it. Do not reserve a number in advance.
 
 Also worth doing during this work: `AGENTS.md`'s "Current task" section still
 points at `docs/plan-tray-accounts.md`, which is finished. Repoint it here.
@@ -514,20 +550,23 @@ them. Watch the two known Svelte 5 traps: `structuredClone` on a `$state` proxy
 Building `src-tauri` locally may fail for want of `clang`/`lld`. Where it can't
 be compiled, say so plainly rather than claiming verification.
 
-Manual checks that cannot be automated:
+Manual checks that cannot be automated, per feature:
 
-- **0.5.23 / 0.5.24** — rounded corners on Plasma *and* Windows 11, in both
-  light and dark themes; drag and resize still work on `main`.
-- **0.5.26** — no dead space at the bottom for 1, 4, and 8 accounts; the
+- **Corner radius** — rounded corners on Plasma *and* Windows 11, in both light
+  and dark themes; drag and resize still work on `main`.
+- **Mini height** — no dead space at the bottom for 1, 4, and 8 accounts; the
   summary does not jump when it resizes.
-- **0.6.0** — a dispatched branch build shows the badge; a `main` build does
-  not.
-- **0.7.0** — both transports fetch Hermes against a real tailnet host.
-- **0.8.0** — scrolling fades both windows against a real desktop background on
-  Plasma *and* Windows 11 (a compositor must be running for genuine
-  transparency); the popup never becomes an invisible click-trap; scrolling the
-  card list and Settings still scrolls rather than fading.
-- **0.9.0 / 0.10.0** — an older build detects a newer `latest.json`; the
-  installer path completes and relaunches; a branch build stays silent.
+- **Branch badge** — a dispatched branch build shows the badge; a `main` build
+  does not.
+- **Tailscale transport** — both transports fetch Hermes against a real tailnet
+  host.
+- **Scroll-to-fade** — scrolling fades both windows against a real desktop
+  background on Plasma *and* Windows 11 (a compositor must be running for
+  genuine transparency); the popup never becomes an invisible click-trap;
+  scrolling the card list and Settings still scrolls rather than fading.
+- **New providers** — a real key returns a real figure, and a deliberately wrong
+  key surfaces as `AuthExpired` rather than a silent zero.
+- **Update chain** — an older build detects a newer `latest.json`; the installer
+  path completes and relaunches; a branch build stays silent.
 
 Do not push, and do not dispatch a Windows build, without Ian saying so.
