@@ -224,9 +224,9 @@ starting. It covers two tracks:
 1. **Finesse patches (0.5.23–0.5.27).** Cosmetic only: rounded corners on the
    mini and main windows, mini-summary row alignment and percentage-first
    labels, a content-fitted mini height, and a collapsed "Add account" form.
-2. **Feature minors (0.6.0+).** Branch builds with a visible dev badge, upstream
-   update detection, native Windows install, a Nix-aware update prompt, a
-   Tailscale-vs-plain-SSH transport toggle, and new provider adapters.
+2. **Feature minors (0.6.0+).** Branch builds with a visible dev badge, a
+   Tailscale-vs-plain-SSH transport toggle, upstream update detection, native
+   Windows install, a Nix-aware update prompt, and new provider adapters.
 
 **Numbering is a hard requirement:** finesse items are patch bumps, features are
 minor bumps, and **no revision introduces more than one feature**. Task
