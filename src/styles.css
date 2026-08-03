@@ -344,21 +344,22 @@ button.primary {
   text-align: right;
 }
 
-/* Nothing to align against a bar, so the amount takes the bar column too and
-   ends flush with the percentages above it. */
+/* Nothing to align against a bar, so the amount sits centred in the bar column
+   with the currency spanning the two columns after it. */
 .hover-amount {
-  grid-column: 2 / span 2;
+  grid-column: 2;
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  text-align: center;
 }
 
 .hover-label {
   text-align: left;
 }
 
-/* Status text ("unavailable", "no data") is one phrase, not a number and a
-   label. */
-.hover-val.span {
+/* Status text ("unavailable", "no data") and a credit row's currency are one
+   phrase, not a number and a label. */
+.hover-val.span,
+.hover-label.span {
   grid-column: 3 / span 2;
   text-align: left;
 }

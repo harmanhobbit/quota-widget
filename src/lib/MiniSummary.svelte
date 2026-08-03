@@ -109,9 +109,9 @@
     level: levelOf(window.used_pct),
     pct: Math.min(window.used_pct, 100),
   });
-  // The currency is the row's label, matching "5-hour" on a window row, so the
-  // amount only needs the bar column — dead space on a credit row — plus the
-  // number column, where right-aligning lands it under the percentages.
+  // The currency is the row's label, matching "5-hour" on a window row. The bar
+  // column is dead space on a credit row, so the amount sits centred in it and
+  // the currency takes the number and label columns after it.
   const creditSummary = (credits) => ({
     amount: `${CURRENCY_SYMBOLS[credits.unit] ?? ''}${credits.balance.toFixed(2)}`,
     label: credits.unit,
@@ -147,11 +147,11 @@
                leave the cell empty rather than repeating it. -->
           <span class="hover-name">{row === 0 ? snap.provider_name : ''}</span>
           {#if s.amount != null}
-            <!-- The bar column is dead space on a credit row, so the amount
-                 spans it and the number column, ending flush with the
-                 percentages; the currency sits in the label column. -->
+            <!-- The bar column is dead space on a credit row, so the amount is
+                 centred in it and the currency spans the number and label
+                 columns that follow. -->
             <span class="hover-amount {s.level}">{s.amount}</span>
-            <span class="hover-label {s.level}">{s.label}</span>
+            <span class="hover-label span {s.level}">{s.label}</span>
           {:else}
             <!-- Always rendered so a row without a bar (an error) still holds
                  the column open and keeps the numbers aligned. -->
