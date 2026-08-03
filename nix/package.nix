@@ -14,6 +14,7 @@
 , webkitgtk_4_1
 , libsoup_3
 , openssh
+, tailscale
 }:
 
 rustPlatform.buildRustPackage rec {
