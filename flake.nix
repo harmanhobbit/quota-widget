@@ -68,7 +68,15 @@
             # popup sinks behind other windows. The .desktop entry sets this
             # for installed builds; do the same for `cargo tauri dev`.
             export GDK_BACKEND=x11
-            echo "quota-widget dev shell — cargo test -p quota-core | npm run build | cargo tauri dev"
+
+            # `npm run` puts node_modules/.bin on PATH for its child; `cargo
+            # tauri dev` does not — it runs beforeDevCommand through a bare
+            # `sh -c`, which fails with "vite: command not found". Adding it
+            # here makes both entry points work.
+            export PATH="$PWD/node_modules/.bin:$PATH"
+
+            [ -d node_modules ] || echo "note: run 'npm ci' first — node_modules is missing"
+            echo "quota-widget dev shell — cargo test -p quota-core | npm run build | npm run tauri dev"
           '';
         };
       });

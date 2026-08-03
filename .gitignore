@@ -1,6 +1,9 @@
 target/
 node_modules/
 dist/
+# `nix build` output symlink — also a GC root, so it pins that store path
+result
+result-*
 *.log
 src-tauri/gen/
 
