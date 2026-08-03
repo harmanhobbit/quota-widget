@@ -83,8 +83,8 @@ rustPlatform.buildRustPackage rec {
 
   preFixup = ''
     gappsWrapperArgs+=(
-      # The Hermes remote source shells out to `ssh`.
-      --prefix PATH : ${lib.makeBinPath [ openssh ]}
+      # The Hermes remote source shells out to `ssh` or `tailscale ssh`.
+      --prefix PATH : ${lib.makeBinPath [ openssh tailscale ]}
     )
   '';
 
