@@ -15,9 +15,13 @@ export function resetOpacity() {
 
 // Returns whether the wheel event actually changed opacity. Callers use that
 // to avoid swallowing ordinary scrolling once the fade has reached an edge.
+//
+// Scrolling *up* fades and *down* restores. That is the opposite of the
+// original plan, and deliberate: the gesture reads as pushing the window back
+// into the desktop rather than as scrolling a document.
 export function stepOpacity(deltaY, minimum = 0) {
   if (!Number.isFinite(deltaY) || deltaY === 0) return false;
-  const next = Math.min(1, Math.max(minimum, level - Math.sign(deltaY) * STEP));
+  const next = Math.min(1, Math.max(minimum, level + Math.sign(deltaY) * STEP));
   if (next === level) return false;
   level = next;
   write();

@@ -277,6 +277,10 @@ Ian's request: with the pointer over the widget, scrolling down fades it all the
 way to fully transparent and scrolling up returns it to fully opaque, with a
 Settings toggle to disable the behaviour entirely.
 
+**Direction reversed after trying it (0.8.2):** scrolling *up* fades and *down*
+restores. On hardware the original way round felt backwards — the gesture reads
+as pushing the window back into the desktop, not as scrolling a document.
+
 **Load-bearing finding: do this in CSS, not through a window API.** Neither
 `tao` 0.35.3 nor `tauri` 2.11.5 exposes a `set_opacity` on the window (grepped
 both vendored trees; the symbol does not exist), so there is no native route in

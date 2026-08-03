@@ -110,7 +110,7 @@ const CASES = [
     verify: ({ target, flushSync }) => {
       const main = target.querySelector('main');
       const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
-      main.dispatchEvent(new window.WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }));
+      main.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
       flushSync();
       if (opacity() !== '0.92') throw new Error(`scroll did not fade popup: ${opacity()}`);
       // A config broadcast turns the toggle off and restores the normal shell.
@@ -125,7 +125,7 @@ const CASES = [
     verify: ({ target, flushSync }) => {
       const main = target.querySelector('main');
       const before = document.documentElement.style.getPropertyValue('--window-opacity');
-      main.dispatchEvent(new window.WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }));
+      main.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
       flushSync();
       const after = document.documentElement.style.getPropertyValue('--window-opacity');
       if (after !== before) throw new Error('disabled opacity setting still changed the popup');
@@ -153,7 +153,7 @@ const CASES = [
       const mini = target.querySelector('.mini');
       const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
       const wheel = () =>
-        mini.dispatchEvent(new window.WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }));
+        mini.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
       wheel();
       flushSync();
       if (opacity() !== '0.92') throw new Error(`scroll did not fade summary: ${opacity()}`);
@@ -172,7 +172,7 @@ const CASES = [
     verify: ({ target, flushSync }) => {
       const mini = target.querySelector('.mini');
       const before = document.documentElement.style.getPropertyValue('--window-opacity');
-      mini.dispatchEvent(new window.WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }));
+      mini.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
       flushSync();
       const after = document.documentElement.style.getPropertyValue('--window-opacity');
       if (after !== before) throw new Error('disabled opacity setting still changed the summary');

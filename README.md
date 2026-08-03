@@ -34,7 +34,7 @@ Platform differences are small but real:
   tray tooltip; Plasma draws the StatusNotifierItem tooltip.
 - **Right-click** for Open / Refresh now / Settings / Quit. **Open** shows the
   full usage/settings window; reopening it always lands on the usage list.
-- **Scroll** over either window to fade it: down towards transparent, up back
+- **Scroll** over either window to fade it: up towards transparent, down back
   to opaque. The level is temporary and resets whenever the window is shown
   again, so a faded widget is never left that way. Scrolling the card list or
   the Settings form still scrolls normally, and the full popup stops at a
