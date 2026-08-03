@@ -106,6 +106,9 @@ pub struct Config {
     pub hide_on_blur: bool,
     /// Show usage bars in the compact tray-click summary.
     pub mini_summary_bars: bool,
+    /// Let scrolling over a window fade its painted shell. The level itself is
+    /// deliberately ephemeral so reopening the widget never leaves it hidden.
+    pub scroll_opacity: bool,
     /// Account iteration order is the user-selected display order everywhere.
     pub providers: IndexMap<String, ProviderConfig>,
 }
@@ -138,6 +141,7 @@ impl Default for Config {
             autostart: false,
             hide_on_blur: false,
             mini_summary_bars: true,
+            scroll_opacity: true,
             providers,
         }
     }
@@ -248,10 +252,13 @@ impl Config {
             provider.tray_metric = if !provider.in_tray {
                 Some("none".into())
             } else {
-                provider
-                    .mini_summary_metric
-                    .clone()
-                    .map(|metric| if metric == "none" { "none".into() } else { metric })
+                provider.mini_summary_metric.clone().map(|metric| {
+                    if metric == "none" {
+                        "none".into()
+                    } else {
+                        metric
+                    }
+                })
             };
         }
         self.version = 2;
@@ -384,6 +391,7 @@ mod tests {
         assert_eq!(cfg.version, 2);
         assert_eq!(cfg.providers["claude"].kind, None);
         assert_eq!(cfg.providers["claude"].label, None);
+        assert!(cfg.scroll_opacity);
     }
 
     /// Every pre-v2 headline setting has to land on the equivalent list, or an
@@ -424,8 +432,15 @@ mod tests {
             .unwrap();
             let cfg = Config::load(dir.path());
             let claude = &cfg.providers["claude"];
-            assert_eq!(claude.mini_summary_metrics, want_metrics, "metrics {metric:?}/{in_tray}");
-            assert_eq!(claude.tray_metric.as_deref(), want_tray, "tray {metric:?}/{in_tray}");
+            assert_eq!(
+                claude.mini_summary_metrics, want_metrics,
+                "metrics {metric:?}/{in_tray}"
+            );
+            assert_eq!(
+                claude.tray_metric.as_deref(),
+                want_tray,
+                "tray {metric:?}/{in_tray}"
+            );
         }
     }
 
@@ -505,10 +520,14 @@ mod tests {
             )
         }
 
-        fn status_of(metrics: Option<Vec<&str>>, tray: Option<&str>) -> Option<(Status, Option<f64>)> {
+        fn status_of(
+            metrics: Option<Vec<&str>>,
+            tray: Option<&str>,
+        ) -> Option<(Status, Option<f64>)> {
             let mut cfg = Config::default();
             let claude = cfg.providers.get_mut("claude").unwrap();
-            claude.mini_summary_metrics = metrics.map(|m| m.into_iter().map(String::from).collect());
+            claude.mini_summary_metrics =
+                metrics.map(|m| m.into_iter().map(String::from).collect());
             claude.tray_metric = tray.map(String::from);
             cfg.mini_tray_status(&snapshot(), None)
         }

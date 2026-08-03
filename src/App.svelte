@@ -6,6 +6,7 @@
   import { LogicalSize } from '@tauri-apps/api/dpi';
   import ProviderCard from './lib/ProviderCard.svelte';
   import Settings from './lib/Settings.svelte';
+  import { resetOpacity, stepOpacity } from './lib/opacity.js';
 
   const APP_VERSION = __QUOTA_WIDGET_VERSION__;
   const BUILD_BRANCH = __QUOTA_WIDGET_BRANCH__;
@@ -41,6 +42,7 @@
   });
 
   onMount(() => {
+    resetOpacity();
     invoke('get_snapshots').then((initial) => {
       snapshots = initial.snapshots;
       appConfig = initial.config;
@@ -50,12 +52,18 @@
     // Settings saves through Rust, which broadcasts the canonical persisted
     // config. Keep the next Settings visit in sync without replacing the
     // active component's local draft while it is being edited.
-    listen('config', (e) => (appConfig = e.payload)).then((u) => unlisten.push(u));
+    listen('config', (e) => {
+      appConfig = e.payload;
+      if (!e.payload.scroll_opacity) resetOpacity();
+    }).then((u) => unlisten.push(u));
     listen('navigate', (e) => (view = e.payload)).then((u) => unlisten.push(u));
     // Hiding to tray doesn't unload the page, so `view` would otherwise
     // persist: reopening after a visit to Settings would land back in
     // Settings instead of the usage list. Rust emits this on every show.
-    listen('window-shown', () => (view = 'popup')).then((u) => unlisten.push(u));
+    listen('window-shown', () => {
+      view = 'popup';
+      resetOpacity();
+    }).then((u) => unlisten.push(u));
     const esc = (e) => {
       if (e.key === 'Escape') {
         if (view === 'settings') view = 'popup';
@@ -75,9 +83,17 @@
     setTimeout(() => (refreshing = false), 1200);
   }
 
+  function fadeOnWheel(event) {
+    if (!appConfig?.scroll_opacity) return;
+    // The popup's actual content is scrollable, so only its chrome fades.
+    // Let the cards and the Settings form keep their normal wheel behaviour.
+    if (event.target.closest('.cards, .settings')) return;
+    if (stepOpacity(event.deltaY, 0.15)) event.preventDefault();
+  }
+
 </script>
 
-<main>
+<main onwheel={fadeOnWheel}>
   <header role="toolbar" aria-label="Window controls" tabindex="-1" data-tauri-drag-region bind:this={headerEl} onmousedown={() => invoke('note_drag')}>
     <span class="title" data-tauri-drag-region>Quota Widget <small class="build-version" data-tauri-drag-region>v{APP_VERSION}</small>{#if BUILD_BRANCH} <small class="build-branch" data-tauri-drag-region>{BUILD_BRANCH}</small>{/if}</span>
     <span class="spacer" data-tauri-drag-region></span>

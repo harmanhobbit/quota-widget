@@ -33,6 +33,7 @@ const CONFIG = {
   autostart: false,
   hide_on_blur: false,
   mini_summary_bars: true,
+  scroll_opacity: true,
   thresholds: { warn_pct: 80, critical_pct: 95 },
   alerts: { toast: true, tray_color: true, auto_popup: false },
   providers: {
@@ -101,7 +102,35 @@ const SNAPSHOTS = [
 // takes its config as a prop that has been through $state in App, so it
 // arrives as a proxy — mirror that exactly, since it is what broke it before.
 const CASES = [
-  { file: 'src/App.svelte', props: () => ({}), buildBranch: 'smoke-branch', expect: ['smoke-branch'] },
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    buildBranch: 'smoke-branch',
+    expect: ['smoke-branch'],
+    verify: ({ target, flushSync }) => {
+      const main = target.querySelector('main');
+      const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
+      main.dispatchEvent(new window.WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }));
+      flushSync();
+      if (opacity() !== '0.92') throw new Error(`scroll did not fade popup: ${opacity()}`);
+      // A config broadcast turns the toggle off and restores the normal shell.
+      // The event stub does not retain listeners, so exercise the disabled
+      // configuration directly through the initial IPC payload in its own case.
+    },
+  },
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, scroll_opacity: false },
+    verify: ({ target, flushSync }) => {
+      const main = target.querySelector('main');
+      const before = document.documentElement.style.getPropertyValue('--window-opacity');
+      main.dispatchEvent(new window.WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }));
+      flushSync();
+      const after = document.documentElement.style.getPropertyValue('--window-opacity');
+      if (after !== before) throw new Error('disabled opacity setting still changed the popup');
+    },
+  },
   // Claude shows both selected headlines as separate rows; Codex's only
   // selected window is missing from its snapshot, so it reads "no data";
   // OpenRouter is Automatic and falls through to its credit balance.
@@ -122,7 +151,7 @@ const CASES = [
   {
     file: 'src/lib/Settings.svelte',
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
-    expect: ['Providers', 'Mini-summary headlines', 'Tray icon status', 'Worst of selected', 'Thresholds', 'Alerts', 'Save'],
+    expect: ['Providers', 'Mini-summary headlines', 'Tray icon status', 'Worst of selected', 'Thresholds', 'Alerts', 'Fade windows when scrolling over them', 'Save'],
     verify: async ({ target, flushSync }) => {
       const findButton = (text) => [...target.querySelectorAll('button')].find((button) => button.textContent.trim() === text);
       // The headline menu is built by hand rather than being a native control,
@@ -188,7 +217,7 @@ function stubTauri() {
   w('@tauri-apps/api/core.js', `
 export async function invoke(cmd, args) {
   switch (cmd) {
-    case 'get_snapshots': if (globalThis.__SMOKE_SNAPSHOTS_ERROR__) throw new Error('IPC unavailable'); return ${JSON.stringify({ snapshots: SNAPSHOTS, config: CONFIG })};
+    case 'get_snapshots': if (globalThis.__SMOKE_SNAPSHOTS_ERROR__) throw new Error('IPC unavailable'); return globalThis.__SMOKE_CONFIG__ ?? ${JSON.stringify({ snapshots: SNAPSHOTS, config: CONFIG })};
     case 'app_version': return '0.0.0-test';
     case 'has_secret': return false;
     case 'on_wayland': return true;
@@ -232,7 +261,7 @@ function build(rel) {
 const dom = new JSDOM('<!doctype html><div id="app"></div>', { pretendToBeVisual: true });
 for (const k of ['window', 'document', 'HTMLElement', 'Element', 'Node', 'Event',
   'CustomEvent', 'requestAnimationFrame', 'cancelAnimationFrame', 'getComputedStyle',
-  'MutationObserver', 'SVGElement', 'Text', 'Comment', 'DocumentFragment']) {
+  'MutationObserver', 'SVGElement', 'HTMLMediaElement', 'Text', 'Comment', 'DocumentFragment']) {
   globalThis[k] = dom.window[k];
 }
 globalThis.__QUOTA_WIDGET_VERSION__ = '0.0.0-test';
@@ -240,6 +269,8 @@ globalThis.__QUOTA_WIDGET_BRANCH__ = '';
 
 rmSync(WORK, { recursive: true, force: true });
 stubTauri();
+mkdirSync(join(WORK, 'src/lib'), { recursive: true });
+writeFileSync(join(WORK, 'src/lib/opacity.js'), readFileSync(join(ROOT, 'src/lib/opacity.js'), 'utf8'));
 
 const { mount, unmount, flushSync } = await import('svelte');
 const $ = await import('svelte/internal/client');
@@ -251,6 +282,7 @@ for (const c of CASES) {
   let app;
   try {
     globalThis.__SMOKE_SNAPSHOTS_ERROR__ = Boolean(c.snapshotsError);
+    globalThis.__SMOKE_CONFIG__ = c.config ? { snapshots: SNAPSHOTS, config: c.config } : undefined;
     globalThis.__QUOTA_WIDGET_BRANCH__ = c.buildBranch ?? '';
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
@@ -275,6 +307,7 @@ for (const c of CASES) {
   }
   try { unmount(app); } catch {}
   globalThis.__SMOKE_SNAPSHOTS_ERROR__ = false;
+  globalThis.__SMOKE_CONFIG__ = undefined;
   target.remove();
 }
 
