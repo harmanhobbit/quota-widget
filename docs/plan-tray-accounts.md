@@ -333,5 +333,6 @@ Manual KDE Plasma checks:
 4. Existing pin/unpin, focus-loss, and XWayland placement behaviour remains
    unchanged.
 
-Do not push. Commit locally only when the implementation is complete and let
-Ian explicitly choose whether to run the Windows CI build.
+Commit at logical intervals. Once the implementation and applicable checks are
+complete, push the feature branch for review; let Ian explicitly choose whether
+to run the Windows CI build. Never push `main`.

@@ -87,7 +87,9 @@
     {/each}
     {#if snap.credits}
       <div class="credits">
-        <span class="balance">{snap.credits.balance.toFixed(2)} {snap.credits.unit}</span>
+        <!-- A labelled amount is spend, not a balance ("Cost this month: 12.30
+             USD"); an unlabelled one is money left and reads as a bare figure. -->
+        <span class="balance">{snap.credits.label ? `${snap.credits.label}: ` : ''}{snap.credits.balance.toFixed(2)} {snap.credits.unit}</span>
         {#if snap.credits.used != null}<span class="sub">({snap.credits.used.toFixed(2)} used)</span>{/if}
         {#if snap.credits.est_tokens_remaining != null}
           <span class="sub">≈ {fmtTokens(snap.credits.est_tokens_remaining)} tokens left</span>

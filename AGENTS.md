@@ -41,9 +41,11 @@ rather than accumulating one enormous commit at the end. A version bump plus its
 change is a good unit; so is a self-contained refactor. This keeps changes
 reviewable and makes a bad step easy to back out.
 
-**Push a branch only when asked.** Branch pushes don't trigger CI, but they are
-still outward-facing. The metered step is dispatching a build
-(`gh workflow run build.yml --ref <branch>`) — never do that unattended.
+**Push the feature branch when work is complete.** After the implementation and
+applicable checks are complete, push the branch so the finished change is
+available for review. Never push `main`. Branch pushes don't trigger CI; the
+metered step is dispatching a build (`gh workflow run build.yml --ref <branch>`),
+which still requires the owner's explicit request.
 
 **Do not add a git remote, change remotes, or touch credentials.** There is a
 repo-local credential helper reading `~/.gh_token`, deliberately configured with

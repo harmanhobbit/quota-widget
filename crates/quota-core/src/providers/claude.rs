@@ -439,7 +439,12 @@ mod tests {
                     .settings
                     .insert("auth_mode".into(), m.into());
             }
-            ProviderCtx::new(std::env::temp_dir(), HashMap::new(), cfg)
+            ProviderCtx::new(
+                std::env::temp_dir(),
+                std::env::temp_dir(),
+                HashMap::new(),
+                cfg,
+            )
         };
         assert_eq!(auth_mode(&mk(None), "claude"), AuthMode::Auto);
         assert_eq!(auth_mode(&mk(Some("cli")), "claude"), AuthMode::Cli);
@@ -463,7 +468,7 @@ mod tests {
             r#"{"claudeAiOauth":{"accessToken":"cli-token","expiresAt":9999999999999}}"#,
         )
         .unwrap();
-        let ctx = ProviderCtx::new(dir.path().into(), HashMap::new(), cfg);
+        let ctx = ProviderCtx::new(dir.path().into(), dir.path().into(), HashMap::new(), cfg);
         let err = Claude::new("claude".into(), None)
             .access_token(&ctx)
             .await
@@ -486,7 +491,12 @@ mod tests {
             r#"{"accessToken":"widget-token","expiresAt":9999999999999}"#.to_string(),
         );
         // fresh CLI token wins
-        let ctx = ProviderCtx::new(dir.path().into(), secrets.clone(), Config::default());
+        let ctx = ProviderCtx::new(
+            dir.path().into(),
+            dir.path().into(),
+            secrets.clone(),
+            Config::default(),
+        );
         assert_eq!(
             Claude::new("claude".into(), None)
                 .access_token(&ctx)
@@ -500,7 +510,12 @@ mod tests {
             r#"{"claudeAiOauth":{"accessToken":"cli-token","expiresAt":1}}"#,
         )
         .unwrap();
-        let ctx = ProviderCtx::new(dir.path().into(), secrets, Config::default());
+        let ctx = ProviderCtx::new(
+            dir.path().into(),
+            dir.path().into(),
+            secrets,
+            Config::default(),
+        );
         assert_eq!(
             Claude::new("claude".into(), None)
                 .access_token(&ctx)

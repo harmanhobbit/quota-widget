@@ -2,8 +2,9 @@
 
 A system-tray widget for **Windows 11 and Linux** that watches your AI provider
 allowances in one place: Claude's rolling 5-hour window and weekly cap, Codex's
-weekly allowance, Hermes Portal credits, OpenRouter credits, and ElevenLabs
-credits. It collapses to
+weekly allowance, Hermes Portal credits, OpenRouter credits, ElevenLabs
+credits, Firecrawl credits, DeepSeek and Moonshot balances, and Fireworks, Anthropic and
+OpenAI organization spend. It collapses to
 the tray and pops up as a compact always-on-top window.
 
 Built with Tauri 2 (Rust) + Svelte 5. The portable EXE is self-contained —
@@ -65,9 +66,15 @@ Platform differences are small but real:
 |---|---|---|
 | **Claude** | A Claude Pro/Max login — either the Claude Code CLI (`claude`) or the widget's built-in browser sign-in | Calls the same usage endpoint Claude Code's `/usage` uses; shows the 5-hour window, weekly cap, and any per-model weekly caps the API reports. **Sign-in method** in Settings: *Auto* (default) prefers a fresh CLI token from `%USERPROFILE%\.claude\.credentials.json`, else the widget's own login; *Built-in* runs a PKCE browser sign-in (click "Sign in with Claude", authorize, paste back the code) — ideal if you only use Claude Desktop. When the widget refreshes a token itself, the rotated pair is stored in its own secret store and never written to Claude Code's file. Unofficial endpoints — may change. |
 | **Codex** | A ChatGPT plan — either the Codex CLI (`codex`) or the widget's built-in device sign-in | Calls the ChatGPT backend usage endpoint the Codex CLI's `/status` uses; renders whatever rate-limit windows the response contains (weekly today; adapts automatically if OpenAI reshapes it). **Sign-in method** in Settings: *Auto* (default) prefers `%USERPROFILE%\.codex\auth.json`, else the widget's own login; *Built-in* runs the same device flow as `codex login --device-auth` — click "Sign in with Codex", then type the short code shown into the browser page that opens. Note this flow is proprietary rather than RFC 8628, and undocumented: it's reimplemented from the Codex CLI source and can change without notice. Some accounts need an admin to enable device sign-in. Unofficial endpoints. |
-| **OpenRouter** | An API key from [openrouter.ai/keys](https://openrouter.ai/keys) | Official `GET /api/v1/credits` API. Shows balance and usage in USD. |
+| **OpenRouter** | An API key from [openrouter.ai/keys](https://openrouter.ai/keys) | Official `GET /api/v1/credits` API. Shows balance and lifetime usage in USD. Set an optional **Monthly budget** to track spend against a target; the widget records a month-start baseline because the API does not report month-to-date usage. |
 | **ElevenLabs** | An API key from [elevenlabs.io/app/settings/api-keys](https://elevenlabs.io/app/settings/api-keys) | Official `GET /v1/user/subscription` API. Shows the billing cycle's credit allowance as a usage window — used vs. limit, labelled “Credits”, counting down to the cycle reset. On plans with credit-limit extension enabled, usage can read past 100%. |
-| **Hermes Portal** | hermes-agent installed and logged in (`hermes`) — zero extra setup | Reads the Nous OAuth access token from `~/.hermes/auth.json` and calls the portal's billing API (`/api/billing/state` + `/api/billing/subscription`): purchased-credit balance in USD, monthly subscription allowance with tier name and cycle-reset countdown, and monthly-cap usage where configured. The subscription allowance is shown greyed-out and does **not** colour the card or tray while a purchased balance is still funding calls — on the Free tier that allowance is a fraction of a credit and reads 100% used permanently, which is not a quota you're actually hitting. The widget only ever uses the short-lived *access* token — never hermes's refresh token, which the portal rotates and revokes on reuse — so a stale token means "run any `hermes` command" (or keep hermes running; its keepalive refreshes it). **No hermes on this machine?** Set Settings → Hermes → Source to *Remote hermes over SSH* and enter `user@server`: the widget fetches the auth file from a machine that does run hermes (`ssh <host> cat .hermes/auth.json`, BatchMode — needs working key auth; Windows 10/11 include the OpenSSH client). Set **Transport** to *Tailscale SSH* instead when the remote is on your tailnet; the widget then runs `tailscale ssh <host>` and passes the same non-interactive SSH options through to OpenSSH. Last resort: paste a portal session cookie. |
+| **Firecrawl** | An API key from [firecrawl.dev/app/api-keys](https://firecrawl.dev/app/api-keys) | Official `GET /v2/team/credit-usage` API. Shows the billing cycle's plan credits as a usage window — spent vs. granted, labelled “Credits”. The response carries both ends of the billing period, so the period-progress marker is exact rather than inferred. |
+| **DeepSeek** | An API key from [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | Official `GET /user/balance` API. Shows the remaining balance in the account's own currency (CNY or USD); if an account reports both, USD is displayed. DeepSeek reports only what remains, never what was spent, so the card shows a balance without a usage percentage. |
+| **Moonshot / Kimi** | An API key from [platform.kimi.ai](https://platform.kimi.ai) | Official `GET /v1/users/me/balance` API. Shows `available_balance` in USD — the figure that actually gates calls, since Moonshot rejects requests with `exceeded_current_quota_error` once it hits zero. **Keys are platform-specific:** `platform.kimi.ai` and `platform.kimi.com` issue independent keys and a key from one returns 401 against the other, so a `.com` key needs **Balance URL** in Settings pointed at that host. |
+| **Fireworks** | An API key from [fireworks.ai/account/api-keys](https://fireworks.ai/account/api-keys), plus your **account ID** | Official `GET /v1/accounts/{account_id}/billingUsage` API, summing serverless, dedicated and training costs for the calendar month to date. Fireworks reports *spend*, not a balance or an allowance, so there is no percentage unless you say what a full month looks like: set an optional **Monthly budget** and the card shows spend against it as a usage window (with tray colour, thresholds and a period marker); leave it blank and the card shows month-to-date spend as a plain figure. Overspending a budget reads past 100% — it's your intention, not a cap Fireworks enforces. |
+| **Anthropic Admin** | An **admin** key (`sk-ant-admin…`) from Console → Settings → Admin keys | Official `GET /v1/organizations/cost_report` API, summing the daily cost buckets for the calendar month to date. Needs an admin key, not a normal API key, and the Admin API is unavailable on individual accounts. Like Fireworks it reports *spend*: set a **Monthly budget** to see it as a usage window, or leave it blank for a plain "Cost this month" figure. Note Priority Tier spend is excluded by the API itself. |
+| **OpenAI Admin** | An organization **Admin** key from [platform.openai.com/settings/organization/admin-keys](https://platform.openai.com/settings/organization/admin-keys) | Official `GET /v1/organization/costs` API, summing the daily cost buckets for the calendar month to date. Needs an admin key, not a normal API key. Same spend framing and **Monthly budget** option as the other spend providers. |
+| **Hermes Portal** | hermes-agent installed and logged in (`hermes`) — zero extra setup | Reads the Nous OAuth access token from `~/.hermes/auth.json` and calls the portal's billing API (`/api/billing/state` + `/api/billing/subscription`): purchased-credit balance in USD, monthly subscription allowance with tier name and cycle-reset countdown, and monthly-cap usage where configured. Set an optional **Monthly budget** to add a monthly-spend target without hiding the purchased balance; Hermes' own `spentThisMonthUsd` is used when available, otherwise the widget tracks drawdown from the month's opening balance and handles top-ups. The subscription allowance is shown greyed-out and does **not** colour the card or tray while a purchased balance is still funding calls — on the Free tier that allowance is a fraction of a credit and reads 100% used permanently, which is not a quota you're actually hitting. The widget only ever uses the short-lived *access* token — never hermes's refresh token, which the portal rotates and revokes on reuse — so a stale token means "run any `hermes` command" (or keep hermes running; its keepalive refreshes it). **No hermes on this machine?** Set Settings → Hermes → Source to *Remote hermes over SSH* and enter `user@server`: the widget fetches the auth file from a machine that does run hermes (`ssh <host> cat .hermes/auth.json`, BatchMode — needs working key auth; Windows 10/11 include the OpenSSH client). Set **Transport** to *Tailscale SSH* instead when the remote is on your tailnet; the widget then runs `tailscale ssh <host>` and passes the same non-interactive SSH options through to OpenSSH. Last resort: paste a portal session cookie. |
 
 You can add multiple named accounts of each provider in Settings. The editable
 account name is shown everywhere; its internal key stays fixed so changing a
@@ -86,6 +93,28 @@ Secrets (API keys, cookies, OAuth tokens) are stored in the **Windows Credential
 Manager**, not on disk. On Linux they fall back to a `0600` `secrets.json` in the
 config dir. Config lives at `%APPDATA%\quota-widget\config.json`
 (`~/.config/quota-widget/config.json` on Linux).
+
+### How far each provider has been verified
+
+Every adapter is written against the vendor's documented response schema and
+covered by unit tests over that schema. What follows is what has additionally
+been seen from a **live account** — worth knowing before you trust a number.
+
+- **Verified with real usage data:** Firecrawl. Its parse path has run on a
+  meaningful non-zero reading, so the arithmetic and formatting are exercised,
+  not just the plumbing.
+- **Reached successfully, but only on an unused account reporting $0.00:**
+  DeepSeek, Moonshot, Fireworks, OpenAI Admin. This confirms the key is
+  accepted, the endpoint is right, and the response parses — but a zero says
+  nothing about whether a non-zero amount is scaled correctly.
+- **Not yet run against a live account:** Anthropic Admin.
+
+That middle distinction is not pedantry. Anthropic's cost report returns
+`amount` in **cents** while OpenAI's returns **dollars**, so a units mistake is
+a 100× error that a $0.00 reading cannot possibly reveal (see the units note in
+`crates/quota-core/src/providers/anthropic_admin.rs`). Treat the first non-zero
+figure from any provider in the lower two groups as worth sanity-checking
+against that vendor's own dashboard.
 
 ## Building
 
@@ -190,6 +219,11 @@ scripts/            icon generation, version-drift guard
 - The Hermes adapter scans responses leniently for balance-like fields, but the
   portal may change shape; the endpoint URL is user-configurable for that
   reason.
+- Most balance and spend adapters have only been confirmed against accounts
+  reporting **$0.00**, and the Anthropic Admin one has not been run against a
+  live account at all — so a first non-zero reading is worth checking against
+  the vendor's dashboard. See
+  [How far each provider has been verified](#how-far-each-provider-has-been-verified).
 - The Claude "weekly" window's reset cadence is whatever the API reports —
   observed in the wild resetting more often than every 7 days.
 - Tray hover is always a native tooltip, not a widget window: Windows renders

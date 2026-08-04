@@ -8,9 +8,15 @@
   const PROVIDERS = [
     { id: 'claude', name: 'Claude', secret: null, note: 'Uses the Claude Code CLI login if present, or the built-in browser sign-in below.' },
     { id: 'codex', name: 'Codex', secret: null, note: 'Uses the Codex CLI login if present, or the built-in device sign-in below.' },
-    { id: 'openrouter', name: 'OpenRouter', secret: 'API key', note: 'Create a key at openrouter.ai/keys.' },
+    { id: 'openrouter', name: 'OpenRouter', secret: 'API key', note: 'Create a key at openrouter.ai/keys. Optional monthly budget tracks this month’s spend against your target.' },
     { id: 'elevenlabs', name: 'ElevenLabs', secret: 'API key', note: 'Create a key at elevenlabs.io/app/settings/api-keys.' },
-    { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Uses a hermes-agent login: local ~/.hermes/auth.json, or fetched from a remote machine over SSH (needs working key auth, e.g. via ssh-agent). Cookie paste is a last-resort fallback.' },
+    { id: 'firecrawl', name: 'Firecrawl', secret: 'API key', note: 'Create a key at firecrawl.dev/app/api-keys.' },
+    { id: 'deepseek', name: 'DeepSeek', secret: 'API key', note: 'Create a key at platform.deepseek.com/api_keys.' },
+    { id: 'moonshot', name: 'Moonshot', secret: 'API key', note: 'Create a key at platform.kimi.ai. Keys are platform-specific: a platform.kimi.com key needs its Balance URL changed to that host, or it returns 401.' },
+    { id: 'fireworks', name: 'Fireworks', secret: 'API key', note: 'Create a key at fireworks.ai/account/api-keys. Needs the account ID too. Reports spend, not a balance: set a monthly budget to see it as a percentage.' },
+    { id: 'anthropic_admin', name: 'Anthropic Admin', secret: 'Admin API key', note: 'Needs an sk-ant-admin key from Console → Settings → Admin keys, not a normal API key. The Admin API is unavailable on individual accounts. Shows organization spend this month.' },
+    { id: 'openai_admin', name: 'OpenAI Admin', secret: 'Admin API key', note: 'Needs an organization Admin key from platform.openai.com/settings/organization/admin-keys, not a normal API key. Shows organization spend this month.' },
+    { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Uses a hermes-agent login: local ~/.hermes/auth.json, or fetched from a remote machine over SSH (needs working key auth, e.g. via ssh-agent). Cookie paste is a last-resort fallback. Optional monthly budget tracks spend without replacing the purchased-credit balance.' },
   ];
   const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secret: null, note: 'Unknown provider kind.' };
 
@@ -350,9 +356,15 @@
     const known = {
       claude: [{ id: 'window:five_hour', label: '5-hour' }, { id: 'window:weekly', label: 'Weekly' }],
       codex: [{ id: 'window:weekly', label: 'Weekly' }],
-      openrouter: [{ id: 'credits', label: 'Credit balance' }],
+      openrouter: [{ id: 'credits', label: 'Credit balance' }, { id: 'window:monthly_spend', label: 'Monthly spend' }],
       elevenlabs: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
-      hermes: [{ id: 'credits', label: 'Purchased credit balance' }, { id: 'window:monthly_cap', label: 'Monthly cap' }, { id: 'window:monthly_allowance', label: 'Monthly allowance' }],
+      firecrawl: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
+      deepseek: [{ id: 'credits', label: 'Credit balance' }],
+      moonshot: [{ id: 'credits', label: 'Credit balance' }],
+      fireworks: [{ id: 'window:monthly_spend', label: 'Monthly spend' }, { id: 'credits', label: 'Spend this month' }],
+      anthropic_admin: [{ id: 'window:monthly_spend', label: 'Monthly spend' }, { id: 'credits', label: 'Spend this month' }],
+      openai_admin: [{ id: 'window:monthly_spend', label: 'Monthly spend' }, { id: 'credits', label: 'Spend this month' }],
+      hermes: [{ id: 'credits', label: 'Purchased credit balance' }, { id: 'window:monthly_cap', label: 'Monthly cap' }, { id: 'window:monthly_allowance', label: 'Monthly allowance' }, { id: 'window:monthly_spend', label: 'Monthly spend' }],
     }[kind] ?? [];
     const live = snapshots.find((snap) => snap.provider_id === id)?.windows ?? [];
     const choices = [...known];
@@ -569,7 +581,37 @@
               />
             </label>
           {/if}
-          {#if p.id === 'openrouter' || p.id === 'hermes'}
+          {#if p.id === 'fireworks'}
+            <label class="field">Account ID
+              <input
+                type="text"
+                placeholder="required — from your Fireworks account page"
+                bind:value={account.settings.account_id}
+              />
+            </label>
+          {/if}
+          <!-- Every spend-reporting provider offers the same budget: without
+               one there is no remaining quantity to make a percentage from. -->
+          {#if p.id === 'fireworks' || p.id === 'anthropic_admin' || p.id === 'openai_admin' || p.id === 'openrouter' || p.id === 'hermes'}
+            <label class="field">Monthly budget (optional)
+              <input
+                type="number"
+                step="any"
+                placeholder="USD — set to see spend as a percentage"
+                bind:value={account.settings.monthly_budget}
+              />
+            </label>
+          {/if}
+          {#if p.id === 'moonshot'}
+            <label class="field">Balance URL
+              <input
+                type="text"
+                placeholder="default: https://api.moonshot.ai/v1/users/me/balance"
+                bind:value={account.settings.balance_url}
+              />
+            </label>
+          {/if}
+          {#if p.id === 'openrouter' || p.id === 'hermes' || p.id === 'deepseek' || p.id === 'moonshot'}
             <div class="row">
               <label class="inline">Low-balance warning at
                 <input type="number" step="any" class="num" bind:value={account.low_balance_warn} placeholder="off" />
