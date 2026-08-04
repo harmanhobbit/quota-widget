@@ -387,7 +387,7 @@ mod tests {
         if let Some(s) = secret {
             secrets.insert(OAUTH_SECRET_KEY.to_string(), s.to_string());
         }
-        ProviderCtx::new(home.into(), secrets, cfg)
+        ProviderCtx::new(home.into(), home.into(), secrets, cfg)
     }
 
     fn write_cli_auth(home: &std::path::Path, token: &str) {
