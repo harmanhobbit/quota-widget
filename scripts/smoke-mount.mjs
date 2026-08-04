@@ -230,7 +230,8 @@ const CASES = [
       flushSync();
       card('OpenRouter').querySelector('.provider-disclosure').click();
       flushSync();
-      card('OpenRouter').querySelector('.provider-footer button').click();
+      [...card('OpenRouter').querySelectorAll('.provider-footer button')]
+        .find((button) => button.textContent.trim() === 'Remove account').click();
       await Promise.resolve(); // let Remove's secret-clear await finish
       flushSync();
       target.querySelector('.primary').click();

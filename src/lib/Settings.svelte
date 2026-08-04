@@ -377,17 +377,16 @@
         {@const p = providerInfo(account.kind ?? id)}
         <div class="provider">
           <div class="provider-header row" class:collapsed={!expanded[id]}>
-            <label class="inline">
-              <input type="checkbox" bind:checked={account.enabled} />
-              Enabled
-            </label>
             <button
               class="provider-disclosure"
               aria-expanded={expanded[id] === true}
               onclick={() => toggleAccount(id)}
             ><span class="chevron" class:open={expanded[id]}>▸</span> <strong>{account.label ?? p.name}</strong></button>
             <span class="spacer"></span>
-            <button class="small" onclick={() => test(id)}>Test</button>
+            <label class="inline">
+              <input type="checkbox" bind:checked={account.enabled} />
+              Enabled
+            </label>
             <button class="small" title="Move account up" aria-label={`Move ${account.label ?? p.name} up`} disabled={index === 0} onclick={() => moveAccount(id, -1)}>↑</button>
             <button class="small" title="Move account down" aria-label={`Move ${account.label ?? p.name} down`} disabled={index === Object.keys(config.providers).length - 1} onclick={() => moveAccount(id, 1)}>↓</button>
           </div>
@@ -561,18 +560,18 @@
               </label>
             </div>
           {/if}
-          {/if}
-          <!-- Test lives in the header, so its result must stay readable while
-               the rest of the account is collapsed. -->
           {#if testResults[id]}
             <p class="test {testResults[id].ok ? 'good' : 'bad'}">
               {testResults[id].pending ? 'testing…' : testResults[id].msg}
             </p>
           {/if}
-          {#if expanded[id]}
-            <div class="provider-footer">
-              <button class="small" onclick={() => removeAccount(id)}>Remove account</button>
-            </div>
+          <!-- Test sits with the credential controls it exercises, not up in
+               the header: it only makes sense once an account is open. -->
+          <div class="provider-footer">
+            <button class="small" onclick={() => test(id)}>Test</button>
+            <span class="spacer"></span>
+            <button class="small" onclick={() => removeAccount(id)}>Remove account</button>
+          </div>
           {/if}
           </div>
       {/each}
