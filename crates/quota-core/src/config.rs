@@ -133,6 +133,7 @@ impl Default for Config {
         );
         providers.insert("openrouter".into(), ProviderConfig::default());
         providers.insert("elevenlabs".into(), ProviderConfig::default());
+        providers.insert("firecrawl".into(), ProviderConfig::default());
         providers.insert("hermes".into(), ProviderConfig::default());
         Self {
             version: 2,
@@ -487,7 +488,14 @@ mod tests {
         let loaded = Config::load(dir.path());
         assert_eq!(
             loaded.providers.keys().collect::<Vec<_>>(),
-            vec![&"openrouter", &"elevenlabs", &"hermes", &"codex", &"claude"]
+            vec![
+                &"openrouter",
+                &"elevenlabs",
+                &"firecrawl",
+                &"hermes",
+                &"codex",
+                &"claude"
+            ]
         );
         assert_eq!(
             loaded.providers["claude"].mini_summary_metrics,

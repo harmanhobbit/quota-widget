@@ -10,6 +10,7 @@
     { id: 'codex', name: 'Codex', secret: null, note: 'Uses the Codex CLI login if present, or the built-in device sign-in below.' },
     { id: 'openrouter', name: 'OpenRouter', secret: 'API key', note: 'Create a key at openrouter.ai/keys.' },
     { id: 'elevenlabs', name: 'ElevenLabs', secret: 'API key', note: 'Create a key at elevenlabs.io/app/settings/api-keys.' },
+    { id: 'firecrawl', name: 'Firecrawl', secret: 'API key', note: 'Create a key at firecrawl.dev/app/api-keys.' },
     { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Uses a hermes-agent login: local ~/.hermes/auth.json, or fetched from a remote machine over SSH (needs working key auth, e.g. via ssh-agent). Cookie paste is a last-resort fallback.' },
   ];
   const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secret: null, note: 'Unknown provider kind.' };
@@ -336,6 +337,7 @@
       codex: [{ id: 'window:weekly', label: 'Weekly' }],
       openrouter: [{ id: 'credits', label: 'Credit balance' }],
       elevenlabs: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
+      firecrawl: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
       hermes: [{ id: 'credits', label: 'Purchased credit balance' }, { id: 'window:monthly_cap', label: 'Monthly cap' }, { id: 'window:monthly_allowance', label: 'Monthly allowance' }],
     }[kind] ?? [];
     const live = snapshots.find((snap) => snap.provider_id === id)?.windows ?? [];
