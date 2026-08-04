@@ -3,7 +3,7 @@
 //! is a per-cycle allowance rather than a balance, so it renders as a usage
 //! window (Claude's weekly cap) rather than as `Credits`.
 
-use super::{as_f64, network_err, parse_timestamp, Provider, ProviderCtx};
+use super::{as_f64, calendar_month_start, network_err, parse_timestamp, Provider, ProviderCtx};
 use crate::model::{FetchError, UsageSnapshot, UsageWindow};
 use serde_json::Value;
 
@@ -88,6 +88,9 @@ fn parse_window(body: &Value) -> Option<UsageWindow> {
     if limit <= 0.0 {
         return None;
     }
+    let resets_at = body
+        .get("next_character_count_reset_unix")
+        .and_then(parse_timestamp);
     Some(UsageWindow {
         metric_id: "monthly_credits".into(),
         // The plan name is available in the response, but repeating it here
@@ -96,9 +99,8 @@ fn parse_window(body: &Value) -> Option<UsageWindow> {
         // Plans with credit-limit extension enabled can exceed the limit; the
         // model tolerates >100 and the UI clamps its own bars.
         used_pct: used / limit * 100.0,
-        resets_at: body
-            .get("next_character_count_reset_unix")
-            .and_then(parse_timestamp),
+        resets_at,
+        period_start: resets_at.and_then(calendar_month_start),
         ..Default::default()
     })
 }
@@ -126,6 +128,12 @@ mod tests {
         assert!((w.used_pct - 10.0).abs() < 1e-9);
         assert!(w.resets_at.is_some());
         assert!(!w.informational);
+        // The cycle is a calendar month back from the reset.
+        assert_eq!(
+            w.resets_at.unwrap().checked_sub_months(chrono::Months::new(1)),
+            w.period_start
+        );
+        assert!(w.period_start.unwrap() < w.resets_at.unwrap());
     }
 
     #[test]

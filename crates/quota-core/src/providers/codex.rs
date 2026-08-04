@@ -213,6 +213,11 @@ fn collect_windows(v: &Value, out: &mut Vec<(f64, UsageWindow)>) {
                         label: label_for_minutes(minutes),
                         used_pct: pct,
                         resets_at,
+                        // The response carries the window's length, so the
+                        // period start is exact rather than inferred.
+                        period_start: resets_at
+                            .filter(|_| minutes > 0.0)
+                            .map(|r| r - Duration::minutes(minutes as i64)),
                         ..Default::default()
                     },
                 ));
@@ -281,6 +286,28 @@ mod tests {
         assert!(w[0].resets_at.is_some());
         assert_eq!(w[1].label, "Weekly");
         assert_eq!(w[1].metric_id, "weekly");
+        // The reset is relative to now, so check the span rather than a fixed
+        // instant: period_start sits one window length before it.
+        assert_eq!(
+            w[0].resets_at.unwrap() - w[0].period_start.unwrap(),
+            Duration::minutes(300)
+        );
+        assert_eq!(
+            w[1].resets_at.unwrap() - w[1].period_start.unwrap(),
+            Duration::minutes(10080)
+        );
+    }
+
+    #[test]
+    fn window_without_a_length_has_no_period() {
+        let body: Value = serde_json::from_str(
+            r#"{"rate_limit": {"used_percent": 40, "resets_at": "2026-08-03T09:00:00Z"}}"#,
+        )
+        .unwrap();
+        let w = parse_usage(&body);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].resets_at.is_some());
+        assert_eq!(w[0].period_start, None);
     }
 
     #[test]

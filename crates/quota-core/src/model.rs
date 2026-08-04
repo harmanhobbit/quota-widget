@@ -12,6 +12,10 @@ pub struct UsageWindow {
     /// 0.0–100.0. May exceed 100 if the provider reports overage.
     pub used_pct: f64,
     pub resets_at: Option<DateTime<Utc>>,
+    /// When this window's current period began. Together with `resets_at` it
+    /// lets the UI show how far through the period we are. `None` when the
+    /// provider gives us no way to know.
+    pub period_start: Option<DateTime<Utc>>,
     /// Shown, but never drives status, alerts, or the tray. For allowances
     /// whose exhaustion doesn't actually block you — e.g. Hermes' tiny free
     /// subscription trickle when a purchased balance is still funding calls.
@@ -25,6 +29,7 @@ impl Default for UsageWindow {
             label: String::new(),
             used_pct: 0.0,
             resets_at: None,
+            period_start: None,
             informational: false,
         }
     }

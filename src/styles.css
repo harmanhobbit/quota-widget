@@ -227,6 +227,22 @@ button.primary {
   background: var(--border);
   border-radius: 3px;
   overflow: hidden;
+  /* Anchors the period marker; overflow above clips it at both ends. */
+  position: relative;
+}
+
+/* How far through the window's period we are. It has to stay legible over the
+   ok/warn/critical fills, the muted informational one, and the empty track —
+   var(--text) is the one colour defined to contrast with the background in
+   both themes, and at 6px tall a subtle tint would just disappear. */
+.period-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--text);
+  opacity: 0.8;
+  transition: left 0.4s ease;
 }
 
 .fill {
