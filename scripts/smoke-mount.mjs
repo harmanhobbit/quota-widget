@@ -34,6 +34,8 @@ const CONFIG = {
   hide_on_blur: false,
   mini_summary_bars: true,
   scroll_opacity: true,
+  sort_order: 'manual',
+  sort_basis: 'icon',
   thresholds: { warn_pct: 80, critical_pct: 95 },
   alerts: { toast: true, tray_color: true, auto_popup: false },
   providers: {
@@ -113,6 +115,15 @@ const SNAPSHOTS = [
     credits: { balance: 12, unit: 'USD' },
     windows: [{ metric_id: 'monthly_allowance', label: 'Monthly allowance (Plus)', used_pct: 100, informational: true }],
   },
+  // A spend-reporting provider with no budget set: labelled credits, which must
+  // render as "Cost this month: …" rather than as a remaining balance.
+  {
+    provider_id: 'fireworks',
+    provider_name: 'Fireworks',
+    error: null,
+    credits: { balance: 8.75, label: 'Cost this month', unit: 'USD' },
+    windows: [],
+  },
 ];
 
 // Every component under test, with the props App would really pass. Settings
@@ -154,12 +165,25 @@ const CASES = [
   {
     file: 'src/lib/MiniSummary.svelte',
     props: () => ({}),
-    expect: ['42%', '5h', '88%', 'Weekly', 'no data', '$3.42', 'USD', '100%', 'Monthly allowance (Plus)'],
+    // Fireworks' labelled spend takes "Cost this month" as its row label,
+    // where an unlabelled balance shows the bare currency.
+    expect: ['42%', '5h', '88%', 'Weekly', 'no data', '$3.42', 'USD', '100%', 'Monthly allowance (Plus)', '$8.75', 'Cost this month'],
     verify: ({ target }) => {
       const names = [...target.querySelectorAll('.hover-name')].map((el) => el.textContent);
       // Claude's second row must leave the name blank rather than repeat it.
       if (names.slice(0, 3).join('|') !== 'Claude||Codex') {
         throw new Error(`name column was ${names.join('|')}`);
+      }
+      const bars = [...target.querySelectorAll('.hover-bar')];
+      // Claude's 5-hour window is one hour into five, so its marker sits at 20%.
+      const mark = bars[0].querySelector('.period-mark');
+      if (!mark) throw new Error('bounded window rendered no period marker');
+      const pct = parseFloat(mark.style.left);
+      if (!(Math.abs(pct - 20) < 1)) throw new Error(`marker sat at ${mark.style.left}, expected ~20%`);
+      // The weekly window has no period_start, so it gets no marker at all
+      // rather than one pinned at an end.
+      if (bars[1].querySelector('.period-mark')) {
+        throw new Error('window without a period start still drew a marker');
       }
     },
   },
@@ -262,6 +286,41 @@ const CASES = [
       }
     },
   },
+  // Ordering: the basis select is inert while the order is Manual, both
+  // selects reach Rust as the snake_case strings serde expects, and a config
+  // predating the feature fills them in rather than saving nulls.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => {
+      const old = structuredClone(CONFIG);
+      delete old.sort_order;
+      delete old.sort_basis;
+      return { initialConfig: $.proxy(old), snapshots: structuredClone(SNAPSHOTS), onclose() {} };
+    },
+    expect: ['Order accounts by', 'Sorting on', 'Manual (my order)', 'Expiry: soonest first'],
+    verify: async ({ target, flushSync }) => {
+      const selects = [...target.querySelectorAll('select')];
+      const orderSelect = selects.find((el) => el.value === 'manual');
+      const basisSelect = selects.find((el) => el.value === 'icon');
+      if (!orderSelect || !basisSelect) {
+        throw new Error('a config without the sort fields left the selects unset');
+      }
+      if (!basisSelect.disabled) throw new Error('basis select was live under Manual');
+      orderSelect.value = 'expiry_soonest';
+      orderSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      if (basisSelect.disabled) throw new Error('basis select stayed disabled under a real order');
+      basisSelect.value = 'worst_case';
+      basisSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      target.querySelector('.primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const saved = globalThis.__SMOKE_LAST_CONFIG__;
+      if (saved?.sort_order !== 'expiry_soonest' || saved?.sort_basis !== 'worst_case') {
+        throw new Error(`saved sort was ${saved?.sort_order}/${saved?.sort_basis}`);
+      }
+    },
+  },
   {
     file: 'src/lib/ProviderCard.svelte',
     props: () => ({ snap: structuredClone(SNAPSHOTS[0]) }),
@@ -278,6 +337,22 @@ const CASES = [
       if (bars[1].querySelector('.period-mark')) {
         throw new Error('window without a period start still drew a marker');
       }
+    },
+  },
+  // Spend with no budget configured: the label must prefix the amount, so the
+  // figure cannot be misread as money remaining. The unlabelled balance above
+  // it must stay bare.
+  {
+    file: 'src/lib/ProviderCard.svelte',
+    props: () => ({ snap: structuredClone(SNAPSHOTS[4]) }),
+    expect: ['Cost this month: 8.75 USD'],
+  },
+  {
+    file: 'src/lib/ProviderCard.svelte',
+    props: () => ({ snap: structuredClone(SNAPSHOTS[2]) }),
+    verify: ({ target }) => {
+      const balance = target.querySelector('.balance').textContent.trim();
+      if (balance !== '3.42 USD') throw new Error(`unlabelled balance rendered as ${balance}`);
     },
   },
 ];

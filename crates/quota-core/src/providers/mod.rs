@@ -1,14 +1,23 @@
+pub mod anthropic_admin;
 pub mod claude;
 pub mod codex;
+pub mod deepseek;
 pub mod elevenlabs;
+pub mod firecrawl;
+pub mod fireworks;
 pub mod hermes;
+pub mod moonshot;
+pub mod openai_admin;
 pub mod openrouter;
+pub mod simple_credits;
+pub mod spend;
 
 use crate::config::Config;
 use crate::model::{FetchError, UsageSnapshot};
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Everything an adapter needs to fetch: shared HTTP client, the user's home
@@ -17,6 +26,10 @@ use std::time::Duration;
 pub struct ProviderCtx {
     pub http: reqwest::Client,
     pub home: PathBuf,
+    /// The host-owned directory containing config.json and durable adapter
+    /// state such as monthly-spend baselines.
+    pub config_dir: PathBuf,
+    pub spend_baselines: Arc<crate::spend_baseline::SpendBaselines>,
     pub secrets: HashMap<String, String>,
     pub config: Config,
     /// Called when an adapter rotates a stored credential (e.g. an OAuth
@@ -25,7 +38,12 @@ pub struct ProviderCtx {
 }
 
 impl ProviderCtx {
-    pub fn new(home: PathBuf, secrets: HashMap<String, String>, config: Config) -> Self {
+    pub fn new(
+        home: PathBuf,
+        config_dir: PathBuf,
+        secrets: HashMap<String, String>,
+        config: Config,
+    ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .user_agent("quota-widget/0.1")
@@ -34,6 +52,10 @@ impl ProviderCtx {
         Self {
             http,
             home,
+            spend_baselines: Arc::new(crate::spend_baseline::SpendBaselines::new(
+                config_dir.clone(),
+            )),
+            config_dir,
             secrets,
             config,
             on_secret_update: None,
@@ -62,6 +84,12 @@ pub fn adapter_kinds() -> &'static [(&'static str, &'static str)] {
         ("codex", "Codex"),
         ("openrouter", "OpenRouter"),
         ("elevenlabs", "ElevenLabs"),
+        ("firecrawl", "Firecrawl"),
+        ("deepseek", "DeepSeek"),
+        ("moonshot", "Moonshot"),
+        ("fireworks", "Fireworks"),
+        ("anthropic_admin", "Anthropic Admin"),
+        ("openai_admin", "OpenAI Admin"),
         ("hermes", "Hermes Portal"),
     ]
 }
@@ -87,6 +115,32 @@ pub fn providers_for(cfg: &Config) -> Vec<Box<dyn Provider>> {
                 }
                 "elevenlabs" => {
                     Some(Box::new(elevenlabs::ElevenLabs::new(key.clone(), label))
+                        as Box<dyn Provider>)
+                }
+                "firecrawl" => {
+                    Some(Box::new(firecrawl::Firecrawl::new(key.clone(), label))
+                        as Box<dyn Provider>)
+                }
+                "deepseek" => Some(Box::new(simple_credits::SimpleCredits::new(
+                    key.clone(),
+                    label,
+                    &deepseek::SPEC,
+                )) as Box<dyn Provider>),
+                "moonshot" => Some(Box::new(simple_credits::SimpleCredits::new(
+                    key.clone(),
+                    label,
+                    &moonshot::SPEC,
+                )) as Box<dyn Provider>),
+                "fireworks" => {
+                    Some(Box::new(fireworks::Fireworks::new(key.clone(), label))
+                        as Box<dyn Provider>)
+                }
+                "anthropic_admin" => Some(Box::new(anthropic_admin::AnthropicAdmin::new(
+                    key.clone(),
+                    label,
+                )) as Box<dyn Provider>),
+                "openai_admin" => {
+                    Some(Box::new(openai_admin::OpenAiAdmin::new(key.clone(), label))
                         as Box<dyn Provider>)
                 }
                 "hermes" => {
@@ -192,7 +246,19 @@ mod tests {
                 .iter()
                 .map(|provider| provider.id())
                 .collect::<Vec<_>>(),
-            vec!["openrouter", "elevenlabs", "hermes", "codex", "claude"]
+            vec![
+                "openrouter",
+                "elevenlabs",
+                "firecrawl",
+                "deepseek",
+                "moonshot",
+                "fireworks",
+                "anthropic_admin",
+                "openai_admin",
+                "hermes",
+                "codex",
+                "claude"
+            ]
         );
     }
 }

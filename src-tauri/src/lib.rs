@@ -53,7 +53,7 @@ impl AppState {
     fn provider_ctx(&self, config: Config) -> ProviderCtx {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let secrets = secrets::load_all(&self.config_dir, &config);
-        let mut ctx = ProviderCtx::new(home, secrets, config);
+        let mut ctx = ProviderCtx::new(home, self.config_dir.clone(), secrets, config);
         // Adapters that rotate tokens (Claude OAuth refresh) persist them here.
         let dir = self.config_dir.clone();
         ctx.on_secret_update = Some(std::sync::Arc::new(move |key: &str, value: &str| {
@@ -92,6 +92,9 @@ async fn get_snapshots(state: tauri::State<'_, Arc<AppState>>) -> Result<Initial
             }
         }
     }
+    // The configured display order, which may be a usage/expiry sort rather
+    // than the hand-arranged config order.
+    cfg.sort_snapshots(&mut out);
     Ok(InitialState {
         snapshots: out,
         config: cfg.clone(),

@@ -1,7 +1,45 @@
-use crate::model::{Status, UsageSnapshot};
+use crate::model::{Status, UsageSnapshot, UsageWindow};
+use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::path::Path;
+
+/// Display order for the account list. `Manual` is the user's config order,
+/// which is what every build before this one did.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SortOrder {
+    #[default]
+    Manual,
+    UsageDesc,
+    UsageAsc,
+    ExpirySoonest,
+    ExpiryFurthest,
+}
+
+/// Which number the non-manual orders sort on. Both bases also decide *which
+/// window's* `resets_at` the expiry orders use, so this selector matters for
+/// all four orders, not just the usage ones.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SortBasis {
+    /// The amount this account contributes to the tray icon — honouring the
+    /// pinned `tray_metric` and the selected headlines.
+    #[default]
+    Icon,
+    /// The worst non-informational window, whatever the headline selection is.
+    WorstCase,
+}
+
+/// The amount an account sorts on, and the reset time of the window that
+/// supplied it. Either may be absent: a pure-credits account has no
+/// percentage, and plenty of windows have no reset time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SortKey {
+    pub pct: Option<f64>,
+    pub resets_at: Option<DateTime<Utc>>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -109,6 +147,11 @@ pub struct Config {
     /// Let scrolling over a window fade its painted shell. The level itself is
     /// deliberately ephemeral so reopening the widget never leaves it hidden.
     pub scroll_opacity: bool,
+    /// Display order for the account list. Defaults to `Manual`, so an existing
+    /// config.json that predates this field keeps its hand-arranged order.
+    pub sort_order: SortOrder,
+    /// Which number the non-manual orders sort on.
+    pub sort_basis: SortBasis,
     /// Account iteration order is the user-selected display order everywhere.
     pub providers: IndexMap<String, ProviderConfig>,
 }
@@ -133,6 +176,12 @@ impl Default for Config {
         );
         providers.insert("openrouter".into(), ProviderConfig::default());
         providers.insert("elevenlabs".into(), ProviderConfig::default());
+        providers.insert("firecrawl".into(), ProviderConfig::default());
+        providers.insert("deepseek".into(), ProviderConfig::default());
+        providers.insert("moonshot".into(), ProviderConfig::default());
+        providers.insert("fireworks".into(), ProviderConfig::default());
+        providers.insert("anthropic_admin".into(), ProviderConfig::default());
+        providers.insert("openai_admin".into(), ProviderConfig::default());
         providers.insert("hermes".into(), ProviderConfig::default());
         Self {
             version: 2,
@@ -143,6 +192,8 @@ impl Default for Config {
             hide_on_blur: false,
             mini_summary_bars: true,
             scroll_opacity: true,
+            sort_order: SortOrder::default(),
+            sort_basis: SortBasis::default(),
             providers,
         }
     }
@@ -231,6 +282,80 @@ impl Config {
             snapshot.status(warn_pct, critical_pct, low_balance_warn),
             pct,
         ))
+    }
+
+    /// The window an account sorts on under the configured basis, if it has
+    /// one. Returning the window rather than a bare number is what lets the
+    /// expiry orders use *that* window's `resets_at` instead of an arbitrary
+    /// one — the basis selector therefore matters for all four orders.
+    fn sort_window<'a>(&self, snapshot: &'a UsageSnapshot) -> Option<&'a UsageWindow> {
+        // A failed fetch has no meaningful number under either basis; the
+        // numbers still on screen are stale by definition.
+        if snapshot.error.is_some() {
+            return None;
+        }
+        match self.sort_basis {
+            SortBasis::WorstCase => {
+                worst_window(snapshot.windows.iter().filter(|w| !w.informational))
+            }
+            SortBasis::Icon => {
+                let pinned = self.tray_metric(&snapshot.provider_id);
+                if pinned.as_deref() == Some("none") {
+                    // Deliberately contributes nothing to the icon, so it has
+                    // nothing to sort on either.
+                    return None;
+                }
+                if let Some(metric) = pinned {
+                    return metric_window(snapshot, &metric);
+                }
+                match self.resolved_mini_metrics(&snapshot.provider_id) {
+                    Some(selected) => worst_window(
+                        selected
+                            .iter()
+                            .filter_map(|metric| metric_window(snapshot, metric)),
+                    ),
+                    // Automatic: the worst real quota window, as the icon does.
+                    None => worst_window(snapshot.windows.iter().filter(|w| !w.informational)),
+                }
+            }
+        }
+    }
+
+    /// The amount and expiry an account sorts on. Both are absent for accounts
+    /// that have no number under the configured basis — a pure-credits
+    /// provider, an account pinned to "none", or a failed fetch.
+    pub fn sort_key(&self, snapshot: &UsageSnapshot) -> SortKey {
+        match self.sort_window(snapshot) {
+            Some(window) => SortKey {
+                pct: Some(window.used_pct),
+                resets_at: window.resets_at,
+            },
+            None => SortKey {
+                pct: None,
+                resets_at: None,
+            },
+        }
+    }
+
+    /// Reorders accounts for display. `Manual` leaves the config order exactly
+    /// as it is. Every other order is total and stable: accounts with no
+    /// number under the configured basis sink to the bottom, keeping config
+    /// order among themselves, and `total_cmp` keeps NaN from making the
+    /// comparator inconsistent.
+    pub fn sort_snapshots(&self, snapshots: &mut Vec<UsageSnapshot>) {
+        if self.sort_order == SortOrder::Manual {
+            return;
+        }
+        let mut decorated: Vec<(SortKey, UsageSnapshot)> = std::mem::take(snapshots)
+            .into_iter()
+            .map(|snapshot| (self.sort_key(&snapshot), snapshot))
+            .collect();
+        let order = self.sort_order;
+        decorated.sort_by(|(a, _), (b, _)| compare_keys(order, a, b));
+        *snapshots = decorated
+            .into_iter()
+            .map(|(_, snapshot)| snapshot)
+            .collect();
     }
 
     /// Folds the pre-v2 single-headline field into the list form. Gated on the
@@ -333,6 +458,46 @@ fn metric_tray_status(
         ));
     }
     None
+}
+
+/// The window with the highest `used_pct`. `total_cmp` rather than `partial_cmp`
+/// so a NaN percentage from a provider cannot panic or pick arbitrarily.
+fn worst_window<'a>(windows: impl Iterator<Item = &'a UsageWindow>) -> Option<&'a UsageWindow> {
+    windows.max_by(|a, b| a.used_pct.total_cmp(&b.used_pct))
+}
+
+/// The window a selected headline names, if the snapshot still reports it.
+/// `"credits"` names no window, so credits-only accounts sort as "no number" —
+/// a balance in dollars is not comparable with a percentage.
+fn metric_window<'a>(snapshot: &'a UsageSnapshot, metric: &str) -> Option<&'a UsageWindow> {
+    let metric_id = metric.strip_prefix("window:")?;
+    snapshot
+        .windows
+        .iter()
+        .find(|window| window.metric_id == metric_id)
+}
+
+/// Total order for two sort keys. Accounts missing the relevant value always
+/// compare greater, so they sink to the bottom whichever direction the present
+/// values are sorted in; `sort_by` is stable, so they keep config order among
+/// themselves.
+fn compare_keys(order: SortOrder, a: &SortKey, b: &SortKey) -> Ordering {
+    match order {
+        SortOrder::Manual => Ordering::Equal,
+        SortOrder::UsageDesc => missing_last(a.pct, b.pct, |x, y| y.total_cmp(x)),
+        SortOrder::UsageAsc => missing_last(a.pct, b.pct, |x, y| x.total_cmp(y)),
+        SortOrder::ExpirySoonest => missing_last(a.resets_at, b.resets_at, |x, y| x.cmp(y)),
+        SortOrder::ExpiryFurthest => missing_last(a.resets_at, b.resets_at, |x, y| y.cmp(x)),
+    }
+}
+
+fn missing_last<T>(a: Option<T>, b: Option<T>, cmp: impl Fn(&T, &T) -> Ordering) -> Ordering {
+    match (&a, &b) {
+        (Some(a), Some(b)) => cmp(a, b),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
 }
 
 fn max_pct(a: Option<f64>, b: Option<f64>) -> Option<f64> {
@@ -487,7 +652,19 @@ mod tests {
         let loaded = Config::load(dir.path());
         assert_eq!(
             loaded.providers.keys().collect::<Vec<_>>(),
-            vec![&"openrouter", &"elevenlabs", &"hermes", &"codex", &"claude"]
+            vec![
+                &"openrouter",
+                &"elevenlabs",
+                &"firecrawl",
+                &"deepseek",
+                &"moonshot",
+                &"fireworks",
+                &"anthropic_admin",
+                &"openai_admin",
+                &"hermes",
+                &"codex",
+                &"claude"
+            ]
         );
         assert_eq!(
             loaded.providers["claude"].mini_summary_metrics,
@@ -570,6 +747,280 @@ mod tests {
             let got = status_of(Some(vec!["window:gone", "window:five_hour"]), None);
             assert_eq!(got, Some((Status::Ok, Some(13.0))));
             assert_eq!(status_of(Some(vec!["window:gone"]), None), None);
+        }
+    }
+
+    mod sorting {
+        use super::*;
+        use crate::model::{FetchError, UsageWindow};
+        use chrono::TimeZone;
+
+        fn at(hour: u32) -> Option<DateTime<Utc>> {
+            Some(Utc.with_ymd_and_hms(2026, 8, 4, hour, 0, 0).unwrap())
+        }
+
+        fn window(id: &str, used_pct: f64, hour: Option<u32>) -> UsageWindow {
+            UsageWindow {
+                metric_id: id.into(),
+                label: id.into(),
+                used_pct,
+                resets_at: hour.and_then(at),
+                ..Default::default()
+            }
+        }
+
+        fn snap(id: &str, windows: Vec<UsageWindow>) -> UsageSnapshot {
+            UsageSnapshot::ok(id, id, windows, None)
+        }
+
+        /// Four accounts whose icon-attributing and worst-case numbers
+        /// deliberately disagree, so a test that passes under one basis fails
+        /// under the other.
+        fn fixture() -> (Config, Vec<UsageSnapshot>) {
+            let mut cfg = Config::default();
+            // Pinned to the calm window; worst-case sees the loud one.
+            cfg.providers["claude"].tray_metric = Some("window:five_hour".into());
+            let snapshots = vec![
+                snap(
+                    "claude",
+                    vec![
+                        window("five_hour", 10.0, Some(9)),
+                        window("weekly", 90.0, Some(20)),
+                    ],
+                ),
+                snap("codex", vec![window("five_hour", 50.0, Some(12))]),
+                snap("openrouter", vec![window("monthly", 70.0, Some(6))]),
+            ];
+            (cfg, snapshots)
+        }
+
+        fn ids(snapshots: &[UsageSnapshot]) -> Vec<&str> {
+            snapshots.iter().map(|s| s.provider_id.as_str()).collect()
+        }
+
+        fn sorted(order: SortOrder, basis: SortBasis) -> Vec<String> {
+            let (mut cfg, mut snapshots) = fixture();
+            cfg.sort_order = order;
+            cfg.sort_basis = basis;
+            cfg.sort_snapshots(&mut snapshots);
+            ids(&snapshots).into_iter().map(String::from).collect()
+        }
+
+        /// Manual must not disturb the order at all — it is what every build
+        /// before this feature did, and the default for existing configs.
+        #[test]
+        fn manual_is_exactly_config_order() {
+            let (mut cfg, snapshots) = fixture();
+            cfg.sort_order = SortOrder::Manual;
+            for basis in [SortBasis::Icon, SortBasis::WorstCase] {
+                cfg.sort_basis = basis;
+                let mut got = snapshots.clone();
+                cfg.sort_snapshots(&mut got);
+                assert_eq!(got, snapshots, "{basis:?}");
+            }
+        }
+
+        /// The basis picks a different number for Claude (10% pinned vs 90%
+        /// worst), so it must move Claude to the other end of the list.
+        #[test]
+        fn usage_orders_follow_the_basis() {
+            assert_eq!(
+                sorted(SortOrder::UsageDesc, SortBasis::Icon),
+                ["openrouter", "codex", "claude"]
+            );
+            assert_eq!(
+                sorted(SortOrder::UsageAsc, SortBasis::Icon),
+                ["claude", "codex", "openrouter"]
+            );
+            assert_eq!(
+                sorted(SortOrder::UsageDesc, SortBasis::WorstCase),
+                ["claude", "openrouter", "codex"]
+            );
+            assert_eq!(
+                sorted(SortOrder::UsageAsc, SortBasis::WorstCase),
+                ["codex", "openrouter", "claude"]
+            );
+        }
+
+        /// Expiry must use the reset time of the window that supplied the
+        /// amount: Claude's pinned 5-hour window resets at 09:00 while its
+        /// worst-case weekly window resets at 20:00, which is the whole point
+        /// of the basis applying to the expiry orders too.
+        #[test]
+        fn expiry_orders_use_the_basis_windows_reset_time() {
+            assert_eq!(
+                sorted(SortOrder::ExpirySoonest, SortBasis::Icon),
+                ["openrouter", "claude", "codex"]
+            );
+            assert_eq!(
+                sorted(SortOrder::ExpiryFurthest, SortBasis::Icon),
+                ["codex", "claude", "openrouter"]
+            );
+            // Worst-case moves Claude's expiry from 09:00 to 20:00.
+            assert_eq!(
+                sorted(SortOrder::ExpirySoonest, SortBasis::WorstCase),
+                ["openrouter", "codex", "claude"]
+            );
+            assert_eq!(
+                sorted(SortOrder::ExpiryFurthest, SortBasis::WorstCase),
+                ["claude", "codex", "openrouter"]
+            );
+        }
+
+        /// Equal numbers must not reshuffle: the sort is stable, so ties keep
+        /// the user's hand-arranged order.
+        #[test]
+        fn ties_keep_config_order() {
+            let mut cfg = Config::default();
+            cfg.sort_order = SortOrder::UsageDesc;
+            let mut snapshots = vec![
+                snap("claude", vec![window("w", 42.0, Some(9))]),
+                snap("codex", vec![window("w", 42.0, Some(9))]),
+                snap("openrouter", vec![window("w", 42.0, Some(9))]),
+            ];
+            let before = snapshots.clone();
+            cfg.sort_snapshots(&mut snapshots);
+            assert_eq!(snapshots, before);
+        }
+
+        /// Accounts with no number sink, in config order among themselves,
+        /// whichever direction the ones that do have numbers are sorted in.
+        #[test]
+        fn accounts_without_a_number_sink_to_the_bottom() {
+            let mut cfg = Config::default();
+            // Pure credits: no window, so nothing to compare as a percentage.
+            cfg.providers["openrouter"].tray_metric = Some("credits".into());
+            // Opted out of the icon entirely.
+            cfg.providers["elevenlabs"].tray_metric = Some("none".into());
+            let build = || {
+                vec![
+                    UsageSnapshot::ok(
+                        "openrouter",
+                        "OpenRouter",
+                        vec![],
+                        Some(crate::model::Credits {
+                            balance: 5.0,
+                            unit: "USD".into(),
+                            used: None,
+                            granted: None,
+                            est_tokens_remaining: None,
+                        }),
+                    ),
+                    snap("elevenlabs", vec![window("w", 99.0, Some(9))]),
+                    snap("claude", vec![window("w", 10.0, Some(9))]),
+                    snap("codex", vec![window("w", 80.0, Some(12))]),
+                ]
+            };
+            for order in [
+                SortOrder::UsageDesc,
+                SortOrder::UsageAsc,
+                SortOrder::ExpirySoonest,
+                SortOrder::ExpiryFurthest,
+            ] {
+                cfg.sort_order = order;
+                let mut snapshots = build();
+                cfg.sort_snapshots(&mut snapshots);
+                // The two numberless accounts are last, in config order.
+                assert_eq!(
+                    &ids(&snapshots)[2..],
+                    ["openrouter", "elevenlabs"],
+                    "{order:?}"
+                );
+            }
+        }
+
+        /// A window with no reset time has nothing to sort on under the expiry
+        /// orders, even though it has a perfectly good percentage.
+        #[test]
+        fn a_window_without_a_reset_time_sinks_under_expiry_orders() {
+            let mut cfg = Config::default();
+            cfg.sort_order = SortOrder::ExpirySoonest;
+            let mut snapshots = vec![
+                snap("claude", vec![window("w", 90.0, None)]),
+                snap("codex", vec![window("w", 10.0, Some(12))]),
+            ];
+            cfg.sort_snapshots(&mut snapshots);
+            assert_eq!(ids(&snapshots), ["codex", "claude"]);
+            // The same pair sorts on the percentages under a usage order.
+            cfg.sort_order = SortOrder::UsageDesc;
+            let mut snapshots = vec![
+                snap("claude", vec![window("w", 90.0, None)]),
+                snap("codex", vec![window("w", 10.0, Some(12))]),
+            ];
+            cfg.sort_snapshots(&mut snapshots);
+            assert_eq!(ids(&snapshots), ["claude", "codex"]);
+        }
+
+        /// A failed fetch leaves stale numbers on screen; sorting on them would
+        /// rank an account by data we already know is wrong.
+        #[test]
+        fn errored_snapshots_sink_rather_than_sorting_on_stale_numbers() {
+            let mut cfg = Config::default();
+            cfg.sort_order = SortOrder::UsageDesc;
+            let mut stale = snap("claude", vec![window("w", 99.0, Some(9))]);
+            stale.error = Some(FetchError::Network("boom".into()));
+            let mut snapshots = vec![stale, snap("codex", vec![window("w", 10.0, Some(12))])];
+            cfg.sort_snapshots(&mut snapshots);
+            assert_eq!(ids(&snapshots), ["codex", "claude"]);
+        }
+
+        /// Informational windows never gate anything, so they must not decide
+        /// the worst-case number either.
+        #[test]
+        fn worst_case_ignores_informational_windows() {
+            let mut cfg = Config::default();
+            cfg.sort_order = SortOrder::UsageDesc;
+            cfg.sort_basis = SortBasis::WorstCase;
+            let mut loud = window("trickle", 100.0, Some(9));
+            loud.informational = true;
+            let mut snapshots = vec![
+                snap("claude", vec![loud, window("real", 5.0, Some(9))]),
+                snap("codex", vec![window("w", 50.0, Some(12))]),
+            ];
+            cfg.sort_snapshots(&mut snapshots);
+            assert_eq!(ids(&snapshots), ["codex", "claude"]);
+        }
+
+        /// A NaN percentage must not panic or make the comparator inconsistent
+        /// — `total_cmp` orders it after every real number.
+        #[test]
+        fn a_nan_percentage_is_ordered_rather_than_panicking() {
+            let mut cfg = Config::default();
+            cfg.sort_order = SortOrder::UsageDesc;
+            let mut snapshots = vec![
+                snap("claude", vec![window("w", f64::NAN, Some(9))]),
+                snap("codex", vec![window("w", 50.0, Some(12))]),
+                snap("openrouter", vec![window("w", 90.0, Some(6))]),
+            ];
+            cfg.sort_snapshots(&mut snapshots);
+            assert_eq!(ids(&snapshots), ["claude", "openrouter", "codex"]);
+        }
+
+        /// The whole point of the serde defaults: a file written before this
+        /// feature existed must load as today's behaviour, with no migration
+        /// and no version bump.
+        #[test]
+        fn a_config_without_the_new_fields_defaults_to_manual() {
+            let cfg: Config =
+                serde_json::from_str(r#"{"version":2,"providers":{"claude":{"enabled":true}}}"#)
+                    .unwrap();
+            assert_eq!(cfg.sort_order, SortOrder::Manual);
+            assert_eq!(cfg.sort_basis, SortBasis::Icon);
+            assert_eq!(cfg.version, 2);
+        }
+
+        /// The settings selects round-trip through JSON as snake_case strings.
+        #[test]
+        fn the_new_fields_round_trip_as_snake_case() {
+            let mut cfg = Config::default();
+            cfg.sort_order = SortOrder::ExpirySoonest;
+            cfg.sort_basis = SortBasis::WorstCase;
+            let text = serde_json::to_string(&cfg).unwrap();
+            assert!(text.contains(r#""sort_order":"expiry_soonest""#), "{text}");
+            assert!(text.contains(r#""sort_basis":"worst_case""#), "{text}");
+            let back: Config = serde_json::from_str(&text).unwrap();
+            assert_eq!(back.sort_order, SortOrder::ExpirySoonest);
+            assert_eq!(back.sort_basis, SortBasis::WorstCase);
         }
     }
 

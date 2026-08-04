@@ -70,6 +70,26 @@
     tick().then(fitHeight);
   });
 
+  // Ticks once a minute so the period markers creep along between polls, the
+  // same cadence ProviderCard uses for its countdowns.
+  let now = $state(Date.now());
+  onMount(() => {
+    const t = setInterval(() => (now = Date.now()), 60_000);
+    return () => clearInterval(t);
+  });
+
+  // How far through the window's period we are, 0–1, or null when the provider
+  // couldn't tell us the period's bounds. Same reading as on the full card: a
+  // half-full bar at the quarter mark means the allowance is burning fast.
+  function periodProgress(w) {
+    if (!w.resets_at || !w.period_start) return null;
+    const start = new Date(w.period_start).getTime();
+    const end = new Date(w.resets_at).getTime();
+    const span = end - start;
+    if (!(span > 0)) return null;
+    return Math.min(Math.max((now - start) / span, 0), 1);
+  }
+
   function levelOf(pct) {
     if (pct >= 95) return 'critical';
     if (pct >= 80) return 'warn';
@@ -116,13 +136,16 @@
     label: window.label,
     level: levelOf(window.used_pct),
     pct: Math.min(window.used_pct, 100),
+    progress: periodProgress(window),
   });
   // The currency is the row's label, matching "5-hour" on a window row. The bar
   // column is dead space on a credit row, so the amount sits centred in it and
-  // the currency takes the number and label columns after it.
+  // the currency takes the number and label columns after it. A spend figure
+  // carries its own label ("Cost this month") and uses that instead, so the
+  // compact row never presents money spent as money remaining.
   const creditSummary = (credits) => ({
     amount: `${CURRENCY_SYMBOLS[credits.unit] ?? ''}${credits.balance.toFixed(2)}`,
-    label: credits.unit,
+    label: credits.label ?? credits.unit,
     level: 'ok',
   });
 
@@ -177,6 +200,12 @@
             <span class="hover-bar" class:empty={!(showBars && s.pct != null)}>
               {#if showBars && s.pct != null}
                 <i class="fill {s.level}" style="width: {s.pct}%"></i>
+                <!-- Decorative: how far through the period we are, so usage can
+                     be read against time left. Skipped when the provider can't
+                     bound the period rather than guessed at. -->
+                {#if s.progress != null}
+                  <i class="period-mark" style="left: {s.progress * 100}%" aria-hidden="true"></i>
+                {/if}
               {/if}
             </span>
             {#if s.value != null}

@@ -17,6 +17,7 @@
 //! hermes-agent installed. The `source` setting forces one path:
 //! `"auto"` (default) | `"hermes"` | `"cookie"`.
 
+use super::spend::{month_bounds, monthly_budget, monthly_spend_window};
 use super::{as_f64, calendar_month_start, network_err, Provider, ProviderCtx};
 use crate::model::{Credits, FetchError, UsageSnapshot, UsageWindow};
 use chrono::{DateTime, Utc};
@@ -354,6 +355,13 @@ impl Hermes {
         let body: Value = resp.json().await.map_err(network_err)?;
         let (credits, mut windows) = parse_billing_state(&body, token_price)
             .ok_or_else(|| FetchError::Parse("billing state response missing balanceUsd".into()))?;
+        append_monthly_target(
+            ctx,
+            &self.key,
+            credits.balance,
+            monthly_cap_spend(&body),
+            &mut windows,
+        )?;
 
         // Subscription allowance (tier, monthly credits, cycle reset) — best
         // effort; a failure here still leaves a valid balance card.
@@ -427,11 +435,21 @@ impl Hermes {
                         .into(),
                 )
             })?;
+        let (credits, mut windows) = parsed;
+        // Cookie-mode and lenient fallback responses may not carry monthlyCap.
+        // Their balance is still useful, but requires top-up-aware baselining.
+        append_monthly_target(
+            ctx,
+            &self.key,
+            credits.balance,
+            monthly_cap_spend(&body),
+            &mut windows,
+        )?;
         Ok(UsageSnapshot::ok(
             self.id(),
             self.name(),
-            parsed.1,
-            Some(parsed.0),
+            windows,
+            Some(credits),
         ))
     }
 }
@@ -461,6 +479,34 @@ fn parse_billing_state(
         }
     }
     Some((make_credits(balance, used, token_price), windows))
+}
+
+fn monthly_cap_spend(body: &Value) -> Option<f64> {
+    body.get("monthlyCap")
+        .filter(|cap| cap.is_object())
+        .and_then(|cap| cap.get("spentThisMonthUsd"))
+        .and_then(as_f64)
+}
+
+fn append_monthly_target(
+    ctx: &ProviderCtx,
+    key: &str,
+    balance: f64,
+    reported_spend: Option<f64>,
+    windows: &mut Vec<UsageWindow>,
+) -> Result<(), FetchError> {
+    let Some(budget) = monthly_budget(&ctx.config, key) else {
+        return Ok(());
+    };
+    let now = Utc::now();
+    let (start, end) = month_bounds(now)
+        .ok_or_else(|| FetchError::Parse("could not determine the current billing month".into()))?;
+    // The portal's explicit calendar-month figure wins whenever it exists;
+    // balance tracking is only a fallback for cookie/lenient response shapes.
+    let spend =
+        reported_spend.unwrap_or_else(|| ctx.spend_baselines.balance_spend(key, balance, now));
+    windows.push(monthly_spend_window(spend, budget, start, end));
+    Ok(())
 }
 
 /// Parse `/api/billing/subscription`:
@@ -504,6 +550,7 @@ fn parse_subscription(body: &Value, balance: f64) -> Vec<UsageWindow> {
 fn make_credits(balance: f64, used: Option<f64>, token_price: Option<f64>) -> Credits {
     Credits {
         balance,
+        label: None,
         unit: "USD".into(),
         used,
         granted: None,
@@ -582,6 +629,24 @@ mod tests {
     }
 
     #[test]
+    fn monthly_cap_spend_requires_the_portal_monthly_cap_field() {
+        assert_eq!(
+            monthly_cap_spend(&serde_json::json!({
+                "monthlyCap": {"spentThisMonthUsd": "12.50"}
+            })),
+            Some(12.5)
+        );
+        assert_eq!(
+            monthly_cap_spend(&serde_json::json!({"monthlyCap": null})),
+            None
+        );
+        assert_eq!(
+            monthly_cap_spend(&serde_json::json!({"balanceUsd": "12.50"})),
+            None
+        );
+    }
+
+    #[test]
     fn billing_state_without_cap_has_no_windows() {
         let body = serde_json::json!({"balanceUsd": "9.75", "monthlyCap": null});
         let (c, w) = parse_billing_state(&body, None).unwrap();
@@ -619,11 +684,7 @@ mod tests {
         assert!(w[0].resets_at.is_some());
         assert_eq!(
             w[0].period_start,
-            Some(
-                "2026-07-01T20:29:04Z"
-                    .parse::<DateTime<Utc>>()
-                    .unwrap()
-            )
+            Some("2026-07-01T20:29:04Z".parse::<DateTime<Utc>>().unwrap())
         );
         // zero-allowance tiers and missing fields produce no window
         assert!(parse_subscription(
@@ -716,7 +777,7 @@ mod tests {
             "ssh_program".into(),
             stub.to_string_lossy().into_owned().into(),
         );
-        ProviderCtx::new(dir.into(), Default::default(), cfg)
+        ProviderCtx::new(dir.into(), dir.into(), Default::default(), cfg)
     }
 
     const FRESH: &str = r#"{\"providers\":{\"nous\":{\"access_token\":\"remote-tok\",\"expires_at\":\"2099-01-01T00:00:00+00:00\"}}}"#;
@@ -758,7 +819,12 @@ mod tests {
             "tailscale_program".into(),
             stub.to_string_lossy().into_owned().into(),
         );
-        let ctx = ProviderCtx::new(dir.path().into(), Default::default(), cfg);
+        let ctx = ProviderCtx::new(
+            dir.path().into(),
+            dir.path().into(),
+            Default::default(),
+            cfg,
+        );
         let auth = remote_fresh_auth(&ctx, "hermes").await.unwrap().unwrap();
         assert_eq!(auth.access_token, "remote-tok");
     }
@@ -784,14 +850,24 @@ mod tests {
     #[tokio::test]
     async fn remote_auth_unconfigured_is_none_and_failure_is_network() {
         use crate::config::Config;
-        let ctx = ProviderCtx::new(std::env::temp_dir(), Default::default(), Config::default());
+        let ctx = ProviderCtx::new(
+            std::env::temp_dir(),
+            std::env::temp_dir(),
+            Default::default(),
+            Config::default(),
+        );
         assert!(remote_fresh_auth(&ctx, "hermes").await.unwrap().is_none());
 
         let mut cfg = Config::default();
         let settings = &mut cfg.providers.get_mut("hermes").unwrap().settings;
         settings.insert("ssh_host".into(), "ian@server".into());
         settings.insert("ssh_program".into(), "/nonexistent/ssh".into());
-        let ctx = ProviderCtx::new(std::env::temp_dir(), Default::default(), cfg);
+        let ctx = ProviderCtx::new(
+            std::env::temp_dir(),
+            std::env::temp_dir(),
+            Default::default(),
+            cfg,
+        );
         assert!(matches!(
             remote_fresh_auth(&ctx, "hermes").await,
             Err(FetchError::Network(_))
