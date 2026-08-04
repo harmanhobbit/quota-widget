@@ -13,6 +13,7 @@
     { id: 'firecrawl', name: 'Firecrawl', secret: 'API key', note: 'Create a key at firecrawl.dev/app/api-keys.' },
     { id: 'deepseek', name: 'DeepSeek', secret: 'API key', note: 'Create a key at platform.deepseek.com/api_keys.' },
     { id: 'moonshot', name: 'Moonshot', secret: 'API key', note: 'Create a key at platform.kimi.ai. Keys are platform-specific: a platform.kimi.com key needs its Balance URL changed to that host, or it returns 401.' },
+    { id: 'fireworks', name: 'Fireworks', secret: 'API key', note: 'Create a key at fireworks.ai/account/api-keys. Needs the account ID too. Reports spend, not a balance: set a monthly budget to see it as a percentage.' },
     { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Uses a hermes-agent login: local ~/.hermes/auth.json, or fetched from a remote machine over SSH (needs working key auth, e.g. via ssh-agent). Cookie paste is a last-resort fallback.' },
   ];
   const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secret: null, note: 'Unknown provider kind.' };
@@ -342,6 +343,7 @@
       firecrawl: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
       deepseek: [{ id: 'credits', label: 'Credit balance' }],
       moonshot: [{ id: 'credits', label: 'Credit balance' }],
+      fireworks: [{ id: 'window:monthly_spend', label: 'Monthly spend' }, { id: 'credits', label: 'Spend this month' }],
       hermes: [{ id: 'credits', label: 'Purchased credit balance' }, { id: 'window:monthly_cap', label: 'Monthly cap' }, { id: 'window:monthly_allowance', label: 'Monthly allowance' }],
     }[kind] ?? [];
     const live = snapshots.find((snap) => snap.provider_id === id)?.windows ?? [];
@@ -556,6 +558,23 @@
                 step="any"
                 placeholder="for tokens-left estimate"
                 bind:value={account.settings.token_price}
+              />
+            </label>
+          {/if}
+          {#if p.id === 'fireworks'}
+            <label class="field">Account ID
+              <input
+                type="text"
+                placeholder="required — from your Fireworks account page"
+                bind:value={account.settings.account_id}
+              />
+            </label>
+            <label class="field">Monthly budget (optional)
+              <input
+                type="number"
+                step="any"
+                placeholder="USD — set to see spend as a percentage"
+                bind:value={account.settings.monthly_budget}
               />
             </label>
           {/if}
