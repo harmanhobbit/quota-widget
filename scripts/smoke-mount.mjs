@@ -113,6 +113,15 @@ const SNAPSHOTS = [
     credits: { balance: 12, unit: 'USD' },
     windows: [{ metric_id: 'monthly_allowance', label: 'Monthly allowance (Plus)', used_pct: 100, informational: true }],
   },
+  // A spend-reporting provider with no budget set: labelled credits, which must
+  // render as "Cost this month: …" rather than as a remaining balance.
+  {
+    provider_id: 'fireworks',
+    provider_name: 'Fireworks',
+    error: null,
+    credits: { balance: 8.75, label: 'Cost this month', unit: 'USD' },
+    windows: [],
+  },
 ];
 
 // Every component under test, with the props App would really pass. Settings
@@ -154,7 +163,9 @@ const CASES = [
   {
     file: 'src/lib/MiniSummary.svelte',
     props: () => ({}),
-    expect: ['42%', '5h', '88%', 'Weekly', 'no data', '$3.42', 'USD', '100%', 'Monthly allowance (Plus)'],
+    // Fireworks' labelled spend takes "Cost this month" as its row label,
+    // where an unlabelled balance shows the bare currency.
+    expect: ['42%', '5h', '88%', 'Weekly', 'no data', '$3.42', 'USD', '100%', 'Monthly allowance (Plus)', '$8.75', 'Cost this month'],
     verify: ({ target }) => {
       const names = [...target.querySelectorAll('.hover-name')].map((el) => el.textContent);
       // Claude's second row must leave the name blank rather than repeat it.
@@ -289,6 +300,22 @@ const CASES = [
       if (bars[1].querySelector('.period-mark')) {
         throw new Error('window without a period start still drew a marker');
       }
+    },
+  },
+  // Spend with no budget configured: the label must prefix the amount, so the
+  // figure cannot be misread as money remaining. The unlabelled balance above
+  // it must stay bare.
+  {
+    file: 'src/lib/ProviderCard.svelte',
+    props: () => ({ snap: structuredClone(SNAPSHOTS[4]) }),
+    expect: ['Cost this month: 8.75 USD'],
+  },
+  {
+    file: 'src/lib/ProviderCard.svelte',
+    props: () => ({ snap: structuredClone(SNAPSHOTS[2]) }),
+    verify: ({ target }) => {
+      const balance = target.querySelector('.balance').textContent.trim();
+      if (balance !== '3.42 USD') throw new Error(`unlabelled balance rendered as ${balance}`);
     },
   },
 ];

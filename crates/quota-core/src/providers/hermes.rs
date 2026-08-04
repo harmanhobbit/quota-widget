@@ -504,6 +504,7 @@ fn parse_subscription(body: &Value, balance: f64) -> Vec<UsageWindow> {
 fn make_credits(balance: f64, used: Option<f64>, token_price: Option<f64>) -> Credits {
     Credits {
         balance,
+        label: None,
         unit: "USD".into(),
         used,
         granted: None,
