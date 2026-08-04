@@ -461,8 +461,8 @@ listed first only because they are the smallest and share the most code.
 | ~~DeepSeek~~ — **shipped as 0.11.0** | `GET https://api.deepseek.com/user/balance` | `balance_infos[]` with `total_balance`, `granted_balance`, `topped_up_balance`, and currency (CNY or USD). Amounts arrive as JSON strings; USD is preferred when several currencies are reported |
 | ~~Moonshot / Kimi~~ — **shipped as 0.12.0** | `GET https://api.moonshot.ai/v1/users/me/balance` | `available_balance`, `cash_balance`, `voucher_balance`. Keys are platform-specific — a `platform.kimi.ai` key 401s against `.com`, so the base URL is an overridable setting with a **Balance URL** field in Settings |
 | ~~Fireworks~~ — **shipped as 0.13.0** | `GET /v1/accounts/{account_id}/billingUsage` | Serverless + dedicated + training costs in nano-USD for the month to date. Needs an account id alongside the key |
-| Anthropic Admin | `GET /v1/organizations/cost_report` | Daily cost buckets. Needs an `sk-ant-admin-*` key, not a normal API key |
-| OpenAI Admin | `GET /v1/organization/costs` | Daily cost buckets. Needs an admin key |
+| ~~Anthropic Admin~~ — **shipped as 0.14.0** | `GET /v1/organizations/cost_report` | Daily cost buckets. Needs an `sk-ant-admin-*` key, not a normal API key, and the Admin API is unavailable on individual accounts. **`amount` is in cents as a decimal string** — reading it as dollars overstates spend 100× |
+| ~~OpenAI Admin~~ — **shipped as 0.14.0** | `GET /v1/organization/costs` | Daily cost buckets. Needs an admin key. `amount` nests `{value, currency}` and is in *dollars* — the opposite of Anthropic's on both counts, so the two do not share a parser |
 
 **Spend-over-period framing — settled by Fireworks in 0.13.0.** Anthropic,
 OpenAI, and Fireworks report spend rather than a remaining balance, and this
@@ -470,10 +470,16 @@ document left the presentation open pending the first of the three. Fireworks
 resolved it (confirmed with Ian): an optional per-account `monthly_budget`
 setting turns spend into a `UsageWindow` over the calendar month, which is the
 only shape the tray, thresholds, and period marks can act on; with no budget
-set, the adapter reports the cost figure alone as `Credits` and stays out of the
-percentage machinery. The two admin adapters should follow that pattern rather
-than inventing a third presentation — see
-`crates/quota-core/src/providers/fireworks.rs`.
+set, the adapter reports the cost figure alone as `Credits` — labelled "Cost
+this month", so it cannot be misread as a balance — and stays out of the
+percentage machinery. Both admin adapters follow it. The shape now lives once in
+`crates/quota-core/src/providers/spend.rs`, which all three spend providers call;
+a fourth should use it rather than reimplementing the branch.
+
+**`Credits.label`** (from Codex's branch) is what makes the no-budget path
+readable: an optional name on a monetary figure, so a spend provider renders
+"Cost this month: 8.75 USD" while a real balance stays a bare number. It is the
+reason a budget is optional rather than required.
 
 **Shared plumbing.** `crates/quota-core/src/providers/simple_credits.rs` landed
 with DeepSeek and now backs the balance-style providers. It shares the plumbing
@@ -535,12 +541,23 @@ cannot divide the provider work, because *every* adapter is core crate plus
 `Settings.svelte` — assigning them wholesale to Codex leaves nothing to
 parallelise. Per Ian, the remaining adapters were divided by what the provider
 reports: Claude took the balance/allowance shapes (Firecrawl, DeepSeek,
-Moonshot, Fireworks — all shipped, 0.10.0–0.13.0), Codex takes the two admin
-cost-report APIs (Anthropic, OpenAI), which are the deeper change: date-range
-requests and, for the percentage, a budget field in `config.rs` plus its
-Settings control. Claude therefore edited `crates/quota-core/**` and
-`src/lib/Settings.svelte` for those four minors. Outside the provider adapters
-the file ownership above still stands.
+Moonshot, Fireworks — 0.10.0–0.13.0), Codex the two admin cost-report APIs.
+Claude therefore edited `crates/quota-core/**` and `src/lib/Settings.svelte` for
+those minors. Outside the provider adapters the file ownership above still
+stands.
+
+**Both agents built the same three adapters in parallel** (DeepSeek, Moonshot,
+Fireworks) before the split was communicated. Resolved per Ian: Claude's
+overlapping three were kept, Codex's two admin adapters were merged in as
+0.14.0, and Codex's `Credits.label` was adopted. Two defects were fixed on the
+way in — Codex's Fireworks parser looked for top-level `total_cost`/`cost`
+fields the API does not return, and its Anthropic parser summed a
+cents-denominated `amount` as dollars. **The lesson worth keeping: assign
+providers explicitly and confirm before either agent starts**, since a
+duplicated adapter costs more to reconcile than to write.
+
+All provider adapters are now shipped. What remains in this plan is the
+three-step update chain, still gated on Ian's manual steps.
 
 The patch series is strictly sequential, so ownership there is just *who does
 the work*. Real parallelism is available across features: Codex can take the
