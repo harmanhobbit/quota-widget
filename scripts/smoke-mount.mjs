@@ -185,6 +185,13 @@ const CASES = [
     expect: ['Providers', 'Mini-summary headlines', 'Tray icon status', 'Worst of selected', 'Thresholds', 'Alerts', 'Fade windows when scrolling over them', 'Save'],
     verify: async ({ target, flushSync }) => {
       const findButton = (text) => [...target.querySelectorAll('button')].find((button) => button.textContent.trim() === text);
+      const card = (name) => [...target.querySelectorAll('.provider')]
+        .find((el) => el.querySelector('strong').textContent.trim() === name);
+      // Accounts start collapsed, so every control below has to be revealed
+      // first — and that default is itself worth asserting.
+      if (target.querySelector('.metric-picker')) throw new Error('accounts did not start collapsed');
+      card('Claude').querySelector('.provider-disclosure').click();
+      flushSync();
       // The headline menu is built by hand rather than being a native control,
       // so open it and toggle an item to prove the wiring.
       const picker = target.querySelector('.metric-picker');
@@ -220,9 +227,10 @@ const CASES = [
         throw new Error('add-account panel did not collapse after adding an account');
       }
       target.querySelector('button[aria-label="Move Codex up"]').click();
-      [...target.querySelectorAll('.provider')]
-        .find((card) => card.querySelector('strong').textContent.trim() === 'OpenRouter')
-        .querySelector('.provider-footer button').click();
+      flushSync();
+      card('OpenRouter').querySelector('.provider-disclosure').click();
+      flushSync();
+      card('OpenRouter').querySelector('.provider-footer button').click();
       await Promise.resolve(); // let Remove's secret-clear await finish
       flushSync();
       target.querySelector('.primary').click();
