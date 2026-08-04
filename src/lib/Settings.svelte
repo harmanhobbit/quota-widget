@@ -44,7 +44,23 @@
   // for that async work so a fast Remove → Save click cannot resurrect it.
   const pendingRemovals = new Set();
 
+  const SORT_ORDERS = [
+    { id: 'manual', label: 'Manual (my order)' },
+    { id: 'usage_desc', label: 'Usage: high to low' },
+    { id: 'usage_asc', label: 'Usage: low to high' },
+    { id: 'expiry_soonest', label: 'Expiry: soonest first' },
+    { id: 'expiry_furthest', label: 'Expiry: furthest first' },
+  ];
+  const SORT_BASES = [
+    { id: 'icon', label: 'the number in the tray icon' },
+    { id: 'worst_case', label: 'the worst window' },
+  ];
+
   async function initialiseSettings() {
+    // A config written before sorting existed has neither field; `undefined`
+    // would leave the selects blank and then save `null` back to Rust.
+    config.sort_order ??= 'manual';
+    config.sort_basis ??= 'icon';
     // Normalize configured accounts only. Do not recreate removed defaults.
     for (const account of Object.values(config.providers)) {
       account.settings ??= {};
@@ -641,6 +657,24 @@
       </div>
       <label class="row"><input type="checkbox" bind:checked={config.autostart} /> Start on login</label>
       <label class="row"><input type="checkbox" bind:checked={config.hide_on_blur} /> Hide when clicking outside</label>
+      <div class="row">
+        <label class="inline">Order accounts by
+          <select bind:value={config.sort_order}>
+            {#each SORT_ORDERS as order}<option value={order.id}>{order.label}</option>{/each}
+          </select>
+        </label>
+      </div>
+      <!-- The basis chooses which number sorts, so it means nothing while the
+           order is the user's own. Disabled rather than hidden: it keeps its
+           saved value, and the row does not jump as the order changes. -->
+      <div class="row">
+        <label class="inline" class:disabled={config.sort_order === 'manual'}>Sorting on
+          <select bind:value={config.sort_basis} disabled={config.sort_order === 'manual'}>
+            {#each SORT_BASES as basis}<option value={basis.id}>{basis.label}</option>{/each}
+          </select>
+        </label>
+      </div>
+      <p class="note">Ordering applies to the main window, the mini summary, and the tray tooltip alike. Accounts with no matching number — a credits-only balance, or an account that isn't in the tray — stay at the bottom in your own order.</p>
       <label class="row"><input type="checkbox" bind:checked={config.mini_summary_bars} /> Show usage bars in the mini summary</label>
       <label class="row"><input type="checkbox" bind:checked={config.scroll_opacity} /> Fade windows when scrolling over them</label>
       <p class="note">Esc, ✕, and the tray icon always hide the widget. This extra click-away dismiss can occasionally fight window dragging.</p>
