@@ -199,13 +199,23 @@ fn collect_windows(v: &Value, out: &mut Vec<(f64, UsageWindow)>) {
                     .get("window_minutes")
                     .or_else(|| obj.get("window_duration_mins"))
                     .and_then(as_f64)
+                    // Newer responses state the length in seconds instead.
+                    .or_else(|| {
+                        obj.get("limit_window_seconds")
+                            .and_then(as_f64)
+                            .map(|s| s / 60.0)
+                    })
                     .unwrap_or(0.0);
-                let resets_at = obj.get("resets_at").and_then(parse_timestamp).or_else(|| {
-                    obj.get("resets_in_seconds")
-                        .or_else(|| obj.get("reset_after_seconds"))
-                        .and_then(as_f64)
-                        .map(|s| Utc::now() + Duration::seconds(s as i64))
-                });
+                let resets_at = obj
+                    .get("resets_at")
+                    .or_else(|| obj.get("reset_at"))
+                    .and_then(parse_timestamp)
+                    .or_else(|| {
+                        obj.get("resets_in_seconds")
+                            .or_else(|| obj.get("reset_after_seconds"))
+                            .and_then(as_f64)
+                            .map(|s| Utc::now() + Duration::seconds(s as i64))
+                    });
                 out.push((
                     minutes,
                     UsageWindow {
@@ -320,6 +330,42 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].label, "Weekly");
         assert_eq!(w[0].used_pct, 71.0);
+    }
+
+    /// The shape served as of Aug 2026: the length moved to
+    /// `limit_window_seconds` and the reset to an epoch-seconds `reset_at`.
+    /// Both had to be picked up or the weekly window rendered as an
+    /// unlabelled "Usage" bar with no period marker.
+    #[test]
+    fn parses_primary_window_seconds_shape() {
+        let body: Value = serde_json::from_str(
+            r#"{
+              "plan_type": "plus",
+              "rate_limit": {
+                "primary_window": {
+                  "used_percent": 24,
+                  "limit_window_seconds": 604800,
+                  "reset_after_seconds": 300325,
+                  "reset_at": 1786165245
+                },
+                "secondary_window": null
+              }
+            }"#,
+        )
+        .unwrap();
+        let w = parse_usage(&body);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].label, "Weekly");
+        assert_eq!(w[0].metric_id, "weekly");
+        assert_eq!(w[0].used_pct, 24.0);
+        assert_eq!(
+            w[0].resets_at,
+            chrono::TimeZone::timestamp_opt(&Utc, 1786165245, 0).single()
+        );
+        assert_eq!(
+            w[0].resets_at.unwrap() - w[0].period_start.unwrap(),
+            Duration::days(7)
+        );
     }
 
     #[test]
