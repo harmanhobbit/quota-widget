@@ -21,6 +21,18 @@
     return `resets in ${Math.floor(h / 24)}d ${h % 24}h`;
   }
 
+  // How far through the window's period we are, 0–1, or null when the provider
+  // couldn't tell us the period's bounds. Drawn against the usage bar so a
+  // half-full bar at the quarter mark reads as "burning it fast".
+  function periodProgress(w) {
+    if (!w.resets_at || !w.period_start) return null;
+    const start = new Date(w.period_start).getTime();
+    const end = new Date(w.resets_at).getTime();
+    const span = end - start;
+    if (!(span > 0)) return null;
+    return Math.min(Math.max((now - start) / span, 0), 1);
+  }
+
   function barClass(pct) {
     if (pct >= 95) return 'critical';
     if (pct >= 80) return 'warn';
@@ -52,6 +64,7 @@
   {/if}
   {#if !snap.error || snap.windows.length > 0 || snap.credits}
     {#each snap.windows as w (w.label)}
+      {@const progress = periodProgress(w)}
       <div class="window" class:informational={w.informational}>
         <div class="window-row">
           <span>{w.label}</span>
@@ -64,6 +77,11 @@
             class="fill {w.informational ? 'muted' : barClass(w.used_pct)}"
             style="width: {Math.min(w.used_pct, 100)}%"
           ></div>
+          <!-- Decorative: the "resets in …" text already states the time left,
+               so this is a second reading of it, not new information. -->
+          {#if progress != null}
+            <i class="period-mark" style="left: {progress * 100}%" aria-hidden="true"></i>
+          {/if}
         </div>
       </div>
     {/each}

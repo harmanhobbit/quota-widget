@@ -17,7 +17,7 @@
 //! hermes-agent installed. The `source` setting forces one path:
 //! `"auto"` (default) | `"hermes"` | `"cookie"`.
 
-use super::{as_f64, network_err, Provider, ProviderCtx};
+use super::{as_f64, calendar_month_start, network_err, Provider, ProviderCtx};
 use crate::model::{Credits, FetchError, UsageSnapshot, UsageWindow};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -487,14 +487,16 @@ fn parse_subscription(body: &Value, balance: f64) -> Vec<UsageWindow> {
     // A funded balance keeps calls working regardless of the allowance, so
     // don't let an exhausted one paint everything red.
     let informational = balance > 0.0;
+    let resets_at = cur["cycleEndsAt"]
+        .as_str()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc));
     vec![UsageWindow {
         metric_id: "monthly_allowance".into(),
         label: format!("Monthly allowance ({tier})"),
         used_pct: ((monthly - remaining) / monthly * 100.0).clamp(0.0, 100.0),
-        resets_at: cur["cycleEndsAt"]
-            .as_str()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|d| d.with_timezone(&Utc)),
+        resets_at,
+        period_start: resets_at.and_then(calendar_month_start),
         informational,
     }]
 }
@@ -615,6 +617,14 @@ mod tests {
         assert_eq!(w[0].metric_id, "monthly_allowance");
         assert_eq!(w[0].used_pct, 100.0);
         assert!(w[0].resets_at.is_some());
+        assert_eq!(
+            w[0].period_start,
+            Some(
+                "2026-07-01T20:29:04Z"
+                    .parse::<DateTime<Utc>>()
+                    .unwrap()
+            )
+        );
         // zero-allowance tiers and missing fields produce no window
         assert!(parse_subscription(
             &serde_json::json!({"current": {"monthlyCredits": "0", "creditsRemaining": "0"}}),
@@ -622,6 +632,44 @@ mod tests {
         )
         .is_empty());
         assert!(parse_subscription(&serde_json::json!({}), 0.0).is_empty());
+    }
+
+    /// A cycle is a calendar month, not 30 days: one ending in March began in
+    /// February, and a fixed-length subtraction would land days off.
+    #[test]
+    fn cycle_start_follows_the_calendar() {
+        let body = serde_json::json!({
+            "current": {
+                "tierName": "Plus",
+                "monthlyCredits": "22",
+                "creditsRemaining": "11",
+                "cycleEndsAt": "2026-03-10T00:00:00.000Z"
+            }
+        });
+        let w = parse_subscription(&body, 0.0);
+        assert_eq!(
+            w[0].period_start,
+            Some("2026-02-10T00:00:00Z".parse::<DateTime<Utc>>().unwrap())
+        );
+    }
+
+    /// The 31st has no counterpart in February, so the start clamps to the
+    /// month's last day rather than overflowing into March.
+    #[test]
+    fn cycle_start_clamps_short_months() {
+        let body = serde_json::json!({
+            "current": {
+                "tierName": "Plus",
+                "monthlyCredits": "22",
+                "creditsRemaining": "11",
+                "cycleEndsAt": "2026-03-31T00:00:00.000Z"
+            }
+        });
+        let w = parse_subscription(&body, 0.0);
+        assert_eq!(
+            w[0].period_start,
+            Some("2026-02-28T00:00:00Z".parse::<DateTime<Utc>>().unwrap())
+        );
     }
 
     /// The Free tier grants a fraction of a credit, so its allowance reads

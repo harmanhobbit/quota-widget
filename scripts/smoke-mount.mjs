@@ -71,8 +71,25 @@ const SNAPSHOTS = [
     error: null,
     credits: null,
     windows: [
-      { metric_id: 'five_hour', label: '5h', used_pct: 42, informational: false },
-      { metric_id: 'weekly', label: 'Weekly', used_pct: 88, informational: false },
+      // Bounded period: exercises the progress marker. Anchored to now so the
+      // fraction is a stable mid-window value rather than drifting off the end.
+      {
+        metric_id: 'five_hour',
+        label: '5h',
+        used_pct: 42,
+        informational: false,
+        period_start: new Date(Date.now() - 60 * 60_000).toISOString(),
+        resets_at: new Date(Date.now() + 4 * 60 * 60_000).toISOString(),
+      },
+      // A reset time but no period start — the marker must be skipped, not
+      // rendered at a nonsense position.
+      {
+        metric_id: 'weekly',
+        label: 'Weekly',
+        used_pct: 88,
+        informational: false,
+        resets_at: new Date(Date.now() + 3 * 24 * 60 * 60_000).toISOString(),
+      },
     ],
   },
   {
@@ -248,6 +265,20 @@ const CASES = [
   {
     file: 'src/lib/ProviderCard.svelte',
     props: () => ({ snap: structuredClone(SNAPSHOTS[0]) }),
+    verify: async ({ target }) => {
+      const bars = [...target.querySelectorAll('.bar')];
+      if (bars.length !== 2) throw new Error(`expected 2 bars, got ${bars.length}`);
+      // The 5-hour window is one hour into five, so the marker sits at 20%.
+      const mark = bars[0].querySelector('.period-mark');
+      if (!mark) throw new Error('bounded window rendered no period marker');
+      const pct = parseFloat(mark.style.left);
+      if (!(Math.abs(pct - 20) < 1)) throw new Error(`marker sat at ${mark.style.left}, expected ~20%`);
+      // The weekly window has no period_start, so it gets no marker at all
+      // rather than one pinned at an end.
+      if (bars[1].querySelector('.period-mark')) {
+        throw new Error('window without a period start still drew a marker');
+      }
+    },
   },
 ];
 

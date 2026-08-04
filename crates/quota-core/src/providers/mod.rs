@@ -124,6 +124,18 @@ pub(crate) fn parse_timestamp(v: &serde_json::Value) -> Option<DateTime<Utc>> {
     }
 }
 
+/// Start of the billing cycle ending at `resets_at`, for providers whose period
+/// is a calendar month. Calendar arithmetic, not a fixed 30 days: a cycle
+/// ending 3 March began 3 February, and the progress marker would otherwise
+/// drift by up to three days depending on the month.
+///
+/// Days past the 28th have no counterpart in every month; chrono's
+/// `checked_sub_months` clamps them to the previous month's last day, which is
+/// the same rule billing cycles themselves use.
+pub(crate) fn calendar_month_start(resets_at: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    resets_at.checked_sub_months(chrono::Months::new(1))
+}
+
 pub(crate) fn network_err(e: reqwest::Error) -> FetchError {
     FetchError::Network(e.to_string())
 }

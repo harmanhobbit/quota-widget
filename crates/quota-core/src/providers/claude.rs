@@ -16,7 +16,7 @@
 
 use super::{as_f64, network_err, parse_timestamp, Provider, ProviderCtx};
 use crate::model::{FetchError, UsageSnapshot, UsageWindow};
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use serde_json::Value;
 
 pub struct Claude {
@@ -299,11 +299,13 @@ fn parse_usage(body: &Value) -> Vec<UsageWindow> {
         let Some(pct) = w.get("utilization").and_then(as_f64) else {
             continue;
         };
+        let resets_at = w.get("resets_at").and_then(parse_timestamp);
         windows.push(UsageWindow {
             metric_id: metric_id_for(key),
             label: label_for(key),
             used_pct: pct,
-            resets_at: w.get("resets_at").and_then(parse_timestamp),
+            resets_at,
+            period_start: resets_at.and_then(|r| period_len_for(key).map(|len| r - len)),
             ..Default::default()
         });
     }
@@ -327,6 +329,18 @@ fn label_for(key: &str) -> String {
     }
 }
 
+/// Window length implied by the key, for the period-progress marker. Anthropic
+/// doesn't report it, but the names are the duration: anything `seven_day_*` is
+/// a week regardless of which model it caps. Unknown keys get no marker rather
+/// than a guessed one.
+fn period_len_for(key: &str) -> Option<Duration> {
+    match key {
+        "five_hour" => Some(Duration::hours(5)),
+        k if k == "seven_day" || k.starts_with("seven_day_") => Some(Duration::days(7)),
+        _ => None,
+    }
+}
+
 fn metric_id_for(key: &str) -> String {
     match key {
         "five_hour" => "five_hour".into(),
@@ -342,6 +356,7 @@ fn metric_id_for(key: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use chrono::DateTime;
     use std::collections::HashMap;
 
     #[test]
@@ -351,12 +366,13 @@ mod tests {
               "five_hour": {"utilization": 62.5, "resets_at": "2026-07-31T18:00:00Z"},
               "seven_day": {"utilization": 30, "resets_at": "2026-08-04T00:00:00Z"},
               "seven_day_opus": {"utilization": 12.0, "resets_at": null},
+              "mystery_window": {"utilization": 5.0, "resets_at": "2026-08-04T00:00:00Z"},
               "extra_field": "ignored"
             }"#,
         )
         .unwrap();
         let w = parse_usage(&body);
-        assert_eq!(w.len(), 3);
+        assert_eq!(w.len(), 4);
         assert_eq!(w[0].label, "5-hour");
         assert_eq!(w[0].metric_id, "five_hour");
         assert_eq!(w[0].used_pct, 62.5);
@@ -367,6 +383,23 @@ mod tests {
         assert_eq!(w[1].metric_id, "weekly");
         assert_eq!(w[2].metric_id, "weekly_opus");
         assert_eq!(w[2].resets_at, None);
+
+        // The period start is the reset minus the length the key implies.
+        assert_eq!(
+            w[0].period_start,
+            Some("2026-07-31T13:00:00Z".parse::<DateTime<Utc>>().unwrap())
+        );
+        assert_eq!(
+            w[1].period_start,
+            Some("2026-07-28T00:00:00Z".parse::<DateTime<Utc>>().unwrap())
+        );
+        // No reset time, so nothing to measure a period against.
+        assert_eq!(w[2].period_start, None);
+        // Known reset, but an unrecognised key: no length to subtract, so no
+        // marker rather than a guessed one.
+        let mystery = w.iter().find(|w| w.metric_id == "mystery_window").unwrap();
+        assert!(mystery.resets_at.is_some());
+        assert_eq!(mystery.period_start, None);
     }
 
     #[test]
