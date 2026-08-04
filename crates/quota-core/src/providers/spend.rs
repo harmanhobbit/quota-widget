@@ -78,7 +78,7 @@ pub(crate) fn monthly_spend_window(
 ) -> UsageWindow {
     UsageWindow {
         metric_id: "monthly_spend".into(),
-        label: "Monthly spend".into(),
+        label: "Monthly".into(),
         // Overspend is entirely possible — a budget is the user's intention,
         // not a cap the provider enforces.
         used_pct: spend / budget * 100.0,
@@ -128,6 +128,7 @@ mod tests {
         assert!(snap.credits.is_none());
         let w = &snap.windows[0];
         assert_eq!(w.metric_id, "monthly_spend");
+        assert_eq!(w.label, "Monthly");
         assert!((w.used_pct - 25.0).abs() < 1e-9);
         assert_eq!(w.period_start, Some(start));
         assert_eq!(w.resets_at, Some(end));
