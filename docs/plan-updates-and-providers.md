@@ -457,16 +457,31 @@ listed first only because they are the smallest and share the most code.
 
 | Provider | Endpoint | What it returns |
 |---|---|---|
-| DeepSeek | `GET https://api.deepseek.com/user/balance` | `balance_infos[]` with `total_balance`, `granted_balance`, `topped_up_balance`, and currency (CNY or USD) |
-| Moonshot / Kimi | `GET https://api.moonshot.ai/v1/users/me/balance` | `available_balance`, `cash_balance`, `voucher_balance`. Keys are platform-specific — a `platform.kimi.ai` key 401s against `.com`, so make the base URL an overridable setting |
+| ~~Firecrawl~~ — **shipped as 0.10.0** | `GET https://api.firecrawl.dev/v2/team/credit-usage` | `remainingCredits` / `planCredits` plus both ends of the billing period. A per-cycle allowance, so it emits a `UsageWindow`; the period bounds are exact rather than inferred |
+| ~~DeepSeek~~ — **shipped as 0.11.0** | `GET https://api.deepseek.com/user/balance` | `balance_infos[]` with `total_balance`, `granted_balance`, `topped_up_balance`, and currency (CNY or USD). Amounts arrive as JSON strings; USD is preferred when several currencies are reported |
+| ~~Moonshot / Kimi~~ — **shipped as 0.12.0** | `GET https://api.moonshot.ai/v1/users/me/balance` | `available_balance`, `cash_balance`, `voucher_balance`. Keys are platform-specific — a `platform.kimi.ai` key 401s against `.com`, so the base URL is an overridable setting with a **Balance URL** field in Settings |
+| ~~Fireworks~~ — **shipped as 0.13.0** | `GET /v1/accounts/{account_id}/billingUsage` | Serverless + dedicated + training costs in nano-USD for the month to date. Needs an account id alongside the key |
 | Anthropic Admin | `GET /v1/organizations/cost_report` | Daily cost buckets. Needs an `sk-ant-admin-*` key, not a normal API key |
 | OpenAI Admin | `GET /v1/organization/costs` | Daily cost buckets. Needs an admin key |
-| Fireworks | `GET /v1/accounts/{account_id}/billingUsage` | Usage/cost. Needs an account id alongside the key |
 
-Anthropic, OpenAI, and Fireworks report *spend over a period* rather than a
-remaining balance, so they surface as a cost figure (and, where a budget is
-configured, a percentage window) — not as `Credits`. Worth confirming that
-framing when the first of those three comes up.
+**Spend-over-period framing — settled by Fireworks in 0.13.0.** Anthropic,
+OpenAI, and Fireworks report spend rather than a remaining balance, and this
+document left the presentation open pending the first of the three. Fireworks
+resolved it (confirmed with Ian): an optional per-account `monthly_budget`
+setting turns spend into a `UsageWindow` over the calendar month, which is the
+only shape the tray, thresholds, and period marks can act on; with no budget
+set, the adapter reports the cost figure alone as `Credits` and stays out of the
+percentage machinery. The two admin adapters should follow that pattern rather
+than inventing a third presentation — see
+`crates/quota-core/src/providers/fireworks.rs`.
+
+**Shared plumbing.** `crates/quota-core/src/providers/simple_credits.rs` landed
+with DeepSeek and now backs the balance-style providers. It shares the plumbing
+— read key, allow endpoint override, bearer GET, map 401/403 to `AuthExpired`,
+decode — not the parsing: each provider supplies a `CreditsSpec` and a `parse`
+fn. Allowance-style providers emit a `UsageWindow` and deliberately stay out of
+it. The admin adapters need date-range query parameters, so they do not fit it
+either.
 
 **Precedent from the shipped ElevenLabs adapter:** when a provider reports an
 allowance rather than a balance, emit a `UsageWindow` and leave `credits` as
@@ -515,9 +530,21 @@ other's files:
   the scroll-to-fade work) `src/lib/opacity.js`, which is imported by both
   windows. Codex authored it; treat it as Codex-owned for later edits.
 
+**Provider adapters are now split by provider, not by file.** The rule above
+cannot divide the provider work, because *every* adapter is core crate plus
+`Settings.svelte` — assigning them wholesale to Codex leaves nothing to
+parallelise. Per Ian, the remaining adapters were divided by what the provider
+reports: Claude took the balance/allowance shapes (Firecrawl, DeepSeek,
+Moonshot, Fireworks — all shipped, 0.10.0–0.13.0), Codex takes the two admin
+cost-report APIs (Anthropic, OpenAI), which are the deeper change: date-range
+requests and, for the percentage, a budget field in `config.rs` plus its
+Settings control. Claude therefore edited `crates/quota-core/**` and
+`src/lib/Settings.svelte` for those four minors. Outside the provider adapters
+the file ownership above still stands.
+
 The patch series is strictly sequential, so ownership there is just *who does
 the work*. Real parallelism is available across features: Codex can take the
-provider minors while Claude works the update chain. Scroll-to-fade was the
+admin cost adapters while Claude works the update chain. Scroll-to-fade was the
 exception — split across both owners on a shared new file, so it was sequenced
 rather than parallel (see its Owner note).
 
