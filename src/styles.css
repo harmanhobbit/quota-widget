@@ -350,6 +350,8 @@ button.primary {
   background: var(--border);
   border-radius: 3px;
   overflow: hidden;
+  /* Anchors the period marker; overflow above clips it at both ends. */
+  position: relative;
 }
 
 /* Holds the column open for rows with no percentage to show. */

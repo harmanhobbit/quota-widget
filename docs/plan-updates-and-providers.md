@@ -613,4 +613,6 @@ Manual checks that cannot be automated, per feature:
 - **Update chain** — an older build detects a newer `latest.json`; the installer
   path completes and relaunches; a branch build stays silent.
 
-Do not push, and do not dispatch a Windows build, without Ian saying so.
+After implementation and the applicable checks are complete, push the feature
+branch for review. Do not push `main` or dispatch a Windows build without Ian
+saying so.
