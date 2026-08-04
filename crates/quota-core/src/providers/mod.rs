@@ -4,6 +4,7 @@ pub mod deepseek;
 pub mod elevenlabs;
 pub mod firecrawl;
 pub mod hermes;
+pub mod moonshot;
 pub mod openrouter;
 pub mod simple_credits;
 
@@ -67,6 +68,7 @@ pub fn adapter_kinds() -> &'static [(&'static str, &'static str)] {
         ("elevenlabs", "ElevenLabs"),
         ("firecrawl", "Firecrawl"),
         ("deepseek", "DeepSeek"),
+        ("moonshot", "Moonshot"),
         ("hermes", "Hermes Portal"),
     ]
 }
@@ -102,6 +104,11 @@ pub fn providers_for(cfg: &Config) -> Vec<Box<dyn Provider>> {
                     key.clone(),
                     label,
                     &deepseek::SPEC,
+                )) as Box<dyn Provider>),
+                "moonshot" => Some(Box::new(simple_credits::SimpleCredits::new(
+                    key.clone(),
+                    label,
+                    &moonshot::SPEC,
                 )) as Box<dyn Provider>),
                 "hermes" => {
                     Some(Box::new(hermes::Hermes::new(key.clone(), label)) as Box<dyn Provider>)
@@ -211,6 +218,7 @@ mod tests {
                 "elevenlabs",
                 "firecrawl",
                 "deepseek",
+                "moonshot",
                 "hermes",
                 "codex",
                 "claude"

@@ -135,6 +135,7 @@ impl Default for Config {
         providers.insert("elevenlabs".into(), ProviderConfig::default());
         providers.insert("firecrawl".into(), ProviderConfig::default());
         providers.insert("deepseek".into(), ProviderConfig::default());
+        providers.insert("moonshot".into(), ProviderConfig::default());
         providers.insert("hermes".into(), ProviderConfig::default());
         Self {
             version: 2,
@@ -494,6 +495,7 @@ mod tests {
                 &"elevenlabs",
                 &"firecrawl",
                 &"deepseek",
+                &"moonshot",
                 &"hermes",
                 &"codex",
                 &"claude"

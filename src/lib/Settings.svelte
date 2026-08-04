@@ -12,6 +12,7 @@
     { id: 'elevenlabs', name: 'ElevenLabs', secret: 'API key', note: 'Create a key at elevenlabs.io/app/settings/api-keys.' },
     { id: 'firecrawl', name: 'Firecrawl', secret: 'API key', note: 'Create a key at firecrawl.dev/app/api-keys.' },
     { id: 'deepseek', name: 'DeepSeek', secret: 'API key', note: 'Create a key at platform.deepseek.com/api_keys.' },
+    { id: 'moonshot', name: 'Moonshot', secret: 'API key', note: 'Create a key at platform.kimi.ai. Keys are platform-specific: a platform.kimi.com key needs its Balance URL changed to that host, or it returns 401.' },
     { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Uses a hermes-agent login: local ~/.hermes/auth.json, or fetched from a remote machine over SSH (needs working key auth, e.g. via ssh-agent). Cookie paste is a last-resort fallback.' },
   ];
   const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secret: null, note: 'Unknown provider kind.' };
@@ -340,6 +341,7 @@
       elevenlabs: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
       firecrawl: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
       deepseek: [{ id: 'credits', label: 'Credit balance' }],
+      moonshot: [{ id: 'credits', label: 'Credit balance' }],
       hermes: [{ id: 'credits', label: 'Purchased credit balance' }, { id: 'window:monthly_cap', label: 'Monthly cap' }, { id: 'window:monthly_allowance', label: 'Monthly allowance' }],
     }[kind] ?? [];
     const live = snapshots.find((snap) => snap.provider_id === id)?.windows ?? [];
@@ -557,7 +559,16 @@
               />
             </label>
           {/if}
-          {#if p.id === 'openrouter' || p.id === 'hermes'}
+          {#if p.id === 'moonshot'}
+            <label class="field">Balance URL
+              <input
+                type="text"
+                placeholder="default: https://api.moonshot.ai/v1/users/me/balance"
+                bind:value={account.settings.balance_url}
+              />
+            </label>
+          {/if}
+          {#if p.id === 'openrouter' || p.id === 'hermes' || p.id === 'deepseek' || p.id === 'moonshot'}
             <div class="row">
               <label class="inline">Low-balance warning at
                 <input type="number" step="any" class="num" bind:value={account.low_balance_warn} placeholder="off" />
