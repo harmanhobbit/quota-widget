@@ -134,6 +134,7 @@ impl Default for Config {
         providers.insert("openrouter".into(), ProviderConfig::default());
         providers.insert("elevenlabs".into(), ProviderConfig::default());
         providers.insert("firecrawl".into(), ProviderConfig::default());
+        providers.insert("deepseek".into(), ProviderConfig::default());
         providers.insert("hermes".into(), ProviderConfig::default());
         Self {
             version: 2,
@@ -492,6 +493,7 @@ mod tests {
                 &"openrouter",
                 &"elevenlabs",
                 &"firecrawl",
+                &"deepseek",
                 &"hermes",
                 &"codex",
                 &"claude"

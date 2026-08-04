@@ -1,9 +1,11 @@
 pub mod claude;
 pub mod codex;
+pub mod deepseek;
 pub mod elevenlabs;
 pub mod firecrawl;
 pub mod hermes;
 pub mod openrouter;
+pub mod simple_credits;
 
 use crate::config::Config;
 use crate::model::{FetchError, UsageSnapshot};
@@ -64,6 +66,7 @@ pub fn adapter_kinds() -> &'static [(&'static str, &'static str)] {
         ("openrouter", "OpenRouter"),
         ("elevenlabs", "ElevenLabs"),
         ("firecrawl", "Firecrawl"),
+        ("deepseek", "DeepSeek"),
         ("hermes", "Hermes Portal"),
     ]
 }
@@ -95,6 +98,11 @@ pub fn providers_for(cfg: &Config) -> Vec<Box<dyn Provider>> {
                     Some(Box::new(firecrawl::Firecrawl::new(key.clone(), label))
                         as Box<dyn Provider>)
                 }
+                "deepseek" => Some(Box::new(simple_credits::SimpleCredits::new(
+                    key.clone(),
+                    label,
+                    &deepseek::SPEC,
+                )) as Box<dyn Provider>),
                 "hermes" => {
                     Some(Box::new(hermes::Hermes::new(key.clone(), label)) as Box<dyn Provider>)
                 }
@@ -198,7 +206,15 @@ mod tests {
                 .iter()
                 .map(|provider| provider.id())
                 .collect::<Vec<_>>(),
-            vec!["openrouter", "elevenlabs", "firecrawl", "hermes", "codex", "claude"]
+            vec![
+                "openrouter",
+                "elevenlabs",
+                "firecrawl",
+                "deepseek",
+                "hermes",
+                "codex",
+                "claude"
+            ]
         );
     }
 }
