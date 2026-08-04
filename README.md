@@ -83,6 +83,28 @@ Manager**, not on disk. On Linux they fall back to a `0600` `secrets.json` in th
 config dir. Config lives at `%APPDATA%\quota-widget\config.json`
 (`~/.config/quota-widget/config.json` on Linux).
 
+### How far each provider has been verified
+
+Every adapter is written against the vendor's documented response schema and
+covered by unit tests over that schema. What follows is what has additionally
+been seen from a **live account** — worth knowing before you trust a number.
+
+- **Verified with real usage data:** Firecrawl. Its parse path has run on a
+  meaningful non-zero reading, so the arithmetic and formatting are exercised,
+  not just the plumbing.
+- **Reached successfully, but only on an unused account reporting $0.00:**
+  DeepSeek, Moonshot, Fireworks, OpenAI Admin. This confirms the key is
+  accepted, the endpoint is right, and the response parses — but a zero says
+  nothing about whether a non-zero amount is scaled correctly.
+- **Not yet run against a live account:** Anthropic Admin.
+
+That middle distinction is not pedantry. Anthropic's cost report returns
+`amount` in **cents** while OpenAI's returns **dollars**, so a units mistake is
+a 100× error that a $0.00 reading cannot possibly reveal (see the units note in
+`crates/quota-core/src/providers/anthropic_admin.rs`). Treat the first non-zero
+figure from any provider in the lower two groups as worth sanity-checking
+against that vendor's own dashboard.
+
 ## Building
 
 ### CI
@@ -186,6 +208,11 @@ scripts/            icon generation, version-drift guard
 - The Hermes adapter scans responses leniently for balance-like fields, but the
   portal may change shape; the endpoint URL is user-configurable for that
   reason.
+- Most balance and spend adapters have only been confirmed against accounts
+  reporting **$0.00**, and the Anthropic Admin one has not been run against a
+  live account at all — so a first non-zero reading is worth checking against
+  the vendor's dashboard. See
+  [How far each provider has been verified](#how-far-each-provider-has-been-verified).
 - The Claude "weekly" window's reset cadence is whatever the API reports —
   observed in the wild resetting more often than every 7 days.
 - Tray hover is always a native tooltip, not a widget window: Windows renders
