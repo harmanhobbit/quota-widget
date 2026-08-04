@@ -92,6 +92,9 @@ async fn get_snapshots(state: tauri::State<'_, Arc<AppState>>) -> Result<Initial
             }
         }
     }
+    // The configured display order, which may be a usage/expiry sort rather
+    // than the hand-arranged config order.
+    cfg.sort_snapshots(&mut out);
     Ok(InitialState {
         snapshots: out,
         config: cfg.clone(),

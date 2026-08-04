@@ -34,6 +34,8 @@ const CONFIG = {
   hide_on_blur: false,
   mini_summary_bars: true,
   scroll_opacity: true,
+  sort_order: 'manual',
+  sort_basis: 'icon',
   thresholds: { warn_pct: 80, critical_pct: 95 },
   alerts: { toast: true, tray_color: true, auto_popup: false },
   providers: {
@@ -259,6 +261,41 @@ const CASES = [
       }
       if (saved.providers['claude#2'].label !== 'Work Claude') {
         throw new Error('new account label was not saved');
+      }
+    },
+  },
+  // Ordering: the basis select is inert while the order is Manual, both
+  // selects reach Rust as the snake_case strings serde expects, and a config
+  // predating the feature fills them in rather than saving nulls.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => {
+      const old = structuredClone(CONFIG);
+      delete old.sort_order;
+      delete old.sort_basis;
+      return { initialConfig: $.proxy(old), snapshots: structuredClone(SNAPSHOTS), onclose() {} };
+    },
+    expect: ['Order accounts by', 'Sorting on', 'Manual (my order)', 'Expiry: soonest first'],
+    verify: async ({ target, flushSync }) => {
+      const selects = [...target.querySelectorAll('select')];
+      const orderSelect = selects.find((el) => el.value === 'manual');
+      const basisSelect = selects.find((el) => el.value === 'icon');
+      if (!orderSelect || !basisSelect) {
+        throw new Error('a config without the sort fields left the selects unset');
+      }
+      if (!basisSelect.disabled) throw new Error('basis select was live under Manual');
+      orderSelect.value = 'expiry_soonest';
+      orderSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      if (basisSelect.disabled) throw new Error('basis select stayed disabled under a real order');
+      basisSelect.value = 'worst_case';
+      basisSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      target.querySelector('.primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const saved = globalThis.__SMOKE_LAST_CONFIG__;
+      if (saved?.sort_order !== 'expiry_soonest' || saved?.sort_basis !== 'worst_case') {
+        throw new Error(`saved sort was ${saved?.sort_order}/${saved?.sort_basis}`);
       }
     },
   },
