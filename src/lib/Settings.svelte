@@ -340,15 +340,15 @@
     const known = {
       claude: [{ id: 'window:five_hour', label: '5-hour' }, { id: 'window:weekly', label: 'Weekly' }],
       codex: [{ id: 'window:weekly', label: 'Weekly' }],
-      openrouter: [{ id: 'credits', label: 'Credit balance' }, { id: 'window:monthly_spend', label: 'Monthly spend' }],
+      openrouter: [{ id: 'credits', label: 'Credit balance' }, { id: 'window:monthly_spend', label: 'Monthly' }],
       elevenlabs: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
       firecrawl: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
       deepseek: [{ id: 'credits', label: 'Credit balance' }],
       moonshot: [{ id: 'credits', label: 'Credit balance' }],
-      fireworks: [{ id: 'window:monthly_spend', label: 'Monthly spend' }, { id: 'credits', label: 'Spend this month' }],
-      anthropic_admin: [{ id: 'window:monthly_spend', label: 'Monthly spend' }, { id: 'credits', label: 'Spend this month' }],
-      openai_admin: [{ id: 'window:monthly_spend', label: 'Monthly spend' }, { id: 'credits', label: 'Spend this month' }],
-      hermes: [{ id: 'credits', label: 'Purchased credit balance' }, { id: 'window:monthly_cap', label: 'Monthly cap' }, { id: 'window:monthly_allowance', label: 'Monthly allowance' }, { id: 'window:monthly_spend', label: 'Monthly spend' }],
+      fireworks: [{ id: 'window:monthly_spend', label: 'Monthly' }, { id: 'credits', label: 'Spend this month' }],
+      anthropic_admin: [{ id: 'window:monthly_spend', label: 'Monthly' }, { id: 'credits', label: 'Spend this month' }],
+      openai_admin: [{ id: 'window:monthly_spend', label: 'Monthly' }, { id: 'credits', label: 'Spend this month' }],
+      hermes: [{ id: 'credits', label: 'Purchased credit balance' }, { id: 'window:monthly_cap', label: 'Monthly cap' }, { id: 'window:monthly_allowance', label: 'Monthly allowance' }, { id: 'window:monthly_spend', label: 'Monthly' }],
     }[kind] ?? [];
     const live = snapshots.find((snap) => snap.provider_id === id)?.windows ?? [];
     const choices = [...known];
