@@ -1,3 +1,4 @@
+pub mod anthropic_admin;
 pub mod claude;
 pub mod codex;
 pub mod deepseek;
@@ -6,8 +7,10 @@ pub mod firecrawl;
 pub mod fireworks;
 pub mod hermes;
 pub mod moonshot;
+pub mod openai_admin;
 pub mod openrouter;
 pub mod simple_credits;
+pub mod spend;
 
 use crate::config::Config;
 use crate::model::{FetchError, UsageSnapshot};
@@ -71,6 +74,8 @@ pub fn adapter_kinds() -> &'static [(&'static str, &'static str)] {
         ("deepseek", "DeepSeek"),
         ("moonshot", "Moonshot"),
         ("fireworks", "Fireworks"),
+        ("anthropic_admin", "Anthropic Admin"),
+        ("openai_admin", "OpenAI Admin"),
         ("hermes", "Hermes Portal"),
     ]
 }
@@ -114,6 +119,14 @@ pub fn providers_for(cfg: &Config) -> Vec<Box<dyn Provider>> {
                 )) as Box<dyn Provider>),
                 "fireworks" => {
                     Some(Box::new(fireworks::Fireworks::new(key.clone(), label))
+                        as Box<dyn Provider>)
+                }
+                "anthropic_admin" => Some(Box::new(anthropic_admin::AnthropicAdmin::new(
+                    key.clone(),
+                    label,
+                )) as Box<dyn Provider>),
+                "openai_admin" => {
+                    Some(Box::new(openai_admin::OpenAiAdmin::new(key.clone(), label))
                         as Box<dyn Provider>)
                 }
                 "hermes" => {
@@ -226,6 +239,8 @@ mod tests {
                 "deepseek",
                 "moonshot",
                 "fireworks",
+                "anthropic_admin",
+                "openai_admin",
                 "hermes",
                 "codex",
                 "claude"

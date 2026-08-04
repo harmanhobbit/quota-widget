@@ -14,6 +14,8 @@
     { id: 'deepseek', name: 'DeepSeek', secret: 'API key', note: 'Create a key at platform.deepseek.com/api_keys.' },
     { id: 'moonshot', name: 'Moonshot', secret: 'API key', note: 'Create a key at platform.kimi.ai. Keys are platform-specific: a platform.kimi.com key needs its Balance URL changed to that host, or it returns 401.' },
     { id: 'fireworks', name: 'Fireworks', secret: 'API key', note: 'Create a key at fireworks.ai/account/api-keys. Needs the account ID too. Reports spend, not a balance: set a monthly budget to see it as a percentage.' },
+    { id: 'anthropic_admin', name: 'Anthropic Admin', secret: 'Admin API key', note: 'Needs an sk-ant-admin key from Console → Settings → Admin keys, not a normal API key. The Admin API is unavailable on individual accounts. Shows organization spend this month.' },
+    { id: 'openai_admin', name: 'OpenAI Admin', secret: 'Admin API key', note: 'Needs an organization Admin key from platform.openai.com/settings/organization/admin-keys, not a normal API key. Shows organization spend this month.' },
     { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Uses a hermes-agent login: local ~/.hermes/auth.json, or fetched from a remote machine over SSH (needs working key auth, e.g. via ssh-agent). Cookie paste is a last-resort fallback.' },
   ];
   const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secret: null, note: 'Unknown provider kind.' };
@@ -344,6 +346,8 @@
       deepseek: [{ id: 'credits', label: 'Credit balance' }],
       moonshot: [{ id: 'credits', label: 'Credit balance' }],
       fireworks: [{ id: 'window:monthly_spend', label: 'Monthly spend' }, { id: 'credits', label: 'Spend this month' }],
+      anthropic_admin: [{ id: 'window:monthly_spend', label: 'Monthly spend' }, { id: 'credits', label: 'Spend this month' }],
+      openai_admin: [{ id: 'window:monthly_spend', label: 'Monthly spend' }, { id: 'credits', label: 'Spend this month' }],
       hermes: [{ id: 'credits', label: 'Purchased credit balance' }, { id: 'window:monthly_cap', label: 'Monthly cap' }, { id: 'window:monthly_allowance', label: 'Monthly allowance' }],
     }[kind] ?? [];
     const live = snapshots.find((snap) => snap.provider_id === id)?.windows ?? [];
@@ -569,6 +573,10 @@
                 bind:value={account.settings.account_id}
               />
             </label>
+          {/if}
+          <!-- Every spend-reporting provider offers the same budget: without
+               one there is no remaining quantity to make a percentage from. -->
+          {#if p.id === 'fireworks' || p.id === 'anthropic_admin' || p.id === 'openai_admin'}
             <label class="field">Monthly budget (optional)
               <input
                 type="number"

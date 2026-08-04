@@ -137,6 +137,8 @@ impl Default for Config {
         providers.insert("deepseek".into(), ProviderConfig::default());
         providers.insert("moonshot".into(), ProviderConfig::default());
         providers.insert("fireworks".into(), ProviderConfig::default());
+        providers.insert("anthropic_admin".into(), ProviderConfig::default());
+        providers.insert("openai_admin".into(), ProviderConfig::default());
         providers.insert("hermes".into(), ProviderConfig::default());
         Self {
             version: 2,
@@ -498,6 +500,8 @@ mod tests {
                 &"deepseek",
                 &"moonshot",
                 &"fireworks",
+                &"anthropic_admin",
+                &"openai_admin",
                 &"hermes",
                 &"codex",
                 &"claude"

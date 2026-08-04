@@ -1,26 +1,19 @@
 //! Fireworks AI spend via the official, documented API:
 //! `GET /v1/accounts/{account_id}/billingUsage`.
 //!
-//! This is the first adapter for a provider that reports **spend over a
-//! period** rather than a balance or an allowance. There is no remaining
-//! quantity to draw down, so there is nothing to make a percentage from unless
-//! the user says what they consider a full month's worth. Hence the optional
-//! `monthly_budget` setting (confirmed with Ian):
+//! A spend-over-period provider — see `spend.rs` for the budget/cost shape all
+//! three of them share.
 //!
-//! - with a budget: a `UsageWindow` over the calendar month, so the tray,
-//!   thresholds and period marks all work as they do everywhere else;
-//! - without one: a `Credits` figure carrying month-to-date spend and nothing
-//!   else, which the card renders as a plain cost.
-//!
-//! Two shape notes. The account id goes in the *path*, so it is a required
-//! per-account setting rather than an endpoint override. And costs come back in
-//! nano-USD (1e-9) across three separate arrays — serverless, dedicated and
-//! training — which are summed: the question being answered is "what is this
-//! account costing me this month".
+//! Two shape notes specific to Fireworks. The account id goes in the *path*, so
+//! it is a required per-account setting rather than an endpoint override. And
+//! costs come back in nano-USD (1e-9) across three separate arrays —
+//! serverless, dedicated and training — which are summed: the question being
+//! answered is "what is this account costing me this month".
 
+use super::spend::{month_bounds, monthly_budget, spend_snapshot};
 use super::{as_f64, network_err, Provider, ProviderCtx};
-use crate::model::{Credits, FetchError, UsageSnapshot, UsageWindow};
-use chrono::{DateTime, Datelike, TimeZone, Utc};
+use crate::model::{FetchError, UsageSnapshot};
+use chrono::Utc;
 use serde_json::Value;
 
 pub struct Fireworks {
@@ -71,12 +64,6 @@ impl Provider for Fireworks {
             .provider_setting(&self.key, "base_url")
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| DEFAULT_BASE.to_string());
-        let budget = ctx
-            .config
-            .provider_setting(&self.key, "monthly_budget")
-            .and_then(|v| as_f64(&v))
-            .filter(|b| *b > 0.0);
-
         let now = Utc::now();
         let (start, end) = month_bounds(now).ok_or_else(|| {
             FetchError::Parse("could not determine the current billing month".into())
@@ -121,41 +108,15 @@ impl Provider for Fireworks {
         let body: Value = resp.json().await.map_err(network_err)?;
         let spend = total_spend_usd(&body);
 
-        Ok(match budget {
-            Some(budget) => UsageSnapshot::ok(
-                self.id(),
-                self.name(),
-                vec![spend_window(spend, budget, start, end)],
-                None,
-            ),
-            // No budget configured: report the cost itself and leave the
-            // percentage machinery out of it entirely. The label keeps it from
-            // reading as a balance — this is money spent, not money left.
-            None => UsageSnapshot::ok(
-                self.id(),
-                self.name(),
-                vec![],
-                Some(Credits {
-                    balance: spend,
-                    label: Some("Cost this month".into()),
-                    unit: "USD".into(),
-                    used: None,
-                    granted: None,
-                    est_tokens_remaining: None,
-                }),
-            ),
-        })
+        Ok(spend_snapshot(
+            self.id(),
+            self.name(),
+            spend,
+            monthly_budget(&ctx.config, &self.key),
+            start,
+            end,
+        ))
     }
-}
-
-/// First instant of `now`'s calendar month, and the first instant of the next —
-/// the exclusive end the API expects and the reset the UI counts down to.
-fn month_bounds(now: DateTime<Utc>) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
-    let start = Utc
-        .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
-        .single()?;
-    let end = start.checked_add_months(chrono::Months::new(1))?;
-    Some((start, end))
 }
 
 /// Month-to-date spend in USD, summed across all three cost categories.
@@ -170,24 +131,6 @@ fn total_spend_usd(body: &Value) -> f64 {
         .filter_map(|entry| entry.get("costNanoUsd").and_then(as_f64))
         .sum::<f64>()
         * NANO_USD
-}
-
-fn spend_window(
-    spend: f64,
-    budget: f64,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
-) -> UsageWindow {
-    UsageWindow {
-        metric_id: "monthly_spend".into(),
-        label: "Monthly spend".into(),
-        // Overspend is entirely possible — a budget is the user's intention,
-        // not a cap the provider enforces. The model tolerates >100.
-        used_pct: spend / budget * 100.0,
-        resets_at: Some(end),
-        period_start: Some(start),
-        ..Default::default()
-    }
 }
 
 #[cfg(test)]
@@ -224,33 +167,6 @@ mod tests {
         assert!((total_spend_usd(&body) - 1.5).abs() < 1e-9);
     }
 
-    #[test]
-    fn budget_window_spans_the_calendar_month() {
-        let now: DateTime<Utc> = "2026-08-04T12:00:00Z".parse().unwrap();
-        let (start, end) = month_bounds(now).unwrap();
-        assert_eq!(start, "2026-08-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap());
-        assert_eq!(end, "2026-09-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap());
-
-        let w = spend_window(50.0, 200.0, start, end);
-        assert_eq!(w.metric_id, "monthly_spend");
-        assert!((w.used_pct - 25.0).abs() < 1e-9);
-        assert_eq!(w.period_start, Some(start));
-        assert_eq!(w.resets_at, Some(end));
-        assert!(!w.informational);
-    }
-
-    #[test]
-    fn december_rolls_into_the_next_year() {
-        let now: DateTime<Utc> = "2026-12-20T00:00:00Z".parse().unwrap();
-        let (start, end) = month_bounds(now).unwrap();
-        assert_eq!(start, "2026-12-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap());
-        assert_eq!(end, "2027-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap());
-    }
-
-    #[test]
-    fn overspending_a_budget_reads_past_full() {
-        let now: DateTime<Utc> = "2026-08-04T12:00:00Z".parse().unwrap();
-        let (start, end) = month_bounds(now).unwrap();
-        assert!(spend_window(250.0, 200.0, start, end).used_pct > 100.0);
-    }
+    // The budget-window and calendar-month behaviour is shared by all three
+    // spend providers and is tested once, in `spend.rs`.
 }
