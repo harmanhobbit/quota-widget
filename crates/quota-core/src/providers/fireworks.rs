@@ -129,15 +129,17 @@ impl Provider for Fireworks {
                 None,
             ),
             // No budget configured: report the cost itself and leave the
-            // percentage machinery out of it entirely.
+            // percentage machinery out of it entirely. The label keeps it from
+            // reading as a balance — this is money spent, not money left.
             None => UsageSnapshot::ok(
                 self.id(),
                 self.name(),
                 vec![],
                 Some(Credits {
                     balance: spend,
+                    label: Some("Cost this month".into()),
                     unit: "USD".into(),
-                    used: Some(spend),
+                    used: None,
                     granted: None,
                     est_tokens_remaining: None,
                 }),

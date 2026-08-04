@@ -32,6 +32,7 @@ fn parse_credits(body: &Value) -> Option<Credits> {
     let voucher = data.get("voucher_balance").and_then(as_f64);
     Some(Credits {
         balance,
+        label: None,
         // Moonshot bills in USD on the .ai platform; the response carries no
         // currency field to read instead.
         unit: "USD".into(),

@@ -39,6 +39,11 @@ impl Default for UsageWindow {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Credits {
     pub balance: f64,
+    /// Optional name for a monetary amount that is not a draw-down balance,
+    /// such as an organization's cumulative spend this month. `None` renders as
+    /// a bare balance, which is what a real balance should look like.
+    #[serde(default)]
+    pub label: Option<String>,
     /// Display unit, e.g. "USD" or "credits".
     pub unit: String,
     pub used: Option<f64>,

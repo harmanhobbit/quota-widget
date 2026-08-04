@@ -35,6 +35,8 @@ fn parse_credits(body: &Value) -> Option<Credits> {
     let topped_up = info.get("topped_up_balance").and_then(as_f64);
     Some(Credits {
         balance,
+        // A real draw-down balance, so it needs no explanatory label.
+        label: None,
         unit: info
             .get("currency")
             .and_then(Value::as_str)

@@ -81,6 +81,7 @@ fn parse_credits(body: &Value) -> Option<Credits> {
     let used = data.get("total_usage").and_then(as_f64).unwrap_or(0.0);
     Some(Credits {
         balance: granted - used,
+        label: None,
         unit: "USD".into(),
         used: Some(used),
         granted: Some(granted),

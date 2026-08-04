@@ -119,10 +119,12 @@
   });
   // The currency is the row's label, matching "5-hour" on a window row. The bar
   // column is dead space on a credit row, so the amount sits centred in it and
-  // the currency takes the number and label columns after it.
+  // the currency takes the number and label columns after it. A spend figure
+  // carries its own label ("Cost this month") and uses that instead, so the
+  // compact row never presents money spent as money remaining.
   const creditSummary = (credits) => ({
     amount: `${CURRENCY_SYMBOLS[credits.unit] ?? ''}${credits.balance.toFixed(2)}`,
-    label: credits.unit,
+    label: credits.label ?? credits.unit,
     level: 'ok',
   });
 

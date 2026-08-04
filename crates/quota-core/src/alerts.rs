@@ -163,6 +163,7 @@ mod tests {
             vec![],
             Some(Credits {
                 balance: 3.0,
+                label: None,
                 unit: "USD".into(),
                 used: None,
                 granted: None,
