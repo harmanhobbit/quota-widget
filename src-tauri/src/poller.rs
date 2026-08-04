@@ -66,6 +66,11 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
         }
     }
 
+    // Display order, applied once so the tooltip, the mini summary, and the
+    // main popup all agree. The tray icon's own status folds every account, so
+    // order cannot change it.
+    cfg.sort_snapshots(&mut fresh);
+
     // Tray icon: each account contributes the value its tray picker names —
     // the worst of its selected mini-summary headlines by default, or one
     // pinned headline. "None" opts the account out, while `tray_color` is the

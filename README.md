@@ -44,6 +44,17 @@ Platform differences are small but real:
   clicks — as does a *pinned* mini summary, which ignores click-away. An
   unpinned summary may fade all the way out, since clicking elsewhere
   dismisses it. A Settings checkbox turns the whole behaviour off.
+- **Account order** is yours by default: accounts appear in the order you
+  arranged them in Settings. Two Settings dropdowns can instead sort them by
+  usage (high→low or low→high) or by expiry (soonest or furthest reset), with a
+  second dropdown choosing *which* number sorts — the value the account
+  contributes to the tray icon, or its worst window regardless of which
+  headlines you selected. That choice also decides which window's reset time
+  the expiry orders use. Sorting applies to the main window, the mini summary,
+  and the tray tooltip alike, so the three never disagree. Accounts with no
+  such number — a credits-only balance, one pinned to "None", or one whose
+  fetch just failed — sink to the bottom in your own order rather than being
+  ranked on a number they don't have.
 - A background poller (default every 60 s) refreshes all enabled providers and
   fires alerts when usage *crosses* a threshold (edge-triggered — you get one
   toast at 80%, not one per poll). Toast, tray color, and auto-popup are each
