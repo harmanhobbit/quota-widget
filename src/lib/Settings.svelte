@@ -232,6 +232,9 @@
     const template = Object.entries(config.providers).find(([id, p]) => (p.kind ?? id) === newKind)?.[1];
     config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, mini_summary_metric: null, mini_summary_metrics: null, tray_metric: null, settings: $state.snapshot(template?.settings ?? {}) };
     ensureFlows();
+    // A brand-new account needs configuring, so open it rather than leaving a
+    // collapsed row that looks like nothing happened.
+    expanded[key] = true;
     newName = '';
     addingAccount = false;
   }
@@ -268,6 +271,15 @@
 
   // Which account's headline menu is open, so only one is ever up at a time.
   let openMetricMenu = $state('');
+
+  // Per-account disclosure state. Deliberately not persisted to config: with
+  // several accounts the panel is mostly scrolling, so every visit starts
+  // collapsed and the user opens the one they came for.
+  let expanded = $state({});
+
+  function toggleAccount(id) {
+    expanded[id] = !expanded[id];
+  }
 
   function toggleMetricMenu(id) {
     openMetricMenu = openMetricMenu === id ? '' : id;
@@ -364,17 +376,21 @@
       {#each Object.entries(config.providers) as [id, account], index (id)}
         {@const p = providerInfo(account.kind ?? id)}
         <div class="provider">
-          <div class="provider-header row">
+          <div class="provider-header row" class:collapsed={!expanded[id]}>
+            <button
+              class="provider-disclosure"
+              aria-expanded={expanded[id] === true}
+              onclick={() => toggleAccount(id)}
+            ><span class="chevron" class:open={expanded[id]}>▸</span> <strong>{account.label ?? p.name}</strong></button>
+            <span class="spacer"></span>
             <label class="inline">
               <input type="checkbox" bind:checked={account.enabled} />
               Enabled
             </label>
-            <strong>{account.label ?? p.name}</strong>
-            <span class="spacer"></span>
-            <button class="small" onclick={() => test(id)}>Test</button>
             <button class="small" title="Move account up" aria-label={`Move ${account.label ?? p.name} up`} disabled={index === 0} onclick={() => moveAccount(id, -1)}>↑</button>
             <button class="small" title="Move account down" aria-label={`Move ${account.label ?? p.name} down`} disabled={index === Object.keys(config.providers).length - 1} onclick={() => moveAccount(id, 1)}>↓</button>
           </div>
+          {#if expanded[id]}
           <p class="note">{p.note}</p>
           <label class="field">Account name <input maxlength="40" bind:value={account.label} placeholder={p.name} /></label>
           <div class="field metric-picker">
@@ -549,9 +565,14 @@
               {testResults[id].pending ? 'testing…' : testResults[id].msg}
             </p>
           {/if}
+          <!-- Test sits with the credential controls it exercises, not up in
+               the header: it only makes sense once an account is open. -->
           <div class="provider-footer">
+            <button class="small" onclick={() => test(id)}>Test</button>
+            <span class="spacer"></span>
             <button class="small" onclick={() => removeAccount(id)}>Remove account</button>
           </div>
+          {/if}
           </div>
       {/each}
     </section>

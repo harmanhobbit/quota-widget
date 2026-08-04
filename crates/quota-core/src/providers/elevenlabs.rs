@@ -88,13 +88,11 @@ fn parse_window(body: &Value) -> Option<UsageWindow> {
     if limit <= 0.0 {
         return None;
     }
-    let tier = body.get("tier").and_then(|v| v.as_str());
     Some(UsageWindow {
         metric_id: "monthly_credits".into(),
-        label: match tier {
-            Some(t) if !t.is_empty() => format!("Credits ({t})"),
-            _ => "Credits".into(),
-        },
+        // The plan name is available in the response, but repeating it here
+        // wastes the compact quota label's limited space.
+        label: "Credits".into(),
         // Plans with credit-limit extension enabled can exceed the limit; the
         // model tolerates >100 and the UI clamps its own bars.
         used_pct: used / limit * 100.0,
@@ -124,7 +122,7 @@ mod tests {
     fn parses_documented_shape() {
         let w = parse_window(&sample()).unwrap();
         assert_eq!(w.metric_id, "monthly_credits");
-        assert_eq!(w.label, "Credits (starter)");
+        assert_eq!(w.label, "Credits");
         assert!((w.used_pct - 10.0).abs() < 1e-9);
         assert!(w.resets_at.is_some());
         assert!(!w.informational);
@@ -138,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn untiered_response_still_labels() {
+    fn tier_does_not_change_the_compact_label() {
         let mut body = sample();
         body["tier"] = serde_json::json!("");
         assert_eq!(parse_window(&body).unwrap().label, "Credits");

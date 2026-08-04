@@ -469,9 +469,40 @@ button.primary {
   border-bottom: 1px solid var(--border);
 }
 
+/* Collapsed, the rule would underline nothing. */
+.provider-header.collapsed {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+/* The account name doubles as the disclosure control, so it has to lose every
+   button affordance and read as the heading it looks like. */
+.provider-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.provider-disclosure .chevron {
+  color: var(--muted);
+  font-size: 10px;
+  transition: transform 120ms ease;
+}
+
+.provider-disclosure .chevron.open {
+  transform: rotate(90deg);
+}
+
 .provider-footer {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--border);
