@@ -17,6 +17,7 @@ use crate::model::{FetchError, UsageSnapshot};
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Everything an adapter needs to fetch: shared HTTP client, the user's home
@@ -25,6 +26,10 @@ use std::time::Duration;
 pub struct ProviderCtx {
     pub http: reqwest::Client,
     pub home: PathBuf,
+    /// The host-owned directory containing config.json and durable adapter
+    /// state such as monthly-spend baselines.
+    pub config_dir: PathBuf,
+    pub spend_baselines: Arc<crate::spend_baseline::SpendBaselines>,
     pub secrets: HashMap<String, String>,
     pub config: Config,
     /// Called when an adapter rotates a stored credential (e.g. an OAuth
@@ -33,7 +38,12 @@ pub struct ProviderCtx {
 }
 
 impl ProviderCtx {
-    pub fn new(home: PathBuf, secrets: HashMap<String, String>, config: Config) -> Self {
+    pub fn new(
+        home: PathBuf,
+        config_dir: PathBuf,
+        secrets: HashMap<String, String>,
+        config: Config,
+    ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .user_agent("quota-widget/0.1")
@@ -42,6 +52,10 @@ impl ProviderCtx {
         Self {
             http,
             home,
+            spend_baselines: Arc::new(crate::spend_baseline::SpendBaselines::new(
+                config_dir.clone(),
+            )),
+            config_dir,
             secrets,
             config,
             on_secret_update: None,

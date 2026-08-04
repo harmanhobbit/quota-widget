@@ -48,16 +48,7 @@ pub(crate) fn spend_snapshot(
         Some(budget) => UsageSnapshot::ok(
             id,
             name,
-            vec![UsageWindow {
-                metric_id: "monthly_spend".into(),
-                label: "Monthly spend".into(),
-                // Overspend is entirely possible — a budget is the user's
-                // intention, not a cap the provider enforces.
-                used_pct: spend / budget * 100.0,
-                resets_at: Some(end),
-                period_start: Some(start),
-                ..Default::default()
-            }],
+            vec![monthly_spend_window(spend, budget, start, end)],
             None,
         ),
         None => UsageSnapshot::ok(
@@ -77,6 +68,26 @@ pub(crate) fn spend_snapshot(
     }
 }
 
+/// The target window shared by spend-only providers and providers which keep
+/// an actual credit balance alongside a user-set monthly target.
+pub(crate) fn monthly_spend_window(
+    spend: f64,
+    budget: f64,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> UsageWindow {
+    UsageWindow {
+        metric_id: "monthly_spend".into(),
+        label: "Monthly spend".into(),
+        // Overspend is entirely possible — a budget is the user's intention,
+        // not a cap the provider enforces.
+        used_pct: spend / budget * 100.0,
+        resets_at: Some(end),
+        period_start: Some(start),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,16 +96,28 @@ mod tests {
     fn month_bounds_span_the_calendar_month() {
         let now: DateTime<Utc> = "2026-08-04T12:00:00Z".parse().unwrap();
         let (start, end) = month_bounds(now).unwrap();
-        assert_eq!(start, "2026-08-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap());
-        assert_eq!(end, "2026-09-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap());
+        assert_eq!(
+            start,
+            "2026-08-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+        assert_eq!(
+            end,
+            "2026-09-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
     }
 
     #[test]
     fn december_rolls_into_the_next_year() {
         let now: DateTime<Utc> = "2026-12-20T00:00:00Z".parse().unwrap();
         let (start, end) = month_bounds(now).unwrap();
-        assert_eq!(start, "2026-12-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap());
-        assert_eq!(end, "2027-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap());
+        assert_eq!(
+            start,
+            "2026-12-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+        assert_eq!(
+            end,
+            "2027-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
     }
 
     #[test]

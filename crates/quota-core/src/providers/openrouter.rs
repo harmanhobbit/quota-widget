@@ -1,8 +1,10 @@
 //! OpenRouter credits via the official, documented API. The one adapter with
 //! no caveats: paste an API key in settings and it works.
 
+use super::spend::{month_bounds, monthly_budget, monthly_spend_window};
 use super::{as_f64, network_err, Provider, ProviderCtx};
 use crate::model::{Credits, FetchError, UsageSnapshot};
+use chrono::Utc;
 use serde_json::Value;
 
 pub struct OpenRouter {
@@ -66,10 +68,25 @@ impl Provider for OpenRouter {
         let body: Value = resp.json().await.map_err(network_err)?;
         let credits = parse_credits(&body)
             .ok_or_else(|| FetchError::Parse("credits response missing totals".into()))?;
+        let mut windows = Vec::new();
+        if let Some(budget) = monthly_budget(&ctx.config, &self.key) {
+            let now = Utc::now();
+            let (start, end) = month_bounds(now).ok_or_else(|| {
+                FetchError::Parse("could not determine the current billing month".into())
+            })?;
+            // `total_usage` is lifetime cumulative, so it needs a durable
+            // month-start reading rather than pretending its total is monthly.
+            let spend = ctx.spend_baselines.cumulative_spend(
+                &self.key,
+                credits.used.unwrap_or_default(),
+                now,
+            );
+            windows.push(monthly_spend_window(spend, budget, start, end));
+        }
         Ok(UsageSnapshot::ok(
             self.id(),
             self.name(),
-            vec![],
+            windows,
             Some(credits),
         ))
     }
