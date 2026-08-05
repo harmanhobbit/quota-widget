@@ -3,7 +3,7 @@
 A system-tray widget for **Windows 11 and Linux** that watches your AI provider
 allowances in one place: Claude's rolling 5-hour window and weekly cap, Codex's
 weekly allowance, Hermes Portal credits, OpenRouter credits, ElevenLabs
-credits, Firecrawl credits, DeepSeek and Moonshot balances, and Fireworks, Anthropic and
+credits, Firecrawl credits, DeepSeek, Moonshot and OneHop balances, and Fireworks, Anthropic and
 OpenAI organization spend. It collapses to
 the tray and pops up as a compact always-on-top window.
 
@@ -71,6 +71,7 @@ Platform differences are small but real:
 | **Firecrawl** | An API key from [firecrawl.dev/app/api-keys](https://firecrawl.dev/app/api-keys) | Official `GET /v2/team/credit-usage` API. Shows the billing cycle's plan credits as a usage window — spent vs. granted, labelled “Credits”. The response carries both ends of the billing period, so the period-progress marker is exact rather than inferred. |
 | **DeepSeek** | An API key from [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | Official `GET /user/balance` API. Shows the remaining balance in the account's own currency (CNY or USD); if an account reports both, USD is displayed. DeepSeek reports only what remains, never what was spent, so the card shows a balance without a usage percentage. |
 | **Moonshot / Kimi** | An API key from [platform.kimi.ai](https://platform.kimi.ai) | Official `GET /v1/users/me/balance` API. Shows `available_balance` in USD — the figure that actually gates calls, since Moonshot rejects requests with `exceeded_current_quota_error` once it hits zero. **Keys are platform-specific:** `platform.kimi.ai` and `platform.kimi.com` issue independent keys and a key from one returns 401 against the other, so a `.com` key needs **Balance URL** in Settings pointed at that host. |
+| **OneHop** | An API key from the OneHop console | `GET /v1/user/balance` — the gateway's prepaid wallet balance in USD, so it renders as a plain balance with no percentage. **Undocumented:** OneHop's published docs describe the wallet but specify no endpoint for it, so this may change without notice. It is still the right route — the console's own billing page authenticates with a full-access session cookie, while this answers to a scoped API key. |
 | **Fireworks** | An API key from [fireworks.ai/account/api-keys](https://fireworks.ai/account/api-keys), plus your **account ID** | Official `GET /v1/accounts/{account_id}/billingUsage` API, summing serverless, dedicated and training costs for the calendar month to date. Fireworks reports *spend*, not a balance or an allowance, so there is no percentage unless you say what a full month looks like: set an optional **Monthly budget** and the card shows spend against it as a usage window (with tray colour, thresholds and a period marker); leave it blank and the card shows month-to-date spend as a plain figure. Overspending a budget reads past 100% — it's your intention, not a cap Fireworks enforces. |
 | **Anthropic Admin** | An **admin** key (`sk-ant-admin…`) from Console → Settings → Admin keys | Official `GET /v1/organizations/cost_report` API, summing the daily cost buckets for the calendar month to date. Needs an admin key, not a normal API key, and the Admin API is unavailable on individual accounts. Like Fireworks it reports *spend*: set a **Monthly budget** to see it as a usage window, or leave it blank for a plain "Cost this month" figure. Note Priority Tier spend is excluded by the API itself. |
 | **OpenAI Admin** | An organization **Admin** key from [platform.openai.com/settings/organization/admin-keys](https://platform.openai.com/settings/organization/admin-keys) | Official `GET /v1/organization/costs` API, summing the daily cost buckets for the calendar month to date. Needs an admin key, not a normal API key. Same spend framing and **Monthly budget** option as the other spend providers. |
@@ -104,7 +105,7 @@ been seen from a **live account** — worth knowing before you trust a number.
   meaningful non-zero reading, so the arithmetic and formatting are exercised,
   not just the plumbing.
 - **Reached successfully, but only on an unused account reporting $0.00:**
-  DeepSeek, Moonshot, Fireworks, OpenAI Admin. This confirms the key is
+  DeepSeek, Moonshot, OneHop, Fireworks, OpenAI Admin. This confirms the key is
   accepted, the endpoint is right, and the response parses — but a zero says
   nothing about whether a non-zero amount is scaled correctly.
 - **Not yet run against a live account:** Anthropic Admin.

@@ -2,6 +2,7 @@ pub mod anthropic_admin;
 pub mod claude;
 pub mod codex;
 pub mod deepseek;
+pub mod onehop;
 pub mod elevenlabs;
 pub mod firecrawl;
 pub mod fireworks;
@@ -87,6 +88,7 @@ pub fn adapter_kinds() -> &'static [(&'static str, &'static str)] {
         ("firecrawl", "Firecrawl"),
         ("deepseek", "DeepSeek"),
         ("moonshot", "Moonshot"),
+        ("onehop", "OneHop"),
         ("fireworks", "Fireworks"),
         ("anthropic_admin", "Anthropic Admin"),
         ("openai_admin", "OpenAI Admin"),
@@ -130,6 +132,11 @@ pub fn providers_for(cfg: &Config) -> Vec<Box<dyn Provider>> {
                     key.clone(),
                     label,
                     &moonshot::SPEC,
+                )) as Box<dyn Provider>),
+                "onehop" => Some(Box::new(simple_credits::SimpleCredits::new(
+                    key.clone(),
+                    label,
+                    &onehop::SPEC,
                 )) as Box<dyn Provider>),
                 "fireworks" => {
                     Some(Box::new(fireworks::Fireworks::new(key.clone(), label))
@@ -252,6 +259,7 @@ mod tests {
                 "firecrawl",
                 "deepseek",
                 "moonshot",
+                "onehop",
                 "fireworks",
                 "anthropic_admin",
                 "openai_admin",
