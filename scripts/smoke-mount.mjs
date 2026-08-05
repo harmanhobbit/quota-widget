@@ -329,6 +329,41 @@ const CASES = [
       }
     },
   },
+  // An update with a download for this platform offers Install; one without —
+  // the *nix case, where releases are Windows-only — must offer the upgrade
+  // instructions instead, and must never render an install button it cannot
+  // honour.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    update: {
+      available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
+      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe',
+    },
+    expect: ['Update available: v0.2.0', 'Install update'],
+    verify: async ({ target }) => {
+      const install = [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Install update');
+      if (!install) throw new Error('an installable update offered no Install button');
+      install.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (!globalThis.__SMOKE_INSTALLED__) throw new Error('Install update did not reach downloadAndInstall');
+    },
+  },
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    update: {
+      available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
+      pub_date: '2026-08-05T09:21:10Z', url: null,
+    },
+    expect: ['Update available: v0.2.0', 'nix profile upgrade quota-widget'],
+    verify: async ({ target }) => {
+      const install = [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Install update');
+      if (install) throw new Error('offered Install for a release with no download for this platform');
+    },
+  },
   {
     file: 'src/lib/ProviderCard.svelte',
     props: () => ({ snap: structuredClone(SNAPSHOTS[0]) }),
@@ -376,10 +411,19 @@ export async function invoke(cmd, args) {
     case 'has_secret': return false;
     case 'on_wayland': return true;
     case 'set_config': globalThis.__SMOKE_LAST_CONFIG__ = args.config; return null;
+    case 'update_status': case 'check_update_now': return globalThis.__SMOKE_UPDATE__ ?? null;
     default: return null;
   }
 }`);
   w('@tauri-apps/api/event.js', `export async function listen() { return () => {}; }`);
+  // Settings imports this lazily when Install update is pressed. Stubbed so the
+  // button can be exercised without a real updater or a real download.
+  mkdirSync(join(WORK, '@tauri-apps/plugin-updater'), { recursive: true });
+  w('@tauri-apps/plugin-updater/index.js', `
+export async function check() {
+  if (globalThis.__SMOKE_UPDATE_CHECK_NULL__) return null;
+  return { downloadAndInstall: async () => { globalThis.__SMOKE_INSTALLED__ = true; } };
+}`);
   w('@tauri-apps/api/window.js', `
 export function getCurrentWindow() {
   return { setSize: async () => {}, outerPosition: async () => ({x:0,y:0}), scaleFactor: async () => 1 };
@@ -399,6 +443,12 @@ function build(rel) {
   const { js } = compile(src, { generate: 'client', filename: rel });
   let code = js.code.replace(/(from\s+')@tauri-apps\/api\/([\w-]+)(')/g, (_m, a, mod, z) => {
     const target = relative(dirname(rel), `@tauri-apps/api/${mod}.js`);
+    return `${a}${target.startsWith('.') ? target : './' + target}${z}`;
+  });
+  // Settings pulls the updater in with a dynamic import() rather than a static
+  // `from`, so it needs its own rewrite or the specifier reaches Node bare.
+  code = code.replace(/(import\(\s*')@tauri-apps\/([\w-]+)('\s*\))/g, (_m, a, pkg, z) => {
+    const target = relative(dirname(rel), `@tauri-apps/${pkg}/index.js`);
     return `${a}${target.startsWith('.') ? target : './' + target}${z}`;
   });
   // Recurse into sibling component imports so App pulls in its children.
@@ -438,6 +488,8 @@ for (const c of CASES) {
     globalThis.__SMOKE_SNAPSHOTS_ERROR__ = Boolean(c.snapshotsError);
     globalThis.__SMOKE_CONFIG__ = c.config ? { snapshots: SNAPSHOTS, config: c.config } : undefined;
     globalThis.__QUOTA_WIDGET_BRANCH__ = c.buildBranch ?? '';
+    globalThis.__SMOKE_UPDATE__ = c.update ?? null;
+    globalThis.__SMOKE_INSTALLED__ = false;
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle
@@ -462,6 +514,7 @@ for (const c of CASES) {
   try { unmount(app); } catch {}
   globalThis.__SMOKE_SNAPSHOTS_ERROR__ = false;
   globalThis.__SMOKE_CONFIG__ = undefined;
+  globalThis.__SMOKE_UPDATE__ = null;
   target.remove();
 }
 

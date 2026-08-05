@@ -27,6 +27,7 @@
   let appVersion = $state('');
   let updateInfo = $state(null);
   let checkingForUpdate = $state(false);
+  let installState = $state('');
   let secretInputs = $state({});
   let secretStored = $state({});
   let testResults = $state({});
@@ -93,6 +94,27 @@
     // Branch builds and older shells have no update state. Treat both as a
     // quiet absence so a missing IPC command cannot break the Settings pane.
     updateInfo = status?.available ? status : null;
+  }
+
+  async function installUpdate() {
+    // Imported lazily: the mini window shares this bundle but has no updater
+    // permission, so a top-level import would pull install code into a context
+    // that must never be able to run it.
+    installState = 'Downloading…';
+    try {
+      const { check } = await import('@tauri-apps/plugin-updater');
+      const update = await check();
+      if (!update) {
+        installState = 'No update found.';
+        return;
+      }
+      // The app exits partway through the Windows install, so this message is
+      // the last thing the user sees from us — say so before it happens.
+      installState = 'Installing — the app will close and reopen…';
+      await update.downloadAndInstall();
+    } catch (e) {
+      installState = `Update failed: ${e}`;
+    }
   }
 
   async function checkUpdateNow() {
@@ -724,6 +746,14 @@
           <span class="note">Update available: v{updateInfo.latest}</span>
         {/if}
       </div>
+      {#if updateInfo?.url}
+        <!-- Only offered when the release published something this build can
+             install. Elsewhere the note below explains the real upgrade path. -->
+        <div class="row">
+          <button class="small" onclick={installUpdate} disabled={!!installState}>Install update</button>
+          {#if installState}<span class="note">{installState}</span>{/if}
+        </div>
+      {/if}
       {#if updateInfo && !updateInfo.url}
         <!-- A release exists but published nothing this build can install —
              *nix, where releases are Windows-only. Say how to upgrade rather
