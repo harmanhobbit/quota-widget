@@ -147,6 +147,8 @@ pub struct Config {
     /// Let scrolling over a window fade its painted shell. The level itself is
     /// deliberately ephemeral so reopening the widget never leaves it hidden.
     pub scroll_opacity: bool,
+    /// Check the public distribution manifest for a newer released build.
+    pub check_updates: bool,
     /// Display order for the account list. Defaults to `Manual`, so an existing
     /// config.json that predates this field keeps its hand-arranged order.
     pub sort_order: SortOrder,
@@ -192,6 +194,7 @@ impl Default for Config {
             hide_on_blur: false,
             mini_summary_bars: true,
             scroll_opacity: true,
+            check_updates: true,
             sort_order: SortOrder::default(),
             sort_basis: SortBasis::default(),
             providers,
@@ -558,6 +561,7 @@ mod tests {
         assert_eq!(cfg.providers["claude"].kind, None);
         assert_eq!(cfg.providers["claude"].label, None);
         assert!(cfg.scroll_opacity);
+        assert!(cfg.check_updates);
     }
 
     /// Every pre-v2 headline setting has to land on the equivalent list, or an

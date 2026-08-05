@@ -25,6 +25,8 @@
   const settingsConfig = () => $state.snapshot(initialConfig);
   let config = $state(settingsConfig());
   let appVersion = $state('');
+  let updateInfo = $state(null);
+  let checkingForUpdate = $state(false);
   let secretInputs = $state({});
   let secretStored = $state({});
   let testResults = $state({});
@@ -61,6 +63,7 @@
     // would leave the selects blank and then save `null` back to Rust.
     config.sort_order ??= 'manual';
     config.sort_basis ??= 'icon';
+    config.check_updates ??= true;
     // Normalize configured accounts only. Do not recreate removed defaults.
     for (const account of Object.values(config.providers)) {
       account.settings ??= {};
@@ -73,6 +76,7 @@
     }
     ensureFlows();
     invoke('app_version').then((version) => (appVersion = version)).catch(() => {});
+    invoke('update_status').then(setUpdateStatus).catch(() => {});
     for (const [id, account] of Object.entries(config.providers)) {
       const p = providerInfo(account.kind ?? id);
       if (p.secret) secretStored[id] = await invoke('has_secret', { provider: id });
@@ -85,9 +89,27 @@
     onWayland = await invoke('on_wayland');
   }
 
+  function setUpdateStatus(status) {
+    // Branch builds and older shells have no update state. Treat both as a
+    // quiet absence so a missing IPC command cannot break the Settings pane.
+    updateInfo = status?.available ? status : null;
+  }
+
+  async function checkUpdateNow() {
+    checkingForUpdate = true;
+    try {
+      setUpdateStatus(await invoke('check_update_now'));
+    } catch {
+      // The Tauri half lands independently; no updater is not a UI error.
+    } finally {
+      checkingForUpdate = false;
+    }
+  }
+
   onMount(() => {
     void initialiseSettings();
     let unlisten;
+    let unlistenUpdate;
     listen('codex-oauth', (e) => {
       const flow = codexFor(e.payload.provider);
       if (e.payload.ok) {
@@ -98,6 +120,9 @@
         flow.status = e.payload.error;
       }
     }).then((stop) => (unlisten = stop));
+    listen('update', (e) => setUpdateStatus(e.payload))
+      .then((stop) => (unlistenUpdate = stop))
+      .catch(() => {});
     // App binds Escape to leaving Settings. Capture phase so an open headline
     // menu swallows the first press instead of the whole screen closing.
     const escape = (event) => {
@@ -109,6 +134,7 @@
     window.addEventListener('keydown', escape, true);
     return () => {
       unlisten?.();
+      unlistenUpdate?.();
       window.removeEventListener('keydown', escape, true);
     };
   });
@@ -676,7 +702,16 @@
       </div>
       <p class="note">Ordering applies to the main window, the mini summary, and the tray tooltip alike. Accounts with no matching number — a credits-only balance, or an account that isn't in the tray — stay at the bottom in your own order.</p>
       <label class="row"><input type="checkbox" bind:checked={config.mini_summary_bars} /> Show usage bars in the mini summary</label>
+      <label class="row"><input type="checkbox" bind:checked={config.check_updates} /> Check for updates</label>
       <label class="row"><input type="checkbox" bind:checked={config.scroll_opacity} /> Fade windows when scrolling over them</label>
+      <div class="row">
+        {#if updateInfo}
+          <span class="note">Update available: v{updateInfo.latest}</span>
+        {/if}
+        <button class="small" onclick={checkUpdateNow} disabled={checkingForUpdate}>
+          {checkingForUpdate ? 'Checking…' : 'Check now'}
+        </button>
+      </div>
       <p class="note">Esc, ✕, and the tray icon always hide the widget. This extra click-away dismiss can occasionally fight window dragging.</p>
       {#if onWayland}
         <p class="note">
