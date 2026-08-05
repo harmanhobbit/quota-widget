@@ -708,8 +708,11 @@
       </div>
       <p class="note">Ordering applies to the main window, the mini summary, and the tray tooltip alike. Accounts with no matching number — a credits-only balance, or an account that isn't in the tray — stay at the bottom in your own order.</p>
       <label class="row"><input type="checkbox" bind:checked={config.mini_summary_bars} /> Show usage bars in the mini summary</label>
-      <label class="row"><input type="checkbox" bind:checked={config.check_updates} /> Check for updates</label>
       <label class="row"><input type="checkbox" bind:checked={config.scroll_opacity} /> Fade windows when scrolling over them</label>
+      <!-- Update controls sit together at the end of the list: the checkbox,
+           its Check now button, and the banner are one subject, and splitting
+           the toggle from its button read as three unrelated settings. -->
+      <label class="row"><input type="checkbox" bind:checked={config.check_updates} /> Check for updates</label>
       <div class="row">
         {#if updateInfo}
           <span class="note">Update available: v{updateInfo.latest}</span>

@@ -200,6 +200,15 @@ and optionally enable **Start on login** (a `HKCU` run entry on Windows, an XDG
 autostart entry on Linux — no admin rights needed either way). Updating =
 replacing the EXE; on Nix, `nix profile upgrade`.
 
+**Published releases are Windows-only.** A Linux build links the host's GTK3 and
+WebKitGTK rather than bundling them, so there is no single binary that runs
+across distributions — hence the flake, which pins them. The in-app update check
+is Windows-only to match: `updates.rs` asks the manifest for `linux-x86_64`,
+which no release publishes, so a Linux build reports no update rather than
+offering one it cannot install. Adding an AppImage or `.deb` to `release.yml`
+is the route if that changes; both are Tauri bundle targets and would build on
+a 1x-metered Linux runner.
+
 ### Releases and update checks
 
 This repo is private, so releases are published to the public
