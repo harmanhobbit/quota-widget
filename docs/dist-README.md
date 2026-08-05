@@ -77,9 +77,26 @@ Right-click the tray icon → **Settings**, enable the providers you use, paste
 any API keys, and set your thresholds. Optionally turn on **Start on login** — a
 `HKCU` run entry on Windows, needing no admin rights.
 
+### Where your API keys go
+
 Secrets (API keys, cookies, OAuth tokens) go into the **Windows Credential
 Manager**, never to disk in plaintext. Configuration lives at
-`%APPDATA%\quota-widget\config.json`.
+`%APPDATA%\quota-widget\config.json`, which holds no secrets.
+
+Credential Manager encrypts entries with DPAPI, tied to your Windows account.
+Another user on the same machine cannot read them, and they are not recoverable
+from a stolen disk or a file-level backup. They *are* readable by anything
+running as you, since DPAPI unwraps automatically for your own session — the
+same model the GitHub CLI and the Claude and Codex CLIs use. So this protects
+against other accounts and offline access, not against malware you are running.
+
+The keys never leave the app except to the provider they belong to. They are
+not sent anywhere else, and the app's own update check talks only to this
+repository's release manifest and carries no credentials.
+
+Worth judging what you paste in accordingly: a read-only usage key is a very
+different prospect from an organization admin key, and the Anthropic Admin and
+OpenAI Admin providers deliberately require the latter.
 
 ## Updates
 
