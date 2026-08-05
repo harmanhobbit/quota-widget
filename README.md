@@ -205,9 +205,13 @@ replacing the EXE; on Nix, `nix profile upgrade`.
 This repo is private, so releases are published to the public
 [`harmanhobbit/quota-widget-dist`](https://github.com/harmanhobbit/quota-widget-dist)
 repo: pushing a `v*.*.*` tag runs `release.yml`, which builds a signed NSIS
-installer and uploads it, its `.sig`, and a `latest.json` manifest. The tag must
-match the workspace `Cargo.toml` version — CI refuses to publish a mislabelled
-tree. A `workflow_dispatch` defaults to a **dry run**: it builds and signs, then
+installer and uploads it, its `.sig`, the portable EXE (renamed
+`QuotaWidget_<version>_x64-portable.exe`, since an asset name is its download
+URL and a bare `quota-widget.exe` reads identically across every release), and
+a `latest.json` manifest. It also republishes `docs/dist-README.md` as that
+repo's landing page, so the public download instructions cannot drift from what
+ships — edit that file, not the dist repo directly. The tag must match the
+workspace `Cargo.toml` version — CI refuses to publish a mislabelled tree. A `workflow_dispatch` defaults to a **dry run**: it builds and signs, then
 attaches the manifest and installer as workflow artifacts instead of publishing,
 which is the safe way to exercise the signing key end to end.
 
