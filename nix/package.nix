@@ -56,6 +56,13 @@ rustPlatform.buildRustPackage rec {
       root = ../.;
       fileset = lib.fileset.unions [ ../package.json ../package-lock.json ];
     };
+    # STALE — must be regenerated before the next Nix build. Adding
+    # @tauri-apps/plugin-updater to package.json changed the npm closure, and
+    # the agent that made that change had no nix on its host, so it could not
+    # compute the new value. Get it with:
+    #   nix build .#quota-widget   (the error prints the correct `got:` hash)
+    # or: prefetch-npm-deps package-lock.json
+    # The value below is the pre-update one and WILL fail with a hash mismatch.
     hash = "sha256-XqkPzGXTWiJU3l0M2YvNOFNw29nCDhc2HEI7zR6HY34=";
   };
 

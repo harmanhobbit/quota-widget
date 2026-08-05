@@ -24,7 +24,11 @@ pub fn is_newer(current: &str, candidate: &str) -> bool {
 pub struct UpdateInfo {
     pub current: String,
     pub latest: String,
-    pub url: String,
+    /// Download for *this* platform, when the release published one. `None`
+    /// means a newer version exists but not in a form this build can install —
+    /// the *nix case, where releases are Windows-only and upgrading goes
+    /// through the package manager the app was installed with.
+    pub url: Option<String>,
     pub notes: String,
     pub pub_date: String,
     pub available: bool,
@@ -43,16 +47,18 @@ impl UpdateInfo {
         validate_version(&manifest.version)?;
         chrono::DateTime::parse_from_rfc3339(&manifest.pub_date)
             .map_err(|_| UpdateError::InvalidPubDate(manifest.pub_date.clone()))?;
-        let platform = manifest
-            .platforms
-            .get(target)
-            .ok_or_else(|| UpdateError::MissingPlatform(target.to_owned()))?;
+        // A missing platform entry is not an error. The version, and therefore
+        // "is something newer out there", is platform-independent; only the
+        // download is not. Treating absence as a failure meant a *nix build
+        // reported nothing at all, when what it wants is exactly the flag
+        // without an install path.
+        let url = manifest.platforms.get(target).map(|p| p.url.clone());
 
         Ok(Self {
             available: is_newer(&current, &manifest.version),
             current,
             latest: manifest.version,
-            url: platform.url.clone(),
+            url,
             notes: manifest.notes,
             pub_date: manifest.pub_date,
         })
@@ -86,8 +92,6 @@ pub enum UpdateError {
     InvalidVersion(String),
     #[error("pub_date must be RFC 3339: {0}")]
     InvalidPubDate(String),
-    #[error("update manifest has no platform entry for {0}")]
-    MissingPlatform(String),
 }
 
 fn validate_version(version: &str) -> Result<(), UpdateError> {
@@ -153,12 +157,31 @@ mod tests {
             UpdateInfo {
                 current: "0.9.0".into(),
                 latest: "0.10.0".into(),
-                url: "https://example.test/setup.exe".into(),
+                url: Some("https://example.test/setup.exe".into()),
                 notes: "See the release page.".into(),
                 pub_date: "2026-08-05T09:21:10Z".into(),
                 available: true,
             }
         );
+    }
+
+    /// The *nix case: releases are Windows-only, so this build finds no
+    /// download for itself but must still learn that a newer version exists.
+    #[test]
+    fn reports_the_version_when_this_platform_has_no_download() {
+        let info = UpdateInfo::from_latest_json("0.9.0", MANIFEST, "linux-x86_64").unwrap();
+        assert!(info.available);
+        assert_eq!(info.latest, "0.10.0");
+        assert_eq!(info.url, None);
+    }
+
+    /// ...and an unavailable update stays unavailable regardless of platform,
+    /// so a missing download can never be mistaken for one.
+    #[test]
+    fn no_download_does_not_invent_an_update() {
+        let info = UpdateInfo::from_latest_json("0.10.0", MANIFEST, "linux-x86_64").unwrap();
+        assert!(!info.available);
+        assert_eq!(info.url, None);
     }
 
     #[test]
@@ -176,8 +199,8 @@ mod tests {
             Err(UpdateError::InvalidVersion(_))
         ));
         assert!(matches!(
-            UpdateInfo::from_latest_json("0.9.0", MANIFEST, "linux-x86_64"),
-            Err(UpdateError::MissingPlatform(_))
+            UpdateInfo::from_latest_json("0.9.0", &MANIFEST.replace("09:21:10Z", "whenever"), "windows-x86_64"),
+            Err(UpdateError::InvalidPubDate(_))
         ));
     }
 }

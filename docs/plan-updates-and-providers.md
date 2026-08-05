@@ -37,12 +37,14 @@ next by Ian's request; like Tailscale it blocks nothing and is blocked by
 nothing. All three sat ahead of the update chain because that chain was gated on
 manual steps only Ian could take (creating the dist repo, generating the signing
 key, adding the Actions secrets), so putting unblocked work first kept things
-moving while that was set up. That gate is now lifted — see the update-detection
-section. Update detection is then the foundation both the
-Windows installer and the Nix prompt build on — those three are a strict chain
-and must ship in that order. The providers are independent of everything,
-including each other, and can be reordered freely or interleaved with the update
-chain.
+moving while that was set up. That gate was lifted on 2026-08-05. Update
+detection then shipped as the foundation the Windows installer builds on; the
+third link, the Nix prompt, was superseded rather than built (see its section).
+The providers were independent of everything, including each other, and are all
+shipped.
+
+**This ordering is now history.** Every item below is done except Linux
+distribution, which the plan never scheduled.
 
 ---
 
@@ -370,8 +372,8 @@ must land the helper before Claude's side starts.
 
 ### Upstream update detection — implemented, awaiting a release tag
 
-**Next available minor.** First of the three-step update chain; nothing below it
-can start until this ships.
+**Shipped as 0.17.0.** First of what was then a three-step update chain;
+nothing below it could start until it shipped.
 
 **Status.** Built on `feat/update-detection`. `release.yml` publishes to the
 dist repo; `quota_core::update` parses the manifest; `src-tauri/src/updates.rs`
@@ -460,10 +462,19 @@ copy in `src-tauri`. Land `update.rs` before the `AppState` wiring starts.
 **Owner: Codex** (core crate, config, Settings) with **Claude** on the workflow
 and the `AppState`/IPC wiring.
 
-### Native Windows update
+### Native Windows update — implemented, unmerged
 
 **Next available minor after update detection**, which it builds directly on —
 it consumes that feature's `latest.json` manifest and cannot ship before it.
+
+**Status.** Built on `feat/windows-installer`, alongside the `UpdateInfo.url`
+change described under detection. Two things gate merging: `npmDeps.hash` in
+`nix/package.nix` is stale (adding `@tauri-apps/plugin-updater` changed the npm
+closure, and the agent that made the change had no `nix` to recompute it), and
+`src-tauri` has never been compiled with the plugin registered — dispatch
+`build.yml` on the branch before merging. Note the *first* release built from
+this code can only update the release *after* it; an installed 0.17.1 predates
+the Install button.
 
 - `src-tauri/Cargo.toml` — add `tauri-plugin-updater`, registered in
   `lib.rs`'s builder chain alongside the existing plugins
@@ -493,23 +504,61 @@ it consumes that feature's `latest.json` manifest and cannot ship before it.
 
 **Owner: Claude** (Tauri shell, capabilities, `tauri.conf.json`).
 
-### Nix-aware update prompt
+### Nix-aware update prompt — superseded; delivered by another route
 
-**Next available minor after the Windows installer.** Update detection reports a
-new version everywhere; this makes the *instruction* correct per install method,
-and gives Nix the prompt Ian asked for.
+This was specced as its own minor: classify the install from
+`std::env::current_exe()`, and vary the upgrade instruction per install method.
+It is **not being built as specced**, because the work it existed to do landed
+incidentally and the premise it rested on turned out to be wrong.
 
-- `src-tauri/src/lib.rs` — classify the install: `std::env::current_exe()`
-  starting with `/nix/store/` means a Nix build. Expose it through the existing
-  `update_status` payload rather than a new command.
-- `src/lib/Settings.svelte` / `src/App.svelte` — Nix shows the exact command
-  (`nix profile upgrade quota-widget`) as selectable text, reusing the
-  `.note code` style already used for `GDK_BACKEND=x11`
-  (`styles.css:217-227`); non-Nix Linux shows a release link; Windows shows
-  the Windows install button.
-- `README.md` — an update matrix beside the existing platform-differences table.
+**The premise.** The section opens "update detection reports a new version
+everywhere". It did not. A *nix build asked the manifest for a `linux-x86_64`
+key that no release publishes, got `MissingPlatform`, and reported nothing at
+all — so a prompt keyed on an available update could never have fired. That
+bug is fixed (`UpdateInfo.url` is now `Option<String>`, and a missing platform
+entry yields the version without a download rather than an error), which is
+what made any of this reachable.
 
-**Owner: Codex.**
+**What shipped instead.** Settings branches on *whether this release published
+something this build can install*, not on how the app was installed:
+
+- a download exists → **Install update** (Windows today);
+- none does → "Upgrade the way you installed it — on Nix,
+  `nix profile upgrade quota-widget`".
+
+That is the better cut. A Nix build and a hypothetical `.deb` build both want
+"upgrade however you installed this"; the install method only earns a branch of
+its own when the *wording* must differ, which it does not yet.
+
+**What is genuinely still open**, and it is small:
+
+- A `/nix/store/` check would let the non-Nix Linux case say something more
+  useful than the Nix command. Worth doing only once a Linux artifact exists —
+  see below.
+- The README update matrix was never written. Both READMEs now describe the
+  behaviour in prose, which may be enough.
+
+Neither is a minor. Fold them into a patch if they are wanted at all.
+
+### Linux distribution — open, unplanned
+
+Not in the original plan, and the largest remaining gap. The app is described
+as supporting Windows 11 and Linux, but **releases are Windows-only** and the
+Nix flake — the supported Linux route — lives in the private source repo, so a
+Linux user reading the public dist page is pointed at something they cannot
+reach. The READMEs now say this plainly rather than implying parity.
+
+Closing it means an AppImage or `.deb` job in `release.yml` (a 1x-metered Linux
+runner, unlike the 2x Windows one) plus a `linux-x86_64` entry in `latest.json`,
+at which point Linux detection becomes real and the `/nix/store/` refinement
+above becomes worth doing. A single "portable" Linux binary is not an option:
+the build links the host's GTK3 and WebKitGTK, which is precisely what the
+flake pins.
+
+Alternatively, opening the source repo makes the flake reachable and closes
+most of this without a new artifact. Ian's stated position is that the source
+stays closed while the project is still being built, with opening it a
+long-term intention.
 
 ### One provider per minor
 
@@ -620,9 +669,12 @@ cents-denominated `amount` as dollars. **The lesson worth keeping: assign
 providers explicitly and confirm before either agent starts**, since a
 duplicated adapter costs more to reconcile than to write.
 
-All provider adapters are now shipped. What remains in this plan is the
-three-step update chain, which is no longer gated: Ian completed the dist repo
-and signing/token secrets on 2026-08-05, so update detection is ready to start.
+All provider adapters are now shipped, and as of 2026-08-05 so is effectively
+everything else. Update detection shipped as 0.17.0; the Windows installer is
+built and awaiting a merge; the Nix prompt was superseded by a better cut of
+the same problem. **Nothing in this plan is now blocked on anything else in
+it.** What is left is the Linux distribution question above, which the plan
+never covered, plus two small follow-ups noted in the superseded section.
 
 The patch series is strictly sequential, so ownership there is just *who does
 the work*. Real parallelism is available across features: Codex can take the

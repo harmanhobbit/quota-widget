@@ -307,26 +307,33 @@ under-panel bug.
 
 ## Current task
 
-The active plan is **`docs/plan-updates-and-providers.md`**. Read it before
-starting. Everything in it has shipped except the update chain — the finesse
-patches, the branch dev badge, the Tailscale transport toggle, scroll-to-fade
-opacity, and every provider adapter are all done. Do not reimplement them.
+**`docs/plan-updates-and-providers.md` is essentially complete.** Read it for
+why things are the way they are, not as a to-do list. The finesse patches, the
+branch dev badge, Tailscale transport, scroll-to-fade opacity, every provider
+adapter, and update detection (0.17.0) are all shipped. Do not reimplement them.
 
-What remains is three features that are a **strict chain**, each blocked on the
-one before:
+Outstanding:
 
-1. **Upstream update detection.** *Implemented on `feat/update-detection`,
-   unreleased.* `latest.json` on the public dist repo, `is_newer()` in
-   quota-core, a periodic check on `AppState` suppressed for branch builds, and
-   the Settings opt-out. Needs a version bump and a `v*.*.*` tag on `main` to
-   ship — the tag is also what first exercises `DIST_REPO_TOKEN`.
-2. **Native Windows update.** `tauri-plugin-updater` consuming that manifest.
-3. **Nix-aware update prompt.** Correct instructions per install method.
+1. **Native Windows update** — built on `feat/windows-installer`, not merged.
+   Blocked on two things an agent could not do: regenerating `npmDeps.hash` in
+   `nix/package.nix` (adding `@tauri-apps/plugin-updater` changed the npm
+   closure; needs `nix`), and compiling `src-tauri` with the plugin registered
+   (dispatch `build.yml` on the branch).
+2. **Linux distribution** — the open question, and never part of the plan. The
+   app claims Windows and Linux support but publishes Windows-only releases,
+   and the Nix flake lives in the private repo. See the plan's "Linux
+   distribution" section.
 
-Ian's manual prerequisites for step 1 are **done**: the public
-`harmanhobbit/quota-widget-dist` repo exists, and the signing key and
-`DIST_REPO_TOKEN` are in the private repo's Actions secrets. Agents cannot read
-those secrets, so verify the release workflow by running it, not by inspection.
+The **Nix-aware update prompt** was superseded, not skipped: Settings branches
+on whether a release published an installable artifact for the running build,
+which covers the case the prompt existed for. Do not build it as originally
+specced.
+
+Release infrastructure is live and proven: `release.yml` publishes signed
+assets to the public `harmanhobbit/quota-widget-dist` repo, and both
+`TAURI_SIGNING_PRIVATE_KEY` and `DIST_REPO_TOKEN` work. Agents cannot read
+those secrets, so verify release changes by running the workflow — a
+`workflow_dispatch` defaults to a dry run that signs without publishing.
 
 **Numbering is a hard requirement:** finesse items are patch bumps, features are
 minor bumps, and **no revision introduces more than one feature**. The plan

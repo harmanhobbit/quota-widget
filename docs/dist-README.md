@@ -62,9 +62,15 @@ and shows an unobtrusive "Update available" line in Settings with a **Check
 now** button. Uncheck **Check for updates** in Settings to turn the automatic
 checks off; **Check now** keeps working either way.
 
-Right now the app *tells* you an update exists and links you here — you download
-and run the new installer yourself. In-place installing is coming in a later
-version.
+On Windows an **Install update** button appears alongside it: the app downloads
+the new installer, verifies its signature, and runs it. The app closes and
+reopens partway through, which is expected. This works only if you installed via
+the installer — a portable EXE cannot replace itself, so update it by
+downloading the new one.
+
+Where a release publishes nothing for your platform, the app still tells you a
+newer version exists but offers no install button, since it has nothing it could
+install. Upgrade however you installed it.
 
 Builds made from a development branch carry a branch badge next to the version
 and never check for updates at all, since they are usually ahead of the latest
@@ -80,6 +86,5 @@ the public key baked into the app:
 RWQHEg24HhWu6QFITG26y7995k+xW1CG3IHAplDddbIF1LahMc7G7fsz
 ```
 
-Today the app only reads the manifest to compare version numbers; the signature
-is published so that in-place updating can verify it when that ships, and so
-you can check a download by hand in the meantime.
+The app verifies this signature itself before running a downloaded installer, so
+checking by hand is only for the curious or the cautious.

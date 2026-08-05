@@ -23,7 +23,10 @@ const MANIFEST_URL: &str = "https://github.com/harmanhobbit/quota-widget-dist/re
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Target triple key in the manifest's `platforms` map. Only Windows is
-/// published today; Linux installs come from Nix, which updates itself.
+/// published today. A build whose key is absent still learns that a newer
+/// version exists — it just gets no download URL, which is the honest result
+/// on *nix, where upgrading goes through whatever package manager installed
+/// the app.
 #[cfg(windows)]
 const TARGET: &str = "windows-x86_64";
 #[cfg(not(windows))]
