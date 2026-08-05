@@ -460,12 +460,18 @@ it consumes that feature's `latest.json` manifest and cannot ship before it.
 - `src-tauri/Cargo.toml` — add `tauri-plugin-updater`, registered in
   `lib.rs`'s builder chain alongside the existing plugins
   (`src-tauri/src/lib.rs:348-353`).
-- `src-tauri/tauri.conf.json` — `plugins.updater.pubkey`, `endpoints`, and
-  `windows.installMode: "passive"`. **`bundle.createUpdaterArtifacts` already
-  landed with update detection**, not here: the release workflow publishes a
-  `latest.json` carrying a `signature`, and without that flag there is no `.sig`
-  file to read, so the manifest would ship empty-signed from day one. The flag
-  is inert until a signing key is present, so moving it earlier costs nothing.
+- `src-tauri/tauri.conf.json` — `windows.installMode: "passive"`.
+  **`bundle.createUpdaterArtifacts`, `plugins.updater.pubkey`, and
+  `plugins.updater.endpoints` already landed with update detection**, not here.
+  They are one indivisible unit, learned the hard way: moving only the flag
+  forward failed the release build after a full 17-minute compile with
+  `failed to get updater configuration: plugins > updater doesn't exist`.
+  Tauri will not sign a bundle without knowing which key and endpoint it is
+  signing for, so the signing triple cannot be split across two minors. The
+  detection minor needs signing because its `latest.json` carries a
+  `signature`; all three are inert until this minor adds the plugin that reads
+  them. **The pubkey is committed on purpose** — it is a *public* minisign key
+  (`E9AE151EB80D1207`), and clients need it baked in to verify a download.
   Keep `installMode: "currentUser"` on the NSIS bundle
   (`tauri.conf.json:56-60`) so no admin prompt appears.
 - `src-tauri/capabilities/default.json` — add `updater:default`. **Not**
