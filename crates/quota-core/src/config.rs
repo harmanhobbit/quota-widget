@@ -182,6 +182,7 @@ impl Default for Config {
         providers.insert("deepseek".into(), ProviderConfig::default());
         providers.insert("moonshot".into(), ProviderConfig::default());
         providers.insert("venice".into(), ProviderConfig::default());
+        providers.insert("onehop".into(), ProviderConfig::default());
         providers.insert("fireworks".into(), ProviderConfig::default());
         providers.insert("anthropic_admin".into(), ProviderConfig::default());
         providers.insert("openai_admin".into(), ProviderConfig::default());
@@ -664,6 +665,7 @@ mod tests {
                 &"deepseek",
                 &"moonshot",
                 &"venice",
+                &"onehop",
                 &"fireworks",
                 &"anthropic_admin",
                 &"openai_admin",
