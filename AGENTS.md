@@ -25,27 +25,32 @@ aspiration.
 ## Ground rules
 
 **Never push to `main`.** This is the one hard rule. `main` is what the repo
-owner merges into deliberately, and `.github/workflows/build.yml` builds every
-push to it on a Windows runner the owner budgets by hand. Work on a feature
-branch and let the owner choose when to merge. Pushing a branch itself is free:
-only a manual build dispatch (`gh workflow run build.yml --ref <branch>`) spends
-the Windows-runner budget.
+owner merges into deliberately. Work on a feature branch and let the owner
+choose when to merge.
+
+**Branch from the latest `main`, and keep branches short-lived.** Fetch first
+and branch from `origin/main`, not from whatever the working tree happens to be
+sitting on. Do not routinely stack one feature branch on another: a branch that
+depends on unmerged work makes both harder to review and produces version
+conflicts at merge time (see "Version conflicts between branches"). If work
+genuinely cannot proceed without an unmerged branch, say so and ask.
 
 **Branch-build badges are CI-driven.** `QUOTA_WIDGET_BRANCH` is the sole source
-of the visible branch badge. Never hardcode or strip it: local and `main`
-builds correctly leave it empty, while dispatched branch builds show their ref.
+of the visible branch badge. Never hardcode or strip it: local, `main` and
+tagged release builds correctly leave it empty, while dispatched branch builds
+show their ref.
 
 **Commit freely, at logical intervals.** Commits are cheap and local — make one
 whenever a coherent unit of work is done and the tests you can run still pass,
-rather than accumulating one enormous commit at the end. A version bump plus its
-change is a good unit; so is a self-contained refactor. This keeps changes
-reviewable and makes a bad step easy to back out.
+rather than accumulating one enormous commit at the end. A self-contained
+refactor is a good unit. This keeps changes reviewable and makes a bad step easy
+to back out.
 
 **Push the feature branch when work is complete.** After the implementation and
 applicable checks are complete, push the branch so the finished change is
-available for review. Never push `main`. Branch pushes don't trigger CI; the
-metered step is dispatching a build (`gh workflow run build.yml --ref <branch>`),
-which still requires the owner's explicit request.
+available for review. Never push `main`. A branch push runs the Linux test job
+(1x minutes, ~30s), which is the point: the branch is known-green before anyone
+merges it. Windows packaging does not run on branches.
 
 **Do not add a git remote, change remotes, or touch credentials.** There is a
 repo-local credential helper reading `~/.gh_token`, deliberately configured with
@@ -54,11 +59,68 @@ an empty helper entry first to suppress a global gh-CLI helper belonging to a
 
 **Version is single-sourced** from the workspace `Cargo.toml`; `tauri.conf.json`,
 `package.json` and `nix/package.nix` derive from it. `npm run check-versions`
-verifies this. Update the version number for every change, bumping it in
-`Cargo.toml` only.
+verifies this. When the version does change, it changes in `Cargo.toml` only.
+
+**Do not bump the version on a feature branch.** Two branches that each bump
+`Cargo.toml` conflict on the same line, and the second one merged silently
+inherits a number that no longer describes it. Versioning is a release
+decision, made once, after work is merged — see "Releases" below.
 
 **If you touch `package.json` dependencies**, the `npmDeps.hash` in
 `nix/package.nix` must be regenerated or the Nix build breaks.
+
+---
+
+## Releases
+
+Versions are [Semantic Versioning](https://semver.org): `MAJOR.MINOR.PATCH`.
+PATCH is a bug fix that changes no behaviour anyone relies on, MINOR adds a
+capability (a new provider, a new setting) compatibly, MAJOR breaks an existing
+config file or user-visible contract. Pre-1.0 this repo treats MINOR as its
+feature unit and PATCH as its fix unit.
+
+Feature branches carry **no** version number. A release is a deliberate,
+separate act on `main` after the work is merged:
+
+```sh
+git switch main && git pull                 # merged work, no version bump yet
+$EDITOR Cargo.toml                          # set version = "0.17.0"
+cargo update -w --offline                   # propagate into Cargo.lock
+npm run check-versions
+git commit -am "Release 0.17.0"             # one commit, version change only
+git tag -a v0.17.0 -m "Release 0.17.0"      # annotated, never lightweight
+git push origin main --follow-tags
+```
+
+The tag is what ships. Pushing `v*.*.*` is the only thing that builds the
+Windows portable EXE and NSIS installer and attaches them to a draft release;
+CI first checks the tag matches `Cargo.toml` and refuses to package a
+mislabelled tree. `gh workflow run build.yml --ref <ref>` still produces the
+same Windows artifacts on demand without publishing a release — it spends the
+2x-metered Windows budget, so only do it when asked.
+
+**`release/<version>` branches are for stabilisation only.** If a release needs
+fixes after the version commit but before the tag — or an old line needs a
+backport — cut `release/0.17.0` from the version commit, land only fixes there,
+tag from it, then merge it back into `main`. Do not use one as a place to
+accumulate features; if nothing needs stabilising, tag `main` directly.
+
+### Version conflicts between branches
+
+Two branches that both touched `Cargo.toml` will conflict there, and the merged
+result is usually wrong even when git can auto-resolve it. Since feature
+branches no longer bump the version, this should only show up on older branches
+predating the rule:
+
+1. Resolve the conflict by taking `main`'s version verbatim — never the
+   branch's, and never a hand-merged third number.
+2. Drop any commit whose only content was the bump (`git rebase -i`), so the
+   branch contributes just its change.
+3. Run `cargo update -w --offline` so `Cargo.lock` matches the resolved
+   `Cargo.toml`; a stale lockfile version is its own CI failure.
+4. Pick the release number afterwards, on `main`, from what actually landed —
+   if a branch you expected to be a PATCH merged alongside a feature, the
+   release is a MINOR.
 
 ---
 
@@ -91,8 +153,9 @@ most logic lives — lean on it. **If the Tauri crate cannot be compiled in your
 environment, say so plainly in your report rather than claiming a change is
 verified.** Do not push to get CI to check your work.
 
-CI (`.github/workflows/build.yml`) runs the core tests on Linux and builds the
-Windows portable EXE + NSIS installer.
+CI (`.github/workflows/build.yml`) runs the core tests on Linux for every branch
+push and PR. The Windows portable EXE + NSIS installer are release-only: a
+`v*.*.*` tag or a manual dispatch, never an ordinary push.
 
 ### `npm run build` passing does NOT mean the UI works
 
