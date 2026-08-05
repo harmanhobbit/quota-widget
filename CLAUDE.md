@@ -24,3 +24,20 @@ npm run smoke-mount
 Do not claim a frontend fix is verified on the strength of a clean build.
 See "Build and test" in AGENTS.md for the specific traps (`structuredClone` on
 a `$state` proxy, state writes inside `{@const}`/`$derived`).
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `harmanhobbit/quota-widget`, managed with the
+`gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles, each label string equal to its name. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root, both created
+lazily. See `docs/agents/domain.md`.
