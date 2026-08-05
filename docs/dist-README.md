@@ -25,8 +25,25 @@ carries:
 Windows 11 ships the WebView2 runtime the UI renders with, so there is no
 separate runtime to install.
 
-**Linux** is not distributed here. It is packaged as a Nix flake in the source
-repo and updates with `nix profile upgrade`.
+### Linux
+
+**No Linux download is published here, and the app cannot update itself on
+Linux.** The releases above are Windows-only.
+
+This is not an oversight. A Linux build links GTK3 and WebKitGTK from the host
+system rather than bundling them the way the Windows EXE bundles nothing at
+all, so a single "portable" Linux binary would fail on any distribution whose
+library versions differ from the one it was built on — which is most of them.
+The supported Linux route is instead a Nix flake, which pins those libraries
+exactly.
+
+The flake lives in the source repository, which is private, so it is currently
+available only to people who already have access to it. If you are reading this
+and want to run it on Linux, open an issue — a public flake or an AppImage is
+straightforward to add, it simply has not been needed yet.
+
+The app's own update check is Windows-only for the same reason: on Nix, upgrade
+with `nix profile upgrade`.
 
 ## First run
 
