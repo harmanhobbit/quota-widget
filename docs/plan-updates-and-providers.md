@@ -34,10 +34,11 @@ as history rather than as a reservation.
 Ian test every later feature on Windows without merging to `main`. Tailscale
 followed, being independent of everything else here. Scroll-to-fade opacity came
 next by Ian's request; like Tailscale it blocks nothing and is blocked by
-nothing. All three sit ahead of the update chain because that chain is gated on
-manual steps only Ian can take (creating the dist repo, generating the signing
-key, adding the Actions secrets), so putting unblocked work first keeps things
-moving while that is set up. Update detection is then the foundation both the
+nothing. All three sat ahead of the update chain because that chain was gated on
+manual steps only Ian could take (creating the dist repo, generating the signing
+key, adding the Actions secrets), so putting unblocked work first kept things
+moving while that was set up. That gate is now lifted — see the update-detection
+section. Update detection is then the foundation both the
 Windows installer and the Nix prompt build on — those three are a strict chain
 and must ship in that order. The providers are independent of everything,
 including each other, and can be reordered freely or interleaved with the update
@@ -367,18 +368,71 @@ still needs eyes on Plasma (a compositor must be running) and Windows 11.
 takes the `styles.css` edit, coordinating as that file already requires. Codex
 must land the helper before Claude's side starts.
 
-### Upstream update detection
+### Upstream update detection — implemented, awaiting a release tag
 
 **Next available minor.** First of the three-step update chain; nothing below it
 can start until this ships.
 
+**Status.** Built on `feat/update-detection`. `release.yml` publishes to the
+dist repo; `quota_core::update` parses the manifest; `src-tauri/src/updates.rs`
+checks at startup and every six hours, suppressed on branch builds; Settings
+shows the banner, the **Check now** button, and the opt-out. A dry run verified
+the signature cryptographically against the committed pubkey. Two things remain
+unproven until the first real tag: `DIST_REPO_TOKEN`'s write scope, and
+end-to-end detection against a manifest that actually exists.
+
 Private source, public distribution — per Ian's decision.
 
-**Ian-only manual steps (I must not do these):** create the public repo
-`harmanhobbit/quota-widget-dist`; run `npm run tauri signer generate` and keep
-the private key; add `TAURI_SIGNING_PRIVATE_KEY` and a `DIST_REPO_TOKEN` with
-write access to the dist repo as Actions secrets on the private repo.
-`AGENTS.md` forbids agents touching remotes or credentials.
+**Ian-only manual steps (I must not do these) — reported done by Ian, 2026-08-05:**
+create the public repo `harmanhobbit/quota-widget-dist`; run
+`npm run tauri signer generate` and keep the private key; add
+`TAURI_SIGNING_PRIVATE_KEY` and a `DIST_REPO_TOKEN` with write access to the
+dist repo as Actions secrets on the private repo. `AGENTS.md` forbids agents
+touching remotes or credentials.
+
+The dist repo is confirmed to exist and be public. Both secrets are present
+under exactly the names above, confirmed by Ian from the repo's Actions
+settings. They are not *agent*-verifiable — the `gh` login available to agents
+here has no access to the private repo, so `gh secret list` 404s — so the only
+remaining check is dispatching the release workflow: a wrong key *value* or a
+token missing write scope on the dist repo surfaces there as a signing or
+upload failure, and nothing local can catch it.
+
+#### The `latest.json` contract — agree before either agent starts
+
+This shape has **three** consumers written by two agents: the release workflow
+generates it (Claude), `update.rs` parses it (Codex), and in the next minor
+`tauri-plugin-updater` reads the very same file (Claude). Two agents guessing
+independently is how this plan produced duplicate adapters once already, so the
+schema is fixed here rather than discovered:
+
+```json
+{
+  "version": "0.17.0",
+  "notes": "See the release page for details.",
+  "pub_date": "2026-08-05T09:23:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "<contents of the .sig file>",
+      "url": "https://github.com/harmanhobbit/quota-widget-dist/releases/download/v0.17.0/QuotaWidget_0.17.0_x64-setup.exe"
+    }
+  }
+}
+```
+
+This is **`tauri-plugin-updater`'s own documented format**, chosen deliberately:
+the plugin in the next minor consumes this file unmodified, so inventing a
+custom shape now would mean reshaping it later, mid-chain. `version` is bare
+SemVer with no `v` prefix — the git tag keeps its `v`, the manifest does not.
+`pub_date` is RFC 3339. `platforms` is keyed by Tauri's target triple form, and
+today has exactly one key; adding Linux later must not require a schema change,
+so parse it as a map, never as a fixed struct.
+
+`UpdateInfo`, the type crossing from quota-core into `AppState` and out over
+IPC, is the parsed subset the UI actually renders — `current`, `latest`, `url`,
+`notes`, `pub_date` — plus whatever the "is an update available" verdict needs.
+Codex owns its definition; Claude imports it and must not declare a parallel
+copy in `src-tauri`. Land `update.rs` before the `AppState` wiring starts.
 
 - `.github/workflows/release.yml` (new) — on tag push or dispatch: build, then
   `gh release create` **against the dist repo**, uploading the installer, its
@@ -414,8 +468,18 @@ it consumes that feature's `latest.json` manifest and cannot ship before it.
 - `src-tauri/Cargo.toml` — add `tauri-plugin-updater`, registered in
   `lib.rs`'s builder chain alongside the existing plugins
   (`src-tauri/src/lib.rs:348-353`).
-- `src-tauri/tauri.conf.json` — `bundle.createUpdaterArtifacts: true`,
-  `plugins.updater.pubkey`, `endpoints`, and `windows.installMode: "passive"`.
+- `src-tauri/tauri.conf.json` — `windows.installMode: "passive"`.
+  **`bundle.createUpdaterArtifacts`, `plugins.updater.pubkey`, and
+  `plugins.updater.endpoints` already landed with update detection**, not here.
+  They are one indivisible unit, learned the hard way: moving only the flag
+  forward failed the release build after a full 17-minute compile with
+  `failed to get updater configuration: plugins > updater doesn't exist`.
+  Tauri will not sign a bundle without knowing which key and endpoint it is
+  signing for, so the signing triple cannot be split across two minors. The
+  detection minor needs signing because its `latest.json` carries a
+  `signature`; all three are inert until this minor adds the plugin that reads
+  them. **The pubkey is committed on purpose** — it is a *public* minisign key
+  (`E9AE151EB80D1207`), and clients need it baked in to verify a download.
   Keep `installMode: "currentUser"` on the NSIS bundle
   (`tauri.conf.json:56-60`) so no admin prompt appears.
 - `src-tauri/capabilities/default.json` — add `updater:default`. **Not**
@@ -557,7 +621,8 @@ providers explicitly and confirm before either agent starts**, since a
 duplicated adapter costs more to reconcile than to write.
 
 All provider adapters are now shipped. What remains in this plan is the
-three-step update chain, still gated on Ian's manual steps.
+three-step update chain, which is no longer gated: Ian completed the dist repo
+and signing/token secrets on 2026-08-05, so update detection is ready to start.
 
 The patch series is strictly sequential, so ownership there is just *who does
 the work*. Real parallelism is available across features: Codex can take the

@@ -121,14 +121,19 @@ against that vendor's own dashboard.
 ### CI
 
 Push to GitHub — `.github/workflows/build.yml` runs the core test suite on Linux
-and produces two artifacts on a Windows runner. Note the Windows runner bills at
-a **2x** minute multiplier against the account's monthly Actions quota, so it's
-worth doing routine work in the local dev shell and saving CI for the EXE you
-actually intend to test:
+for every branch. Windows packaging is **dispatch-only** (`gh workflow run
+build.yml --ref <branch>`), because that runner bills at a **2x** minute
+multiplier against the account's monthly Actions quota. A dispatch produces two
+artifacts:
 
 - `quota-widget-portable` — the single portable `quota-widget.exe`
 - `quota-widget-installer` — an NSIS installer, if you'd rather have Start Menu
   integration and an uninstaller
+
+Release tags belong to `.github/workflows/release.yml` instead — see
+[Deployment](#deployment). The two workflows deliberately do not both watch
+tags: when they did, one tag paid for two full Windows builds and produced two
+competing sets of assets.
 
 ### NixOS / Nix
 
@@ -187,6 +192,27 @@ and optionally enable **Start on login** (a `HKCU` run entry on Windows, an XDG
 autostart entry on Linux — no admin rights needed either way). Updating =
 replacing the EXE; on Nix, `nix profile upgrade`.
 
+### Releases and update checks
+
+This repo is private, so releases are published to the public
+[`harmanhobbit/quota-widget-dist`](https://github.com/harmanhobbit/quota-widget-dist)
+repo: pushing a `v*.*.*` tag runs `release.yml`, which builds a signed NSIS
+installer and uploads it, its `.sig`, and a `latest.json` manifest. The tag must
+match the workspace `Cargo.toml` version — CI refuses to publish a mislabelled
+tree. A `workflow_dispatch` defaults to a **dry run**: it builds and signs, then
+attaches the manifest and installer as workflow artifacts instead of publishing,
+which is the safe way to exercise the signing key end to end.
+
+The app checks that manifest at startup and every six hours, and shows an
+unobtrusive "Update available" line in Settings with a **Check now** button.
+Uncheck **Check for updates** to switch the automatic checks off; **Check now**
+keeps working regardless, since pressing it is itself the consent. Builds from a
+feature branch never check at all — they carry a dev badge and would otherwise
+nag about a "newer" release they are actually ahead of.
+
+Detection only reports; it does not install. Installing in place arrives with
+the updater plugin in a later revision.
+
 ## Architecture
 
 ```
@@ -200,6 +226,7 @@ src-tauri           the Tauri shell
   poller.rs         poll loop → state → tray/toasts/events
   oauth.rs          built-in Claude sign-in (PKCE paste-back)
   codex_oauth.rs    built-in Codex sign-in (device code)
+  updates.rs        6-hourly check of the public release manifest
   secrets.rs        Credential Manager (Windows) / 0600 file (elsewhere)
 src/                Svelte UI
   App.svelte        popup shell (usage list / settings)

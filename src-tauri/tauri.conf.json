@@ -45,11 +45,20 @@
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'"
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/harmanhobbit/quota-widget-dist/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5QUUxNTFFQjgwRDEyMDcKUldRSEVnMjRIaFd1NlFGSVRHMjZ5Nzk5NWsreFcxQ0czSUhBcGxEZGRiSUYxTGFoTWM3Rzdmc3oK"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": [
       "nsis"
     ],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

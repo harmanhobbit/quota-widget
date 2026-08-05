@@ -5,6 +5,7 @@ mod secrets;
 mod tray;
 #[cfg(target_os = "linux")]
 mod tray_linux;
+mod updates;
 
 use quota_core::alerts::AlertEngine;
 use quota_core::config::Config;
@@ -38,6 +39,9 @@ pub struct AppState {
     /// Millis timestamp of the last title-bar press — blur events within the
     /// grace window are drag-induced (tauri#10767), not click-away.
     pub last_drag_ms: std::sync::atomic::AtomicI64,
+    /// Last known upstream release, or `None` when no check has succeeded, the
+    /// build is a dev branch, or the newest release is not newer than this one.
+    pub update: RwLock<Option<quota_core::update::UpdateInfo>>,
 }
 
 /// The frontend's first request needs both pieces of startup state. Keeping
@@ -355,6 +359,7 @@ pub fn run() {
         mini_pinned: std::sync::atomic::AtomicBool::new(false),
         reopen_mini_after_popup: std::sync::atomic::AtomicBool::new(false),
         last_drag_ms: std::sync::atomic::AtomicI64::new(0),
+        update: RwLock::new(None),
         config: RwLock::new(config),
         snapshots: RwLock::new(HashMap::new()),
         alert_engine: Mutex::new(AlertEngine::default()),
@@ -391,6 +396,8 @@ pub fn run() {
             set_mini_pinned,
             set_mini_height,
             note_drag,
+            updates::update_status,
+            updates::check_update_now,
             quit,
         ])
         .setup(move |app| {
@@ -399,6 +406,7 @@ pub fn run() {
             #[cfg(not(target_os = "linux"))]
             tray::create_tray(app.handle())?;
             poller::spawn(app.handle().clone(), state.clone());
+            updates::spawn(app.handle().clone(), state.clone());
             Ok(())
         })
         .on_window_event(|window, event| {
