@@ -344,7 +344,24 @@ button.primary {
   text-align: right;
 }
 
+/* Holds the bar and its hover target. The target has to be a sibling of the
+   bar, not a child: the bar clips its own overflow to keep the period marker
+   from spilling past either end, and hit-testing follows that clip. */
+.hover-bar-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* Spans the full row height so pointing at a row is enough — the bar itself is
+   only 5px tall, which is a thin thing to scrub into. */
+.hover-bar-target {
+  position: absolute;
+  inset: -5px 0;
+}
+
 .hover-bar {
+  flex: 1;
   height: 5px;
   min-width: 30px;
   background: var(--border);
