@@ -389,7 +389,12 @@ button.primary {
 .hover-bar-target[data-tip]::after {
   content: attr(data-tip);
   position: absolute;
-  left: 0;
+  /* Anchored to the row's right edge, not the bar's left: the bar column is
+     the grid's flexible one, so a long account name squeezes it towards its
+     30px minimum and a left-anchored tooltip would run off the window and be
+     clipped by `.mini`. Growing leftwards instead keeps it inside, since
+     everything to the left is this row's own bar. */
+  right: 0;
   top: 50%;
   transform: translateY(-50%);
   z-index: 1;
