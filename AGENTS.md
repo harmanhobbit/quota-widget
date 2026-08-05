@@ -305,9 +305,11 @@ opacity, and every provider adapter are all done. Do not reimplement them.
 What remains is three features that are a **strict chain**, each blocked on the
 one before:
 
-1. **Upstream update detection.** `latest.json` on the public dist repo,
-   `is_newer()` in quota-core, a periodic check on `AppState` suppressed for
-   branch builds, and the Settings opt-out.
+1. **Upstream update detection.** *Implemented on `feat/update-detection`,
+   unreleased.* `latest.json` on the public dist repo, `is_newer()` in
+   quota-core, a periodic check on `AppState` suppressed for branch builds, and
+   the Settings opt-out. Needs a version bump and a `v*.*.*` tag on `main` to
+   ship — the tag is also what first exercises `DIST_REPO_TOKEN`.
 2. **Native Windows update.** `tauri-plugin-updater` consuming that manifest.
 3. **Nix-aware update prompt.** Correct instructions per install method.
 

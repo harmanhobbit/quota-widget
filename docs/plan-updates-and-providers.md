@@ -368,10 +368,18 @@ still needs eyes on Plasma (a compositor must be running) and Windows 11.
 takes the `styles.css` edit, coordinating as that file already requires. Codex
 must land the helper before Claude's side starts.
 
-### Upstream update detection
+### Upstream update detection — implemented, awaiting a release tag
 
 **Next available minor.** First of the three-step update chain; nothing below it
 can start until this ships.
+
+**Status.** Built on `feat/update-detection`. `release.yml` publishes to the
+dist repo; `quota_core::update` parses the manifest; `src-tauri/src/updates.rs`
+checks at startup and every six hours, suppressed on branch builds; Settings
+shows the banner, the **Check now** button, and the opt-out. A dry run verified
+the signature cryptographically against the committed pubkey. Two things remain
+unproven until the first real tag: `DIST_REPO_TOKEN`'s write scope, and
+end-to-end detection against a manifest that actually exists.
 
 Private source, public distribution — per Ian's decision.
 
