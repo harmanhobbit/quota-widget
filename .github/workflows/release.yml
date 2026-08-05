@@ -107,6 +107,19 @@ jobs:
           echo "signature=$installer.sig" >> "$GITHUB_OUTPUT"
           echo "basename=$(basename "$installer")" >> "$GITHUB_OUTPUT"
 
+          # The portable EXE ships too, for anyone who does not want an
+          # installed app. Rename it per-version: release asset names are the
+          # download URL, and a bare quota-widget.exe would read identically
+          # across every release once saved.
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          portable="target/release/QuotaWidget_${version}_x64-portable.exe"
+          if [ ! -f target/release/quota-widget.exe ]; then
+            echo "::error::no portable EXE at target/release/quota-widget.exe"
+            exit 1
+          fi
+          cp target/release/quota-widget.exe "$portable"
+          echo "portable=$portable" >> "$GITHUB_OUTPUT"
+
       # Schema is fixed in docs/plan-updates-and-providers.md, "The latest.json
       # contract". It is tauri-plugin-updater's own format because that plugin
       # consumes this exact file in the next minor. `version` is bare SemVer:
@@ -142,12 +155,29 @@ jobs:
           set -euo pipefail
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           tag="v$version"
+
+          # The dist repo's landing page is generated from docs/dist-README.md
+          # here, so it cannot drift from what is actually being shipped. It is
+          # written for downloaders and deliberately is NOT the source repo's
+          # README, which documents building a codebase they cannot see.
+          # Committed via the API to avoid a second checkout; the sha is
+          # required to update an existing file and absent on first publish.
+          sha=$(gh api "repos/harmanhobbit/quota-widget-dist/contents/README.md" \
+                  --jq .sha 2>/dev/null || true)
+          gh api "repos/harmanhobbit/quota-widget-dist/contents/README.md" \
+            -X PUT \
+            -f message="Update download page for $tag" \
+            -f content="$(base64 -w0 < docs/dist-README.md)" \
+            ${sha:+-f sha="$sha"} > /dev/null
+          echo "dist README published"
+
           gh release create "$tag" \
             --repo harmanhobbit/quota-widget-dist \
             --title "$tag" \
             --notes "Quota Widget $tag" \
             "${{ steps.assets.outputs.installer }}" \
             "${{ steps.assets.outputs.signature }}" \
+            "${{ steps.assets.outputs.portable }}" \
             latest.json
 
       # On a dry run, and on any dispatch, the manifest and binaries are still
@@ -159,6 +189,7 @@ jobs:
         with:
           name: release-dry-run
           path: |
+            ${{ steps.assets.outputs.portable }}
             latest.json
             ${{ steps.assets.outputs.installer }}
             ${{ steps.assets.outputs.signature }}
