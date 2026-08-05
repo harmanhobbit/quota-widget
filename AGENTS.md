@@ -83,21 +83,34 @@ Feature branches carry **no** version number. A release is a deliberate,
 separate act on `main` after the work is merged:
 
 ```sh
-git switch main && git pull                 # merged work, no version bump yet
-$EDITOR Cargo.toml                          # set version = "0.17.0"
+git switch main && git pull   # merged work, no version bump yet
+npm run release               # prompts for the version and does the rest
+```
+
+`npm run release` (`scripts/bump-version.sh`) exists so this sequence does not
+have to be remembered. It refuses to run anywhere but a clean, up-to-date
+`main`; rejects a `v` prefix or a non-`MAJOR.MINOR.PATCH` string; warns if the
+number goes backwards; then edits `Cargo.toml`, runs `cargo update -w` and
+`check-versions`, shows the diff, and asks for the version a second time before
+it commits, tags, and pushes. Anything before that confirmation is reverted on
+abort. Equivalent by hand:
+
+```sh
+$EDITOR Cargo.toml                          # set version = "0.18.0"
 cargo update -w --offline                   # propagate into Cargo.lock
 npm run check-versions
-git commit -am "Release 0.17.0"             # one commit, version change only
-git tag -a v0.17.0 -m "Release 0.17.0"      # annotated, never lightweight
+git commit -am "Release 0.18.0"             # one commit, version change only
+git tag -a v0.18.0 -m "Release 0.18.0"      # annotated, never lightweight
 git push origin main --follow-tags
 ```
 
-The tag is what ships. Pushing `v*.*.*` is the only thing that builds the
-Windows portable EXE and NSIS installer and attaches them to a draft release;
-CI first checks the tag matches `Cargo.toml` and refuses to package a
-mislabelled tree. `gh workflow run build.yml --ref <ref>` still produces the
-same Windows artifacts on demand without publishing a release — it spends the
-2x-metered Windows budget, so only do it when asked.
+The tag is what ships. Pushing `v*.*.*` runs **`release.yml`**, which builds a
+signed NSIS installer and publishes it, the portable EXE, the `.sig`, and
+`latest.json` to the public dist repo; it first checks the tag matches
+`Cargo.toml` and refuses to publish a mislabelled tree. `build.yml` no longer
+watches tags — it produces the same Windows artifacts on demand via
+`gh workflow run build.yml --ref <ref>`, without publishing. Both spend the
+2x-metered Windows budget, so only dispatch when asked.
 
 **`release/<version>` branches are for stabilisation only.** If a release needs
 fixes after the version commit but before the tag — or an old line needs a

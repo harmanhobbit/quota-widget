@@ -211,6 +211,11 @@ a 1x-metered Linux runner.
 
 ### Releases and update checks
 
+Cut a release with **`npm run release`**, which prompts for the version and
+handles the bump, `Cargo.lock`, commit, annotated tag, and push — confirming
+before anything leaves the machine. See "Releases" in `AGENTS.md` for what it
+does and the by-hand equivalent.
+
 This repo is private, so releases are published to the public
 [`harmanhobbit/quota-widget-dist`](https://github.com/harmanhobbit/quota-widget-dist)
 repo: pushing a `v*.*.*` tag runs `release.yml`, which builds a signed NSIS
