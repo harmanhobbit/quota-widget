@@ -174,39 +174,52 @@ const CASES = [
       if (names.slice(0, 3).join('|') !== 'Claude||Codex') {
         throw new Error(`name column was ${names.join('|')}`);
       }
-      const bars = [...target.querySelectorAll('.hover-bar')];
-      // Claude's 5-hour window is one hour into five, so its marker sits at 20%.
-      const mark = bars[0].querySelector('.period-mark');
+      const cells = [...target.querySelectorAll('.hover-bar-cell')];
+      // Claude's 5-hour window is one hour into five, so its marker sits at
+      // 20%. The cell lays the bar out to fill its width, so a percentage of
+      // the cell puts the marker exactly where a percentage of the bar did.
+      const mark = cells[0].querySelector('.period-mark');
       if (!mark) throw new Error('bounded window rendered no period marker');
       const pct = parseFloat(mark.style.left);
       if (!(Math.abs(pct - 20) < 1)) throw new Error(`marker sat at ${mark.style.left}, expected ~20%`);
       // The weekly window has no period_start, so it gets no marker at all
       // rather than one pinned at an end.
-      if (bars[1].querySelector('.period-mark')) {
+      if (cells[1].querySelector('.period-mark')) {
         throw new Error('window without a period start still drew a marker');
       }
       // The hover target exists only where there is a marker to describe, and
       // must be a sibling of the bar rather than a child: the bar clips its
       // overflow, and hit-testing follows that clip.
-      const cells = [...target.querySelectorAll('.hover-bar-cell')];
       if (!cells[0].querySelector(':scope > .hover-bar-target')) {
         throw new Error('bounded window rendered no hover target');
       }
       if (cells[1].querySelector('.hover-bar-target')) {
         throw new Error('window without a period start still drew a hover target');
       }
+      // The marker hangs off the cell, not the bar: the bar is 5px tall and
+      // clips its overflow, so a marker inside it could never grow taller.
+      // Its size and centring are CSS, which jsdom cannot report — only the
+      // parentage that makes them possible is assertable here.
+      if (!cells[0].querySelector(':scope > .period-mark')) {
+        throw new Error('marker is not parented where it can grow past the bar');
+      }
       // jsdom reports a zero-sized bar, so the pointer reads as sitting on the
       // marker — enough to prove the tooltip arms and states both of its parts.
       const targetEl = cells[0].querySelector('.hover-bar-target');
       targetEl.dispatchEvent(new window.PointerEvent('pointermove', { bubbles: true, clientX: 0 }));
       flushSync();
-      const tip = targetEl.getAttribute('title') ?? '';
+      const tip = targetEl.getAttribute('data-tip') ?? '';
       if (!/through/.test(tip) || !/resets/.test(tip)) {
         throw new Error(`armed tooltip read ${JSON.stringify(tip)}`);
       }
+      // The OS tooltip is gone rather than merely covered; both would show,
+      // the native one arriving late on top of the instant one.
+      if (targetEl.getAttribute('title')) {
+        throw new Error('native tooltip survived alongside the styled one');
+      }
       targetEl.dispatchEvent(new window.PointerEvent('pointerleave', { bubbles: true }));
       flushSync();
-      if (targetEl.getAttribute('title')) {
+      if (targetEl.getAttribute('data-tip')) {
         throw new Error('tooltip survived the pointer leaving the bar');
       }
     },

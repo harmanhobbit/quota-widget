@@ -344,30 +344,77 @@ button.primary {
   text-align: right;
 }
 
-/* Holds the bar and its hover target. The target has to be a sibling of the
-   bar, not a child: the bar clips its own overflow to keep the period marker
-   from spilling past either end, and hit-testing follows that clip. */
+/* Holds the bar, its period marker and its hover target. Both of the latter
+   are siblings of the bar rather than children: the bar clips its overflow to
+   keep the fill inside its rounded ends, which would cap the marker's height
+   and, since hit-testing follows the clip, shrink the target to the bar's
+   5px. */
 .hover-bar-cell {
+  /* The bar's height, shared so the marker's resting size and the hover
+     target's reach cannot drift from the bar they are measured against. The
+     component reads it too, for the marker's height at rest. */
+  --hover-bar-h: 5px;
   position: relative;
   display: flex;
   align-items: center;
+}
+
+/* The mini summary's period marker sits on the cell, not inside the bar, so it
+   can grow taller than the bar's 5px. Centred on its position: `left` alone
+   pins the left edge, which would drift the line's centre away from the
+   pointer as it thickens — away from the very thing you are aiming at. Height
+   and width are set inline per pointer position; only `left` eases, so the
+   growth tracks the pointer instead of lagging 0.4s behind it. */
+.hover-bar-cell .period-mark {
+  top: 50%;
+  bottom: auto;
+  transform: translate(-50%, -50%);
 }
 
 /* Spans the full row height so pointing at a row is enough — the bar itself is
    only 5px tall, which is a thin thing to scrub into. */
 .hover-bar-target {
   position: absolute;
-  inset: -5px 0;
+  inset: calc(var(--hover-bar-h) * -1) 0;
+}
+
+/* The armed tooltip. Drawn in-window rather than as a native `title`, whose
+   ~1s OS delay is too slow to scrub against. It renders inside the row it
+   describes, so it never escapes `.mini`'s clipping and never changes the
+   measured content height that sizes the window — the two reasons a native
+   tooltip looked necessary at first. Its text is wider than the bar, so it
+   covers its own row's value and label while shown; it is describing that
+   row. Presence of `data-tip` is the switch: the component sets it only
+   while the pointer is within the armed zone. */
+.hover-bar-target[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+  line-height: 14px;
 }
 
 .hover-bar {
   flex: 1;
-  height: 5px;
+  height: var(--hover-bar-h);
   min-width: 30px;
   background: var(--border);
   border-radius: 3px;
+  /* Keeps the fill inside the rounded ends. The period marker is no longer a
+     child — it hangs off the cell so it can grow taller than these 5px — so
+     this no longer clips the marker, and a marker at either extreme of its
+     range overhangs the cap by half its width. */
   overflow: hidden;
-  /* Anchors the period marker; overflow above clips it at both ends. */
   position: relative;
 }
 

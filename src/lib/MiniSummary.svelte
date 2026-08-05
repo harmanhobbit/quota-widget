@@ -99,7 +99,9 @@
   }
 
   function trackPointer(event, key, progress) {
-    const bar = event.currentTarget.previousElementSibling;
+    // Queried rather than walked from the target: the marker sits between the
+    // bar and the target, so sibling order is not a stable way to find it.
+    const bar = event.currentTarget.parentElement?.querySelector('.hover-bar');
     if (!bar) return;
     const { left, box } = markerX(bar, progress);
     // Clamped at the ends: a marker at 100% keeps its zone on the bar rather
@@ -227,40 +229,44 @@
           {:else}
             <!-- Always rendered so a row without a bar (an error) still holds
                  the column open and keeps the numbers aligned. -->
-            <!-- The bar keeps `overflow: hidden` so the marker stays clipped at
-                 both ends; the hover target is therefore a sibling laid over
-                 it, spanning the full row height rather than the bar's 5px. -->
+            <!-- The bar clips its overflow to keep the fill inside its rounded
+                 ends, and hit-testing follows that clip — so the hover target
+                 is a sibling laid over the bar, spanning the full row height
+                 rather than the bar's 5px. -->
             {@const key = `${snap.provider_id}:${row}`}
             <span class="hover-bar-cell">
               <span class="hover-bar" class:empty={!(showBars && s.pct != null)}>
                 {#if showBars && s.pct != null}
                   <i class="fill {s.level}" style="width: {s.pct}%"></i>
-                  <!-- How far through the period we are, so usage can be read
-                       against time left. Skipped when the provider can't bound
-                       the period rather than guessed at. Grows towards the
-                       pointer so its tooltip is something you aim at rather
-                       than fall into. -->
-                  {#if s.progress != null}
-                    <i
-                      class="period-mark"
-                      style="left: {s.progress * 100}%; width: {1 + approach(key) * 2}px; opacity: {0.8 + approach(key) * 0.2}"
-                      aria-hidden="true"
-                    ></i>
-                  {/if}
                 {/if}
               </span>
+              <!-- How far through the period we are, so usage can be read
+                   against time left. Skipped when the provider can't bound the
+                   period rather than guessed at. It sits on the cell rather
+                   than inside the bar so it can grow taller than the bar's
+                   5px, and grows towards the pointer so its tooltip is
+                   something you aim at rather than fall into. The cell lays
+                   the bar out to fill its width, so the same percentage puts
+                   the marker in the same place either way. -->
               {#if showBars && s.pct != null && s.progress != null}
+                <i
+                  class="period-mark"
+                  style="left: {s.progress * 100}%; width: {1 + approach(key) * 2}px; height: calc(var(--hover-bar-h) + {approach(key) * 4}px); opacity: {0.8 + approach(key) * 0.2}"
+                  aria-hidden="true"
+                ></i>
                 <!-- Deliberately pointer-only and out of the tab order. This
                      window is a tray popup that hides on focus loss, and the
                      same countdown is visible text on the full card, so the
                      tooltip enhances a redundant surface rather than being the
-                     sole channel for the reset time. -->
+                     sole channel for the reset time. `data-tip` rather than
+                     `title`: the OS draws `title` after a delay of its own,
+                     which is too slow to scrub against. -->
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <span
                   class="hover-bar-target"
                   onpointermove={(e) => trackPointer(e, key, s.progress)}
                   onpointerleave={() => (nearest = null)}
-                  title={armed(key) ? periodTooltip(s.window, s.progress, now) : null}
+                  data-tip={armed(key) ? periodTooltip(s.window, s.progress, now) : null}
                 ></span>
               {/if}
             </span>
