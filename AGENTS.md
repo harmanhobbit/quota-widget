@@ -327,11 +327,13 @@ adapter, and update detection (0.17.0) are all shipped. Do not reimplement them.
 
 Outstanding:
 
-1. **Native Windows update** — built on `feat/windows-installer`, not merged.
-   Blocked on two things an agent could not do: regenerating `npmDeps.hash` in
-   `nix/package.nix` (adding `@tauri-apps/plugin-updater` changed the npm
-   closure; needs `nix`), and compiling `src-tauri` with the plugin registered
-   (dispatch `build.yml` on the branch).
+1. **Portable-EXE install button** — a known defect, patch-sized. The button is
+   gated on whether the release published a download, not on whether this build
+   can install one, so a portable EXE offers a button that cannot work. Expose
+   `tauri_plugin_updater`'s `bundle_type()` through `update_status` as an
+   `installable` flag and fall through to the existing "upgrade the way you
+   installed it" note. (Native Windows update itself shipped as 0.19.0 and is
+   proven end to end, in-place install included.)
 2. **Linux distribution** — the open question, and never part of the plan. The
    app claims Windows and Linux support but publishes Windows-only releases,
    and the Nix flake lives in the private repo. See the plan's "Linux

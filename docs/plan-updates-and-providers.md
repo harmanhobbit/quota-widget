@@ -467,14 +467,22 @@ and the `AppState`/IPC wiring.
 **Next available minor after update detection**, which it builds directly on —
 it consumes that feature's `latest.json` manifest and cannot ship before it.
 
-**Status.** Built on `feat/windows-installer`, alongside the `UpdateInfo.url`
-change described under detection. Two things gate merging: `npmDeps.hash` in
-`nix/package.nix` is stale (adding `@tauri-apps/plugin-updater` changed the npm
-closure, and the agent that made the change had no `nix` to recompute it), and
-`src-tauri` has never been compiled with the plugin registered — dispatch
-`build.yml` on the branch before merging. Note the *first* release built from
-this code can only update the release *after* it; an installed 0.17.1 predates
-the Install button.
+**Status: shipped and proven end to end.** Merged, released as 0.19.0, and an
+installed 0.18.0 has successfully detected, downloaded, verified and installed
+it in place on Windows 11 — the whole chain against real releases rather than
+dry runs.
+
+The `npmDeps.hash` regen that adding `@tauri-apps/plugin-updater` forced was
+done by Ian on 2026-08-05 and is no longer outstanding.
+
+**Known defect:** the Install button is gated on whether the *release* published
+a download, not on whether *this build* can install one. A portable EXE
+therefore offers a button that cannot work — `tauri-plugin-updater`'s
+`bundle_type()` returns `None` for it, so the install fails rather than doing
+anything harmful, but the UI should not have offered it. The fix is to expose
+that through `update_status` as an `installable` flag and fall through to the
+same "upgrade the way you installed it" note the no-download case uses. Patch,
+not a minor.
 
 - `src-tauri/Cargo.toml` — add `tauri-plugin-updater`, registered in
   `lib.rs`'s builder chain alongside the existing plugins
