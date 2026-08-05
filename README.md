@@ -169,7 +169,15 @@ npm run tauri build        # produce the exe (run this on Windows)
 version at all. Bumping a release is a one-line edit to `Cargo.toml` followed by
 `cargo update -w`; `npm run check-versions` fails if a hardcoded copy reappears.
 
-- **On Windows**: install Rust + Node, then the two commands above just work.
+- **On Windows**: install Rust + Node, then the two commands above just work —
+  except `npm run tauri build`, which now signs its bundle. The config carries
+  an updater pubkey, so Tauri refuses to bundle without the matching private
+  key and fails with *"A public key has been found, but no private key"*. Set
+  `TAURI_SIGNING_PRIVATE_KEY` to the key's path or contents (add
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if yours has a passphrase). `npm run
+  tauri dev` and `cargo build` are unaffected — only bundling signs. If you
+  only want the raw EXE and no installer, `cargo build --release -p
+  quota-widget` skips the bundle step entirely.
 - **On Linux with Nix** (easiest): the flake ships a dev shell with the whole
   toolchain — Rust, Node, `cargo-tauri`, and the GTK/WebKit libraries the
   `-sys` crates need at build time. `nix develop`, or `direnv allow` once and
