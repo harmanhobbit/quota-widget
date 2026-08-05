@@ -713,14 +713,23 @@
            its Check now button, and the banner are one subject, and splitting
            the toggle from its button read as three unrelated settings. -->
       <label class="row"><input type="checkbox" bind:checked={config.check_updates} /> Check for updates</label>
+      <!-- Button first, message after: the row is a flex line, so a message
+           appearing before the button would shove it sideways the moment a
+           check finishes. Anchoring the button on the left keeps it still. -->
       <div class="row">
-        {#if updateInfo}
-          <span class="note">Update available: v{updateInfo.latest}</span>
-        {/if}
         <button class="small" onclick={checkUpdateNow} disabled={checkingForUpdate}>
           {checkingForUpdate ? 'Checking…' : 'Check now'}
         </button>
+        {#if updateInfo}
+          <span class="note">Update available: v{updateInfo.latest}</span>
+        {/if}
       </div>
+      {#if updateInfo && !updateInfo.url}
+        <!-- A release exists but published nothing this build can install —
+             *nix, where releases are Windows-only. Say how to upgrade rather
+             than dangling a version number with no next step. -->
+        <p class="note">Upgrade the way you installed it — on Nix, <code>nix profile upgrade quota-widget</code>.</p>
+      {/if}
       <p class="note">Esc, ✕, and the tray icon always hide the widget. This extra click-away dismiss can occasionally fight window dragging.</p>
       {#if onWayland}
         <p class="note">
