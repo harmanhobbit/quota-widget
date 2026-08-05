@@ -2,9 +2,13 @@
 
 ## Versioning
 
-Increment the version on every change. The workspace `Cargo.toml` is the
-single source of truth; do not add version copies elsewhere, and run
-`npm run check-versions` after each bump.
+Do **not** bump the version on a feature branch. Versions are SemVer and are
+set once, on `main`, in a dedicated release commit that is then annotated-tagged
+`v<version>` — that tag is what builds and publishes the Windows assets. The
+workspace `Cargo.toml` is the single source of truth; do not add version copies
+elsewhere, and run `npm run check-versions` after a bump. See "Releases" in
+AGENTS.md for the full sequence and for resolving version conflicts on older
+branches.
 
 ## Frontend changes
 
