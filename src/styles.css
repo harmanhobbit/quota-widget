@@ -384,10 +384,19 @@ button.primary {
    measured content height that sizes the window — the two reasons a native
    tooltip looked necessary at first. Its text is wider than the bar, so it
    covers its own row's value and label while shown; it is describing that
-   row. Presence of `data-tip` is the switch: the component sets it only
-   while the pointer is within the armed zone. */
-.hover-bar-target[data-tip]::after {
+   row.
+
+   Presence of `data-tip` is the switch: the component sets it only while the
+   pointer is within the armed zone. The pseudo-element is drawn either way,
+   though, and fades between the two — an element cannot transition into
+   existence, so gating its creation on the attribute would make it snap in.
+   `content` therefore reads the attribute unconditionally and resolves to the
+   empty string when it is absent. */
+.hover-bar-target::after {
   content: attr(data-tip);
+  opacity: 0;
+  /* Matches the window fade, the app's one established easing. */
+  transition: opacity 120ms ease-out;
   position: absolute;
   /* Anchored to the row's right edge, not the bar's left: the bar column is
      the grid's flexible one, so a long account name squeezes it towards its
@@ -407,6 +416,10 @@ button.primary {
   padding: 1px 5px;
   font-size: 11px;
   line-height: 14px;
+}
+
+.hover-bar-target[data-tip]::after {
+  opacity: 1;
 }
 
 .hover-bar {
