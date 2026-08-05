@@ -13,6 +13,7 @@
     { id: 'firecrawl', name: 'Firecrawl', secret: 'API key', note: 'Create a key at firecrawl.dev/app/api-keys.' },
     { id: 'deepseek', name: 'DeepSeek', secret: 'API key', note: 'Create a key at platform.deepseek.com/api_keys.' },
     { id: 'moonshot', name: 'Moonshot', secret: 'API key', note: 'Create a key at platform.kimi.ai. Keys are platform-specific: a platform.kimi.com key needs its Balance URL changed to that host, or it returns 401.' },
+    { id: 'venice', name: 'Venice', secret: 'API key', note: 'Create a key at venice.ai. Reports USD and DIEM balances; pick which one heads the card below. The other is shown for reference.' },
     { id: 'onehop', name: 'OneHop', secret: 'API key', note: 'Create a key in the OneHop console. Gateway wallet balance. The balance endpoint is undocumented, so it may change without notice.' },
     { id: 'fireworks', name: 'Fireworks', secret: 'API key', note: 'Create a key at fireworks.ai/account/api-keys. Needs the account ID too. Reports spend, not a balance: set a monthly budget to see it as a percentage.' },
     { id: 'anthropic_admin', name: 'Anthropic Admin', secret: 'Admin API key', note: 'Needs an sk-ant-admin key from Console → Settings → Admin keys, not a normal API key. The Admin API is unavailable on individual accounts. Shows organization spend this month.' },
@@ -412,6 +413,7 @@
       firecrawl: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
       deepseek: [{ id: 'credits', label: 'Credit balance' }],
       moonshot: [{ id: 'credits', label: 'Credit balance' }],
+      venice: [{ id: 'credits', label: 'Credit balance' }],
       onehop: [{ id: 'credits', label: 'Credit balance' }],
       fireworks: [{ id: 'window:monthly_spend', label: 'Monthly' }, { id: 'credits', label: 'Spend this month' }],
       anthropic_admin: [{ id: 'window:monthly_spend', label: 'Monthly' }, { id: 'credits', label: 'Spend this month' }],
@@ -667,7 +669,15 @@
               />
             </label>
           {/if}
-          {#if p.id === 'openrouter' || p.id === 'hermes' || p.id === 'deepseek' || p.id === 'moonshot'}
+          {#if p.id === 'venice'}
+            <label class="field">Headline balance
+              <select bind:value={account.settings.balance_currency}>
+                <option value="USD">USD</option>
+                <option value="DIEM">DIEM</option>
+              </select>
+            </label>
+          {/if}
+          {#if p.id === 'openrouter' || p.id === 'hermes' || p.id === 'deepseek' || p.id === 'moonshot' || p.id === 'venice'}
             <div class="row">
               <label class="inline">Low-balance warning at
                 <input type="number" step="any" class="num" bind:value={account.low_balance_warn} placeholder="off" />

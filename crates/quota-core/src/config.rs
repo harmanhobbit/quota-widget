@@ -181,6 +181,7 @@ impl Default for Config {
         providers.insert("firecrawl".into(), ProviderConfig::default());
         providers.insert("deepseek".into(), ProviderConfig::default());
         providers.insert("moonshot".into(), ProviderConfig::default());
+        providers.insert("venice".into(), ProviderConfig::default());
         providers.insert("onehop".into(), ProviderConfig::default());
         providers.insert("fireworks".into(), ProviderConfig::default());
         providers.insert("anthropic_admin".into(), ProviderConfig::default());
@@ -663,6 +664,7 @@ mod tests {
                 &"firecrawl",
                 &"deepseek",
                 &"moonshot",
+                &"venice",
                 &"onehop",
                 &"fireworks",
                 &"anthropic_admin",

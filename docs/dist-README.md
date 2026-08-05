@@ -3,8 +3,8 @@
 Download page for **Quota Widget**, a system-tray widget for Windows 11 and
 Linux that watches your AI provider allowances in one place: Claude's rolling
 5-hour window and weekly cap, Codex's weekly allowance, Hermes Portal credits,
-OpenRouter, ElevenLabs, Firecrawl, DeepSeek and Moonshot balances, and
-Fireworks, Anthropic and OpenAI organization spend.
+OpenRouter, ElevenLabs, Firecrawl, DeepSeek, Moonshot and Venice balances,
+and Fireworks, Anthropic and OpenAI organization spend.
 
 This repository holds **published binaries only** — the source lives elsewhere
 and is private. Nothing here is built from code you can read, so install it only
@@ -44,6 +44,32 @@ straightforward to add, it simply has not been needed yet.
 
 The app's own update check is Windows-only for the same reason: on Nix, upgrade
 with `nix profile upgrade`.
+
+## How far each provider has been tested
+
+Every adapter is written against the vendor's documented response schema and
+covered by unit tests over that schema. What follows is what has additionally
+been seen from a **live account** — worth knowing before you trust a number on
+screen.
+
+- **Verified with real usage data:** Firecrawl. Its parse path has run on a
+  meaningful non-zero reading, so the arithmetic and formatting are exercised,
+  not just the plumbing.
+- **Reached successfully, but only on an account reporting $0.00:** DeepSeek,
+  Moonshot, OneHop, Fireworks, OpenAI Admin. The key is accepted, the endpoint
+  is right and the response parses — but a zero says nothing about whether a
+  non-zero amount is scaled correctly.
+- **Not yet run against a live account:** Anthropic Admin, Venice.
+
+That middle distinction is not pedantry. Anthropic's cost report returns its
+amount in **cents** while OpenAI's returns **dollars**, so a units mistake is a
+100x error that a $0.00 reading cannot possibly reveal. Treat the first non-zero
+figure from any provider in the lower two groups as worth checking against that
+vendor's own dashboard.
+
+Separately, a few endpoints are **unofficial** — Claude and Codex use the same
+private APIs their CLIs call, and OneHop's balance endpoint is undocumented.
+These work today and may stop working without notice.
 
 ## First run
 
