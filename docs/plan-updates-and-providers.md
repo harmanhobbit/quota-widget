@@ -34,10 +34,11 @@ as history rather than as a reservation.
 Ian test every later feature on Windows without merging to `main`. Tailscale
 followed, being independent of everything else here. Scroll-to-fade opacity came
 next by Ian's request; like Tailscale it blocks nothing and is blocked by
-nothing. All three sit ahead of the update chain because that chain is gated on
-manual steps only Ian can take (creating the dist repo, generating the signing
-key, adding the Actions secrets), so putting unblocked work first keeps things
-moving while that is set up. Update detection is then the foundation both the
+nothing. All three sat ahead of the update chain because that chain was gated on
+manual steps only Ian could take (creating the dist repo, generating the signing
+key, adding the Actions secrets), so putting unblocked work first kept things
+moving while that was set up. That gate is now lifted — see the update-detection
+section. Update detection is then the foundation both the
 Windows installer and the Nix prompt build on — those three are a strict chain
 and must ship in that order. The providers are independent of everything,
 including each other, and can be reordered freely or interleaved with the update
@@ -374,11 +375,56 @@ can start until this ships.
 
 Private source, public distribution — per Ian's decision.
 
-**Ian-only manual steps (I must not do these):** create the public repo
-`harmanhobbit/quota-widget-dist`; run `npm run tauri signer generate` and keep
-the private key; add `TAURI_SIGNING_PRIVATE_KEY` and a `DIST_REPO_TOKEN` with
-write access to the dist repo as Actions secrets on the private repo.
-`AGENTS.md` forbids agents touching remotes or credentials.
+**Ian-only manual steps (I must not do these) — reported done by Ian, 2026-08-05:**
+create the public repo `harmanhobbit/quota-widget-dist`; run
+`npm run tauri signer generate` and keep the private key; add
+`TAURI_SIGNING_PRIVATE_KEY` and a `DIST_REPO_TOKEN` with write access to the
+dist repo as Actions secrets on the private repo. `AGENTS.md` forbids agents
+touching remotes or credentials.
+
+The dist repo is confirmed to exist and be public. Both secrets are present
+under exactly the names above, confirmed by Ian from the repo's Actions
+settings. They are not *agent*-verifiable — the `gh` login available to agents
+here has no access to the private repo, so `gh secret list` 404s — so the only
+remaining check is dispatching the release workflow: a wrong key *value* or a
+token missing write scope on the dist repo surfaces there as a signing or
+upload failure, and nothing local can catch it.
+
+#### The `latest.json` contract — agree before either agent starts
+
+This shape has **three** consumers written by two agents: the release workflow
+generates it (Claude), `update.rs` parses it (Codex), and in the next minor
+`tauri-plugin-updater` reads the very same file (Claude). Two agents guessing
+independently is how this plan produced duplicate adapters once already, so the
+schema is fixed here rather than discovered:
+
+```json
+{
+  "version": "0.17.0",
+  "notes": "See the release page for details.",
+  "pub_date": "2026-08-05T09:23:00Z",
+  "platforms": {
+    "windows-x86_64": {
+      "signature": "<contents of the .sig file>",
+      "url": "https://github.com/harmanhobbit/quota-widget-dist/releases/download/v0.17.0/QuotaWidget_0.17.0_x64-setup.exe"
+    }
+  }
+}
+```
+
+This is **`tauri-plugin-updater`'s own documented format**, chosen deliberately:
+the plugin in the next minor consumes this file unmodified, so inventing a
+custom shape now would mean reshaping it later, mid-chain. `version` is bare
+SemVer with no `v` prefix — the git tag keeps its `v`, the manifest does not.
+`pub_date` is RFC 3339. `platforms` is keyed by Tauri's target triple form, and
+today has exactly one key; adding Linux later must not require a schema change,
+so parse it as a map, never as a fixed struct.
+
+`UpdateInfo`, the type crossing from quota-core into `AppState` and out over
+IPC, is the parsed subset the UI actually renders — `current`, `latest`, `url`,
+`notes`, `pub_date` — plus whatever the "is an update available" verdict needs.
+Codex owns its definition; Claude imports it and must not declare a parallel
+copy in `src-tauri`. Land `update.rs` before the `AppState` wiring starts.
 
 - `.github/workflows/release.yml` (new) — on tag push or dispatch: build, then
   `gh release create` **against the dist repo**, uploading the installer, its
@@ -414,8 +460,12 @@ it consumes that feature's `latest.json` manifest and cannot ship before it.
 - `src-tauri/Cargo.toml` — add `tauri-plugin-updater`, registered in
   `lib.rs`'s builder chain alongside the existing plugins
   (`src-tauri/src/lib.rs:348-353`).
-- `src-tauri/tauri.conf.json` — `bundle.createUpdaterArtifacts: true`,
-  `plugins.updater.pubkey`, `endpoints`, and `windows.installMode: "passive"`.
+- `src-tauri/tauri.conf.json` — `plugins.updater.pubkey`, `endpoints`, and
+  `windows.installMode: "passive"`. **`bundle.createUpdaterArtifacts` already
+  landed with update detection**, not here: the release workflow publishes a
+  `latest.json` carrying a `signature`, and without that flag there is no `.sig`
+  file to read, so the manifest would ship empty-signed from day one. The flag
+  is inert until a signing key is present, so moving it earlier costs nothing.
   Keep `installMode: "currentUser"` on the NSIS bundle
   (`tauri.conf.json:56-60`) so no admin prompt appears.
 - `src-tauri/capabilities/default.json` — add `updater:default`. **Not**
@@ -557,7 +607,8 @@ providers explicitly and confirm before either agent starts**, since a
 duplicated adapter costs more to reconcile than to write.
 
 All provider adapters are now shipped. What remains in this plan is the
-three-step update chain, still gated on Ian's manual steps.
+three-step update chain, which is no longer gated: Ian completed the dist repo
+and signing/token secrets on 2026-08-05, so update detection is ready to start.
 
 The patch series is strictly sequential, so ownership there is just *who does
 the work*. Real parallelism is available across features: Codex can take the

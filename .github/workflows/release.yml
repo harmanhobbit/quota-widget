@@ -1,0 +1,164 @@
+name: Release
+
+# Publishes to the PUBLIC dist repo, harmanhobbit/quota-widget-dist. The source
+# repo stays private, so nothing here may echo source, and every upload is
+# explicit rather than a glob over the workspace.
+#
+# Deliberately separate from build.yml: that workflow's Windows job is metered
+# at 2x and already gated to tags/dispatch for *artifacts*. This one is the only
+# path that creates a public release, so it must never fire on a branch push.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and generate latest.json but do not publish'
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Same check build.yml runs, repeated here because a release can be reached by
+  # dispatch without build.yml's verify-tag ever having run on this ref.
+  verify-tag:
+    name: Tag matches Cargo.toml
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compare tag to workspace version
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          cargo_version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$tag_version" != "$cargo_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME declares $tag_version but Cargo.toml is $cargo_version"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches Cargo.toml $cargo_version"
+
+  test:
+    name: Core tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p quota-core
+      - run: npm run check-versions
+
+  publish:
+    name: Build and publish to dist repo
+    needs: [verify-tag, test]
+    # verify-tag is skipped on a dispatch, so accept skipped — but never accept
+    # a failure. Mirrors build.yml's build-windows gate.
+    if: |
+      !cancelled() && needs.test.result == 'success'
+      && needs.verify-tag.result != 'failure'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - run: npm ci
+
+      # A release build is never a dev build: QUOTA_WIDGET_BRANCH stays unset so
+      # no branch badge is baked in, and update detection stays live.
+      - name: Build signed bundle
+        run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # The signature is produced by bundle.createUpdaterArtifacts. Fail loudly
+      # and specifically if it is missing: the alternative is publishing a
+      # manifest whose signature field is empty, which every client rejects with
+      # a far less obvious error, days later.
+      - name: Locate installer and signature
+        id: assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          installer=$(ls target/release/bundle/nsis/*-setup.exe 2>/dev/null | head -1)
+          if [ -z "$installer" ]; then
+            echo "::error::no NSIS installer in target/release/bundle/nsis"
+            exit 1
+          fi
+          if [ ! -f "$installer.sig" ]; then
+            echo "::error::$installer.sig is missing — is bundle.createUpdaterArtifacts set in tauri.conf.json, and is TAURI_SIGNING_PRIVATE_KEY set?"
+            exit 1
+          fi
+          echo "installer=$installer" >> "$GITHUB_OUTPUT"
+          echo "signature=$installer.sig" >> "$GITHUB_OUTPUT"
+          echo "basename=$(basename "$installer")" >> "$GITHUB_OUTPUT"
+
+      # Schema is fixed in docs/plan-updates-and-providers.md, "The latest.json
+      # contract". It is tauri-plugin-updater's own format because that plugin
+      # consumes this exact file in the next minor. `version` is bare SemVer:
+      # the tag keeps its v, the manifest does not.
+      - name: Generate latest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="v$version"
+          url="https://github.com/harmanhobbit/quota-widget-dist/releases/download/$tag/${{ steps.assets.outputs.basename }}"
+          # jq -Rs slurps the signature verbatim, so newlines and any quoting in
+          # the minisign output survive into valid JSON.
+          jq -n \
+            --arg version "$version" \
+            --arg notes "See https://github.com/harmanhobbit/quota-widget-dist/releases/tag/$tag" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg url "$url" \
+            --rawfile signature "${{ steps.assets.outputs.signature }}" \
+            '{version: $version, notes: $notes, pub_date: $pub_date,
+              platforms: {"windows-x86_64": {signature: $signature, url: $url}}}' \
+            > latest.json
+          cat latest.json
+
+      - name: Publish release to dist repo
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        shell: bash
+        env:
+          # Scoped to the public dist repo only. The default GITHUB_TOKEN cannot
+          # write to another repository, which is the whole reason this exists.
+          GH_TOKEN: ${{ secrets.DIST_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="v$version"
+          gh release create "$tag" \
+            --repo harmanhobbit/quota-widget-dist \
+            --title "$tag" \
+            --notes "Quota Widget $tag" \
+            "${{ steps.assets.outputs.installer }}" \
+            "${{ steps.assets.outputs.signature }}" \
+            latest.json
+
+      # On a dry run, and on any dispatch, the manifest and binaries are still
+      # inspectable — you just get them as workflow artifacts instead of a
+      # public release. This is the safe way to test the secrets end to end.
+      - name: Upload unpublished assets for inspection
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') || inputs.dry_run == true }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-dry-run
+          path: |
+            latest.json
+            ${{ steps.assets.outputs.installer }}
+            ${{ steps.assets.outputs.signature }}

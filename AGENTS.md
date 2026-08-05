@@ -298,15 +298,23 @@ under-panel bug.
 ## Current task
 
 The active plan is **`docs/plan-updates-and-providers.md`**. Read it before
-starting. It covers two tracks:
+starting. Everything in it has shipped except the update chain — the finesse
+patches, the branch dev badge, the Tailscale transport toggle, scroll-to-fade
+opacity, and every provider adapter are all done. Do not reimplement them.
 
-1. **Finesse patches.** Cosmetic only: rounded corners on the mini and main
-   windows, mini-summary row alignment and percentage-first labels, a
-   content-fitted mini height, and a collapsed "Add account" form. All shipped.
-2. **Feature minors.** Branch builds with a visible dev badge, a
-   Tailscale-vs-plain-SSH transport toggle, scroll-to-fade window opacity,
-   upstream update detection, native Windows install, a Nix-aware update
-   prompt, and new provider adapters.
+What remains is three features that are a **strict chain**, each blocked on the
+one before:
+
+1. **Upstream update detection.** `latest.json` on the public dist repo,
+   `is_newer()` in quota-core, a periodic check on `AppState` suppressed for
+   branch builds, and the Settings opt-out.
+2. **Native Windows update.** `tauri-plugin-updater` consuming that manifest.
+3. **Nix-aware update prompt.** Correct instructions per install method.
+
+Ian's manual prerequisites for step 1 are **done**: the public
+`harmanhobbit/quota-widget-dist` repo exists, and the signing key and
+`DIST_REPO_TOKEN` are in the private repo's Actions secrets. Agents cannot read
+those secrets, so verify the release workflow by running it, not by inspection.
 
 **Numbering is a hard requirement:** finesse items are patch bumps, features are
 minor bumps, and **no revision introduces more than one feature**. The plan
