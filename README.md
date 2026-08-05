@@ -17,7 +17,7 @@ Platform differences are small but real:
 |---|---|---|
 | Tray left-click | Toggles the mini summary | Toggles the mini summary |
 | Tray hover | Native detailed tooltip | Plasma-drawn native SNI tooltip |
-| Secret storage | Credential Manager | `0600` file in the config dir |
+| Secret storage | Credential Manager (DPAPI) | `0600` plaintext file in the config dir |
 | Autostart | `HKCU` run entry | XDG autostart entry |
 
 ## How it works
@@ -93,6 +93,32 @@ Secrets (API keys, cookies, OAuth tokens) are stored in the **Windows Credential
 Manager**, not on disk. On Linux they fall back to a `0600` `secrets.json` in the
 config dir. Config lives at `%APPDATA%\quota-widget\config.json`
 (`~/.config/quota-widget/config.json` on Linux).
+
+**What that protects against, and what it doesn't.** The two platforms are not
+equivalent, so it is worth being precise:
+
+- **Windows.** Credential Manager encrypts entries with DPAPI, tied to your
+  Windows account. Another user on the same machine cannot read them, and they
+  are not recoverable from a stolen disk or a file-level backup. They *are*
+  readable by anything running as you — DPAPI unwraps automatically for your
+  own session — so this is protection against other accounts and offline
+  access, not against malware you are running.
+- **Linux.** `secrets.json` is **plaintext**, protected only by file
+  permissions. Root, any process running as you, and any backup that includes
+  your home directory can read it. Roughly the same exposure as a `.env` file,
+  with two small advantages: it is `0600` rather than the usual `644`, and it
+  lives in `~/.config` rather than a project directory where `git add -A` or a
+  Docker build context might sweep it up. The `chmod` is best-effort — on a
+  filesystem without POSIX permissions (an exFAT mount, some network shares)
+  the file is still written, so avoid pointing the config dir at one.
+
+`keyring` supports the Secret Service API, so GNOME Keyring / KWallet storage
+on Linux is a small change if that exposure ever stops being acceptable. It has
+not been done because the Linux target so far is a single-user desktop.
+
+Judge accordingly what you paste in. A read-only usage key is a very different
+prospect from an organization admin key, and the admin providers here
+deliberately want the latter.
 
 ### How far each provider has been verified
 
@@ -261,7 +287,7 @@ src-tauri           the Tauri shell
   oauth.rs          built-in Claude sign-in (PKCE paste-back)
   codex_oauth.rs    built-in Codex sign-in (device code)
   updates.rs        6-hourly check of the public release manifest
-  secrets.rs        Credential Manager (Windows) / 0600 file (elsewhere)
+  secrets.rs        Credential Manager (Windows) / 0600 plaintext file (elsewhere)
 src/                Svelte UI
   App.svelte        popup shell (usage list / settings)
   lib/              ProviderCard, Settings, MiniSummary

@@ -158,7 +158,17 @@ mod backend {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+            // This file is plaintext, so the mode is the only thing protecting
+            // it. Filesystems without POSIX permissions (an exFAT mount, some
+            // network shares) silently leave it world-readable, which the user
+            // cannot see from the UI — so say so rather than swallowing it.
+            if let Err(e) = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)) {
+                eprintln!(
+                    "warning: could not restrict permissions on {} ({e}) — it contains \
+                     API keys in plaintext and may be readable by other users",
+                    p.display()
+                );
+            }
         }
         Ok(())
     }
