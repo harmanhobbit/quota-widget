@@ -255,6 +255,11 @@ const CASES = [
       if (picker.querySelector('.metric-toggle').textContent.trim() !== 'Automatic ▾') {
         throw new Error('checking Automatic did not clear the metric selection');
       }
+      items[0].click();
+      flushSync();
+      if (picker.querySelector('.metric-toggle').textContent.trim() !== 'None ▾') {
+        throw new Error('unchecking Automatic did not select no headlines');
+      }
       picker.querySelector('.metric-toggle').click();
       flushSync();
       findButton('+ Add account').click();
@@ -283,6 +288,9 @@ const CASES = [
       }
       if (saved.providers['claude#2'].label !== 'Work Claude') {
         throw new Error('new account label was not saved');
+      }
+      if (saved.providers.claude.mini_summary_metrics?.length !== 0) {
+        throw new Error('unchecking Automatic did not save no headlines');
       }
     },
   },

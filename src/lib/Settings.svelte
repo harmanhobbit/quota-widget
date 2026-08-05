@@ -325,8 +325,10 @@
     pruneTrayMetric(account);
   }
 
-  function setAutomatic(account) {
-    account.mini_summary_metrics = null;
+  function setAutomatic(account, checked) {
+    // Automatic (`null`) and an empty selection (`[]`) are distinct saved
+    // states: unticking it is the explicit "show no headline" choice.
+    account.mini_summary_metrics = checked ? null : [];
     pruneTrayMetric(account);
   }
 
@@ -433,7 +435,11 @@
                 <!-- Pinned above the metrics and mutually exclusive with them:
                      automatic is a mode, not one more headline. -->
                 <label class="metric-item">
-                  <input type="checkbox" checked={selectedMetrics(account) === null} onchange={() => setAutomatic(account)} />
+                  <input
+                    type="checkbox"
+                    checked={selectedMetrics(account) === null}
+                    onchange={(event) => setAutomatic(account, event.currentTarget.checked)}
+                  />
                   Automatic
                 </label>
                 <hr />
