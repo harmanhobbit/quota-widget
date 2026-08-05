@@ -900,6 +900,7 @@ mod tests {
                         vec![],
                         Some(crate::model::Credits {
                             balance: 5.0,
+                            label: None,
                             unit: "USD".into(),
                             used: None,
                             granted: None,
