@@ -68,9 +68,16 @@ jobs:
           else
             echo "branch=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
           fi
+      # The signing key is needed even though this job never publishes:
+      # bundle.createUpdaterArtifacts is on, so *every* bundle is signed, and
+      # tauri fails outright when it finds a pubkey in the config with no
+      # private key to match it. Passing it here keeps a dispatch build
+      # byte-for-byte comparable with a release one.
       - run: npm run tauri build
         env:
           QUOTA_WIDGET_BRANCH: ${{ steps.badge.outputs.branch }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       # Keep the actual ref in QUOTA_WIDGET_BRANCH for the on-screen badge,
       # but artifact names reject `/`, which is common in feature branch names.
       - id: artifact-name

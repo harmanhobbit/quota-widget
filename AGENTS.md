@@ -154,8 +154,18 @@ environment, say so plainly in your report rather than claiming a change is
 verified.** Do not push to get CI to check your work.
 
 CI (`.github/workflows/build.yml`) runs the core tests on Linux for every branch
-push and PR. The Windows portable EXE + NSIS installer are release-only: a
-`v*.*.*` tag or a manual dispatch, never an ordinary push.
+push and PR. The Windows portable EXE + NSIS installer come from a manual
+dispatch of that workflow. Release tags belong to `release.yml` instead, which
+signs and publishes to the public dist repo; the two workflows must never both
+watch tags, or one tag pays for two 2x-metered Windows builds and produces two
+competing sets of assets.
+
+**Bundling now signs, so it needs a key.** `bundle.createUpdaterArtifacts` is
+on and `tauri.conf.json` carries an updater pubkey, so `npm run tauri build`
+fails with *"A public key has been found, but no private key"* unless
+`TAURI_SIGNING_PRIVATE_KEY` is set. Both workflows pass it from the repo
+secret. Locally, `npm run tauri dev` and `cargo build` are unaffected — only
+the bundle step signs.
 
 ### `npm run build` passing does NOT mean the UI works
 
