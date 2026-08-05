@@ -3,6 +3,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { resetOpacity, stepOpacity } from './opacity.js';
+  import { periodProgress as fmtPeriodProgress, periodTooltip } from './period.js';
 
   const APP_VERSION = __QUOTA_WIDGET_VERSION__;
   const BUILD_BRANCH = __QUOTA_WIDGET_BRANCH__;
@@ -78,17 +79,48 @@
     return () => clearInterval(t);
   });
 
-  // How far through the window's period we are, 0–1, or null when the provider
-  // couldn't tell us the period's bounds. Same reading as on the full card: a
-  // half-full bar at the quarter mark means the allowance is burning fast.
-  function periodProgress(w) {
-    if (!w.resets_at || !w.period_start) return null;
-    const start = new Date(w.period_start).getTime();
-    const end = new Date(w.resets_at).getTime();
-    const span = end - start;
-    if (!(span > 0)) return null;
-    return Math.min(Math.max((now - start) / span, 0), 1);
+  const periodProgress = (w) => fmtPeriodProgress(w, now);
+
+  // Horizontal distance from the pointer at which the period marker starts to
+  // grow, and the distance within which its tooltip is armed. Pixels, not
+  // percent: the bar is only ~60–90px wide here, so a percentage-based zone
+  // would be a couple of pixels and unhittable.
+  const APPROACH_PX = 24;
+  // Deliberately a small fraction of the approach radius: the marker's growth
+  // is the cue that the tooltip is coming, so arming too early means the
+  // tooltip lands before the growth has been seen.
+  const TOOLTIP_PX = 4;
+
+  // Which row's marker the pointer is near, and how near. Only ever one row:
+  // proximity is measured inside the hovered bar, so passing over the summary
+  // doesn't set every marker animating at once.
+  let nearest = $state(null);
+
+  function markerX(bar, progress) {
+    const box = bar.getBoundingClientRect();
+    return { left: box.left + box.width * progress, box };
   }
+
+  function trackPointer(event, key, progress) {
+    // Queried rather than walked from the target: the marker sits between the
+    // bar and the target, so sibling order is not a stable way to find it.
+    const bar = event.currentTarget.parentElement?.querySelector('.hover-bar');
+    if (!bar) return;
+    const { left, box } = markerX(bar, progress);
+    // Clamped at the ends: a marker at 100% keeps its zone on the bar rather
+    // than letting it hang off into the row's padding.
+    const x = Math.min(Math.max(event.clientX, box.left), box.right);
+    nearest = { key, distance: Math.abs(x - left) };
+  }
+
+  // 0 at the approach radius, 1 on the marker. Drives width and opacity
+  // directly so the growth tracks the pointer instead of easing behind it.
+  function approach(key) {
+    if (nearest?.key !== key) return 0;
+    return Math.max(0, 1 - nearest.distance / APPROACH_PX);
+  }
+
+  const armed = (key) => nearest?.key === key && nearest.distance <= TOOLTIP_PX;
 
   function levelOf(pct) {
     if (pct >= 95) return 'critical';
@@ -137,6 +169,9 @@
     level: levelOf(window.used_pct),
     pct: Math.min(window.used_pct, 100),
     progress: periodProgress(window),
+    // Kept so the period marker's tooltip can read the reset time. The row
+    // itself shows no countdown, which is what makes that tooltip worth having.
+    window,
   });
   // The currency is the row's label, matching "5-hour" on a window row. The bar
   // column is dead space on a credit row, so the amount sits centred in it and
@@ -197,15 +232,45 @@
           {:else}
             <!-- Always rendered so a row without a bar (an error) still holds
                  the column open and keeps the numbers aligned. -->
-            <span class="hover-bar" class:empty={!(showBars && s.pct != null)}>
-              {#if showBars && s.pct != null}
-                <i class="fill {s.level}" style="width: {s.pct}%"></i>
-                <!-- Decorative: how far through the period we are, so usage can
-                     be read against time left. Skipped when the provider can't
-                     bound the period rather than guessed at. -->
-                {#if s.progress != null}
-                  <i class="period-mark" style="left: {s.progress * 100}%" aria-hidden="true"></i>
+            <!-- The bar clips its overflow to keep the fill inside its rounded
+                 ends, and hit-testing follows that clip — so the hover target
+                 is a sibling laid over the bar, spanning the full row height
+                 rather than the bar's 5px. -->
+            {@const key = `${snap.provider_id}:${row}`}
+            <span class="hover-bar-cell">
+              <span class="hover-bar" class:empty={!(showBars && s.pct != null)}>
+                {#if showBars && s.pct != null}
+                  <i class="fill {s.level}" style="width: {s.pct}%"></i>
                 {/if}
+              </span>
+              <!-- How far through the period we are, so usage can be read
+                   against time left. Skipped when the provider can't bound the
+                   period rather than guessed at. It sits on the cell rather
+                   than inside the bar so it can grow taller than the bar's
+                   5px, and grows towards the pointer so its tooltip is
+                   something you aim at rather than fall into. The cell lays
+                   the bar out to fill its width, so the same percentage puts
+                   the marker in the same place either way. -->
+              {#if showBars && s.pct != null && s.progress != null}
+                <i
+                  class="period-mark"
+                  style="left: {s.progress * 100}%; width: {1 + approach(key) * 2}px; height: calc(var(--hover-bar-h) + {approach(key) * 4}px); opacity: {0.8 + approach(key) * 0.2}"
+                  aria-hidden="true"
+                ></i>
+                <!-- Deliberately pointer-only and out of the tab order. This
+                     window is a tray popup that hides on focus loss, and the
+                     same countdown is visible text on the full card, so the
+                     tooltip enhances a redundant surface rather than being the
+                     sole channel for the reset time. `data-tip` rather than
+                     `title`: the OS draws `title` after a delay of its own,
+                     which is too slow to scrub against. -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <span
+                  class="hover-bar-target"
+                  onpointermove={(e) => trackPointer(e, key, s.progress)}
+                  onpointerleave={() => (nearest = null)}
+                  data-tip={armed(key) ? periodTooltip(s.window, s.progress, now) : null}
+                ></span>
               {/if}
             </span>
             {#if s.value != null}

@@ -1,0 +1,46 @@
+# Quota Widget
+
+A tray widget that reports how much of each AI provider's allowance you have
+left. This glossary fixes the vocabulary for the quantities it displays, which
+look interchangeable on screen and are not.
+
+## Language
+
+**Usage window**:
+A share of an allowance that refills on a period — Claude's rolling 5 hours,
+a weekly cap, a calendar month against a budget. It is a *percentage*, never
+an amount: the underlying used and granted figures are not retained.
+_Avoid_: Quota, limit, allowance window
+
+**Credits**:
+An *amount* of money or credit attached to an account, in its own unit. Has no
+period and no percentage, so it is reported as a figure rather than a bar.
+_Avoid_: Balance (that is one kind of credits — see below), funds
+
+**Balance**:
+Credits that remain and can still be spent. Reads as a bare figure, because
+that is what money left looks like.
+_Avoid_: Remaining credits, available funds
+
+**Spend**:
+Credits already consumed in the current calendar month. Distinguished from a
+balance by carrying a name for what the figure is, so money spent is never
+presented as money remaining.
+_Avoid_: Cost, usage, burn
+
+**Period marker**:
+How far through a usage window's period the present moment is, drawn on that
+window's bar. It shares the bar's x-axis with the usage fill but measures a
+different quantity — time elapsed, not allowance consumed — which is why a
+half-full bar past the marker means the allowance is burning fast.
+_Avoid_: Progress marker, time marker, tick
+
+**Informational window**:
+A usage window that is shown but never colours a card or the tray, because
+exhausting it does not actually block calls.
+_Avoid_: Muted window, non-gating window
+
+**Account**:
+One configured sign-in to a provider, with its own name, secrets and settings.
+A provider may have several, and each is ordered and displayed independently.
+_Avoid_: Provider (the vendor), profile, connection
