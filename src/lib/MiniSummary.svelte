@@ -86,7 +86,10 @@
   // percent: the bar is only ~60–90px wide here, so a percentage-based zone
   // would be a couple of pixels and unhittable.
   const APPROACH_PX = 24;
-  const TOOLTIP_PX = 8;
+  // Deliberately a small fraction of the approach radius: the marker's growth
+  // is the cue that the tooltip is coming, so arming too early means the
+  // tooltip lands before the growth has been seen.
+  const TOOLTIP_PX = 4;
 
   // Which row's marker the pointer is near, and how near. Only ever one row:
   // proximity is measured inside the hovered bar, so passing over the summary
