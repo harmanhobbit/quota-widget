@@ -13,7 +13,7 @@
 
 use super::as_f64;
 use crate::config::Config;
-use crate::model::{Credits, UsageSnapshot, UsageWindow};
+use crate::model::{Allowance, Credits, UsageSnapshot, UsageWindow};
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 
 /// First instant of `now`'s calendar month, and the first instant of the next.
@@ -84,6 +84,11 @@ pub(crate) fn monthly_spend_window(
         used_pct: spend / budget * 100.0,
         resets_at: Some(end),
         period_start: Some(start),
+        allowance: Some(Allowance {
+            remaining: budget - spend,
+            total: budget,
+            unit: "USD".into(),
+        }),
         ..Default::default()
     }
 }
@@ -132,7 +137,7 @@ mod tests {
         assert!((w.used_pct - 25.0).abs() < 1e-9);
         assert_eq!(w.period_start, Some(start));
         assert_eq!(w.resets_at, Some(end));
-        assert!(w.allowance.is_none());
+        assert_eq!(w.allowance.as_ref().unwrap().remaining, 150.0);
         assert!(!w.informational);
     }
 

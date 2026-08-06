@@ -59,10 +59,9 @@ Platform differences are small but real:
   fires alerts when usage *crosses* a threshold (edge-triggered — you get one
   toast at 80%, not one per poll). Toast, tray color, and auto-popup are each
   independently toggleable, globally and per provider.
-- Where a provider reports exact allowance figures, the main window shows
-  remaining and total below the percentage meter. The compact summary and tray
-  keep their percentage-only form for quick scanning; user-set monthly budgets
-  remain percentage targets rather than reported allowances.
+- Where a provider reports exact allowance figures or you set a monthly budget,
+  the main window shows remaining and total below the percentage meter. The
+  compact summary and tray keep their percentage-only form for quick scanning.
 
 ## Provider setup
 
