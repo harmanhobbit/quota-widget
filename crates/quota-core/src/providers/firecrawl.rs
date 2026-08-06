@@ -7,7 +7,7 @@
 //! the period-progress marker is exact rather than inferred.
 
 use super::{as_f64, calendar_month_start, network_err, parse_timestamp, Provider, ProviderCtx};
-use crate::model::{FetchError, UsageSnapshot, UsageWindow};
+use crate::model::{Allowance, FetchError, UsageSnapshot, UsageWindow};
 use serde_json::Value;
 
 pub struct Firecrawl {
@@ -102,11 +102,18 @@ fn parse_window(body: &Value) -> Option<UsageWindow> {
     Some(UsageWindow {
         metric_id: "monthly_credits".into(),
         label: "Credits".into(),
-        // Credits spent, as a share of the plan's grant. Overage is possible in
-        // principle; the model tolerates >100 and the UI clamps its own bars.
-        used_pct: (plan - remaining) / plan * 100.0,
+        // Credits spent, as a share of the plan's grant. Overage is possible
+        // in principle. A bonus or rollover can also put `remaining` above
+        // the nominal plan: it is still shown in `allowance`, but cannot mean
+        // negative usage.
+        used_pct: ((plan - remaining) / plan * 100.0).max(0.0),
         resets_at,
         period_start,
+        allowance: Some(Allowance {
+            remaining,
+            total: plan,
+            unit: "credits".into(),
+        }),
         ..Default::default()
     })
 }
@@ -134,6 +141,14 @@ mod tests {
         assert_eq!(w.label, "Credits");
         assert!((w.used_pct - 20.0).abs() < 1e-9);
         assert!(!w.informational);
+        assert_eq!(
+            w.allowance,
+            Some(Allowance {
+                remaining: 400_000.0,
+                total: 500_000.0,
+                unit: "credits".into(),
+            })
+        );
         // Both ends come straight from the response, no inference.
         assert_eq!(
             w.period_start,
@@ -154,6 +169,16 @@ mod tests {
         let mut body = sample();
         body["data"]["remainingCredits"] = serde_json::json!(-25_000);
         assert!(parse_window(&body).unwrap().used_pct > 100.0);
+    }
+
+    #[test]
+    fn bonus_credits_keep_their_exact_amount_without_negative_usage() {
+        let mut body = sample();
+        body["data"]["remainingCredits"] = serde_json::json!(1_025);
+        body["data"]["planCredits"] = serde_json::json!(1_000);
+        let window = parse_window(&body).unwrap();
+        assert_eq!(window.used_pct, 0.0);
+        assert_eq!(window.allowance.unwrap().remaining, 1_025.0);
     }
 
     #[test]

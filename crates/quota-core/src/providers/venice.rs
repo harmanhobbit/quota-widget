@@ -157,6 +157,7 @@ fn parse(body: &Value, want: &str) -> Option<(Option<Credits>, Vec<UsageWindow>)
             informational: true,
             period_start: None,
             resets_at: data.get("nextEpochBegins").and_then(parse_timestamp),
+            allowance: None,
         });
     }
 
@@ -180,6 +181,7 @@ fn parse(body: &Value, want: &str) -> Option<(Option<Credits>, Vec<UsageWindow>)
             informational: true,
             period_start: None,
             resets_at: None,
+            allowance: None,
         });
     }
 

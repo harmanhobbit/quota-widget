@@ -27,6 +27,10 @@
     return n.toFixed(0);
   }
 
+  function fmtAmount(n) {
+    return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  }
+
   const age = $derived(Math.round((now - new Date(snap.fetched_at).getTime()) / 60_000));
 </script>
 
@@ -64,6 +68,9 @@
             <i class="period-mark" style="left: {progress * 100}%" aria-hidden="true"></i>
           {/if}
         </div>
+        {#if w.allowance}
+          <span class="sub allowance">{fmtAmount(w.allowance.remaining)} / {fmtAmount(w.allowance.total)} {w.allowance.unit} remaining</span>
+        {/if}
       </div>
     {/each}
     {#if snap.credits}

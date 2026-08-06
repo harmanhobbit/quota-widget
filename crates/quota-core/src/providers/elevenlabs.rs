@@ -4,7 +4,7 @@
 //! window (Claude's weekly cap) rather than as `Credits`.
 
 use super::{as_f64, calendar_month_start, network_err, parse_timestamp, Provider, ProviderCtx};
-use crate::model::{FetchError, UsageSnapshot, UsageWindow};
+use crate::model::{Allowance, FetchError, UsageSnapshot, UsageWindow};
 use serde_json::Value;
 
 pub struct ElevenLabs {
@@ -101,6 +101,11 @@ fn parse_window(body: &Value) -> Option<UsageWindow> {
         used_pct: used / limit * 100.0,
         resets_at,
         period_start: resets_at.and_then(calendar_month_start),
+        allowance: Some(Allowance {
+            remaining: limit - used,
+            total: limit,
+            unit: "credits".into(),
+        }),
         ..Default::default()
     })
 }
@@ -128,9 +133,12 @@ mod tests {
         assert!((w.used_pct - 10.0).abs() < 1e-9);
         assert!(w.resets_at.is_some());
         assert!(!w.informational);
+        assert_eq!(w.allowance.unwrap().remaining, 9_000.0);
         // The cycle is a calendar month back from the reset.
         assert_eq!(
-            w.resets_at.unwrap().checked_sub_months(chrono::Months::new(1)),
+            w.resets_at
+                .unwrap()
+                .checked_sub_months(chrono::Months::new(1)),
             w.period_start
         );
         assert!(w.period_start.unwrap() < w.resets_at.unwrap());

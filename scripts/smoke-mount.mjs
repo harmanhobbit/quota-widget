@@ -81,6 +81,7 @@ const SNAPSHOTS = [
         label: '5h',
         used_pct: 42,
         informational: false,
+        allowance: { remaining: 1025, total: 1000, unit: 'credits' },
         period_start: new Date(Date.now() - 60 * 60_000).toISOString(),
         resets_at: new Date(Date.now() + 4 * 60 * 60_000).toISOString(),
       },
@@ -252,6 +253,23 @@ const CASES = [
         throw new Error('tooltip text should persist so its box can fade');
       }
     },
+  },
+  {
+    file: 'src/lib/ProviderCard.svelte',
+    props: () => ({
+      snap: {
+        provider_name: 'Firecrawl',
+        fetched_at: new Date().toISOString(),
+        error: null,
+        credits: null,
+        windows: [{
+          metric_id: 'monthly_credits', label: 'Credits', used_pct: 0,
+          resets_at: null, period_start: null, informational: false,
+          allowance: { remaining: 1025, total: 1000, unit: 'credits' },
+        }],
+      },
+    }),
+    expect: ['1,025 / 1,000 credits remaining'],
   },
   {
     file: 'src/lib/MiniSummary.svelte',

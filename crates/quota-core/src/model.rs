@@ -16,6 +16,10 @@ pub struct UsageWindow {
     /// lets the UI show how far through the period we are. `None` when the
     /// provider gives us no way to know.
     pub period_start: Option<DateTime<Utc>>,
+    /// Exact allowance figures when the provider reports them. Unlike
+    /// `Credits`, an allowance refills at the end of this window and therefore
+    /// belongs with its percentage and reset time.
+    pub allowance: Option<Allowance>,
     /// Shown, but never drives status, alerts, or the tray. For allowances
     /// whose exhaustion doesn't actually block you — e.g. Hermes' tiny free
     /// subscription trickle when a purchased balance is still funding calls.
@@ -30,9 +34,22 @@ impl Default for UsageWindow {
             used_pct: 0.0,
             resets_at: None,
             period_start: None,
+            allowance: None,
             informational: false,
         }
     }
+}
+
+/// The remaining and total quantities behind a refillable usage window.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Allowance {
+    /// Quantity still available in this window. This may exceed `total` when a
+    /// provider grants bonus or rollover credits.
+    pub remaining: f64,
+    /// The nominal allowance for the window, before any bonus or rollover.
+    pub total: f64,
+    /// Display unit, e.g. "credits", "characters", or "USD".
+    pub unit: String,
 }
 
 /// Credit balance for pay-per-use providers (OpenRouter, Hermes Portal).

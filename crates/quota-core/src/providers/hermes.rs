@@ -19,7 +19,7 @@
 
 use super::spend::{month_bounds, monthly_budget, monthly_spend_window};
 use super::{as_f64, calendar_month_start, network_err, Provider, ProviderCtx};
-use crate::model::{Credits, FetchError, UsageSnapshot, UsageWindow};
+use crate::model::{Allowance, Credits, FetchError, UsageSnapshot, UsageWindow};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::path::Path;
@@ -473,6 +473,11 @@ fn parse_billing_state(
                     label: "Monthly cap".into(),
                     used_pct: spent / limit * 100.0,
                     resets_at: None,
+                    allowance: Some(Allowance {
+                        remaining: limit - spent,
+                        total: limit,
+                        unit: "USD".into(),
+                    }),
                     ..Default::default()
                 });
             }
@@ -543,6 +548,11 @@ fn parse_subscription(body: &Value, balance: f64) -> Vec<UsageWindow> {
         used_pct: ((monthly - remaining) / monthly * 100.0).clamp(0.0, 100.0),
         resets_at,
         period_start: resets_at.and_then(calendar_month_start),
+        allowance: Some(Allowance {
+            remaining,
+            total: monthly,
+            unit: "credits".into(),
+        }),
         informational,
     }]
 }
@@ -626,6 +636,7 @@ mod tests {
         assert_eq!(w[0].label, "Monthly cap");
         assert_eq!(w[0].metric_id, "monthly_cap");
         assert!((w[0].used_pct - 18.0).abs() < 1e-9);
+        assert_eq!(w[0].allowance.as_ref().unwrap().remaining, 820.0);
     }
 
     #[test]
@@ -681,6 +692,7 @@ mod tests {
         assert_eq!(w[0].label, "Monthly allowance (Free)");
         assert_eq!(w[0].metric_id, "monthly_allowance");
         assert_eq!(w[0].used_pct, 100.0);
+        assert_eq!(w[0].allowance.as_ref().unwrap().total, 0.1);
         assert!(w[0].resets_at.is_some());
         assert_eq!(
             w[0].period_start,

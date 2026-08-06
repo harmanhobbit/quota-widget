@@ -5,4 +5,4 @@ pub mod providers;
 pub mod spend_baseline;
 pub mod update;
 
-pub use model::{Credits, FetchError, Status, UsageSnapshot, UsageWindow};
+pub use model::{Allowance, Credits, FetchError, Status, UsageSnapshot, UsageWindow};
