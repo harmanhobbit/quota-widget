@@ -397,10 +397,10 @@ button.primary {
 .hover-bar-target::after {
   content: attr(data-tip);
   opacity: 0;
-  /* Slower than the app's 120ms window fade: this one arrives under the
+  /* Far slower than the app's 120ms window fade: this one arrives under the
      pointer mid-gesture, where a quick fade reads as a pop, and it should not
      outrun the marker's growth, which is what announces it. */
-  transition: opacity 220ms ease-out;
+  transition: opacity 450ms ease-out;
   position: absolute;
   /* Anchored to the row's right edge, not the bar's left: the bar column is
      the grid's flexible one, so a long account name squeezes it towards its

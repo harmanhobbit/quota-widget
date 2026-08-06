@@ -84,8 +84,10 @@
   // Horizontal distance from the pointer at which the period marker starts to
   // grow, and the distance within which its tooltip is armed. Pixels, not
   // percent: the bar is only ~60–90px wide here, so a percentage-based zone
-  // would be a couple of pixels and unhittable.
-  const APPROACH_PX = 24;
+  // would be a couple of pixels and unhittable. The approach radius is a good
+  // fraction of the bar so the growth is a gradual thing you watch happen
+  // rather than a step you trip over near the line.
+  const APPROACH_PX = 44;
   // Deliberately a small fraction of the approach radius: the marker's growth
   // is the cue that the tooltip is coming, so arming too early means the
   // tooltip lands before the growth has been seen.
@@ -254,7 +256,7 @@
               {#if showBars && s.pct != null && s.progress != null}
                 <i
                   class="period-mark"
-                  style="left: {s.progress * 100}%; height: calc(var(--hover-bar-h) + {approach(key) * 6}px); opacity: {0.8 + approach(key) * 0.2}"
+                  style="left: {s.progress * 100}%; height: calc(var(--hover-bar-h) + {approach(key) * 10}px); opacity: {0.8 + approach(key) * 0.2}"
                   aria-hidden="true"
                 ></i>
                 <!-- Deliberately pointer-only and out of the tab order. This
