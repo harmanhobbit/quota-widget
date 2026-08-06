@@ -624,7 +624,8 @@ button.primary {
 
 /* A control whose setting has no effect yet — greyed but still readable, so
    the row explains itself rather than vanishing. */
-.inline.disabled {
+.inline.disabled,
+.row.disabled {
   opacity: 0.5;
 }
 

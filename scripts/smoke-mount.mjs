@@ -34,6 +34,7 @@ const CONFIG = {
   hide_on_blur: false,
   mini_summary_bars: true,
   scroll_opacity: true,
+  scroll_opacity_invert: false,
   sort_order: 'manual',
   sort_basis: 'icon',
   thresholds: { warn_pct: 80, critical_pct: 95 },
@@ -157,6 +158,25 @@ const CASES = [
       flushSync();
       const after = document.documentElement.style.getPropertyValue('--window-opacity');
       if (after !== before) throw new Error('disabled opacity setting still changed the popup');
+    },
+  },
+  // Inverted, the same upward flick that faded above must restore instead —
+  // and since the popup opens fully opaque, that means no change at all.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, scroll_opacity_invert: true },
+    verify: ({ target, flushSync }) => {
+      const main = target.querySelector('main');
+      const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
+      const wheel = (deltaY) =>
+        main.dispatchEvent(new window.WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true }));
+      wheel(-100);
+      flushSync();
+      if (opacity() !== '1') throw new Error(`inverted scroll up faded the popup: ${opacity()}`);
+      wheel(100);
+      flushSync();
+      if (opacity() !== '0.92') throw new Error(`inverted scroll down did not fade: ${opacity()}`);
     },
   },
   // Claude shows both selected headlines as separate rows; Codex's only
@@ -363,6 +383,39 @@ const CASES = [
       const saved = globalThis.__SMOKE_LAST_CONFIG__;
       if (saved?.sort_order !== 'expiry_soonest' || saved?.sort_basis !== 'worst_case') {
         throw new Error(`saved sort was ${saved?.sort_order}/${saved?.sort_basis}`);
+      }
+    },
+  },
+  // The invert toggle is inert while fading itself is off, and a config
+  // predating the field saves a real boolean rather than undefined.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => {
+      const old = structuredClone(CONFIG);
+      delete old.scroll_opacity_invert;
+      return { initialConfig: $.proxy(old), snapshots: structuredClone(SNAPSHOTS), onclose() {} };
+    },
+    expect: ['Reverse which scroll direction fades'],
+    verify: async ({ target, flushSync }) => {
+      const boxes = [...target.querySelectorAll('input[type="checkbox"]')];
+      const label = (box) => box.closest('label')?.textContent.trim();
+      const fade = boxes.find((b) => label(b) === 'Fade windows when scrolling over them');
+      const invert = boxes.find((b) => label(b) === 'Reverse which scroll direction fades');
+      if (!fade || !invert) throw new Error('scroll fade toggles were not both rendered');
+      if (invert.disabled) throw new Error('invert was disabled while fading was on');
+      if (invert.checked) throw new Error('a config without the field defaulted invert to on');
+      fade.click();
+      flushSync();
+      if (!invert.disabled) throw new Error('invert stayed live with fading off');
+      fade.click();
+      flushSync(); // re-enable before clicking, or the disabled input eats it
+      invert.click();
+      flushSync();
+      target.querySelector('.primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const saved = globalThis.__SMOKE_LAST_CONFIG__;
+      if (saved?.scroll_opacity_invert !== true) {
+        throw new Error(`saved invert was ${saved?.scroll_opacity_invert}`);
       }
     },
   },

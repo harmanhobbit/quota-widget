@@ -192,7 +192,7 @@
   // clicks with no way back — floor it where it stays findable.
   function fadeOnWheel(event) {
     if (!config?.scroll_opacity) return;
-    if (stepOpacity(event.deltaY, pinned ? 0.15 : 0)) event.preventDefault();
+    if (stepOpacity(event.deltaY, pinned ? 0.15 : 0, config.scroll_opacity_invert)) event.preventDefault();
   }
 
   async function togglePin() {
