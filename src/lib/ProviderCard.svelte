@@ -60,7 +60,7 @@
                gate anything, so red would be misleading. -->
           <div
             class="fill {w.informational ? 'muted' : barClass(w.used_pct)}"
-            style="width: {Math.min(w.used_pct, 100)}%"
+            style="width: {Math.max(0, Math.min(w.used_pct, 100))}%"
           ></div>
           <!-- Decorative: the "resets in …" text already states the time left,
                so this is a second reading of it, not new information. -->
