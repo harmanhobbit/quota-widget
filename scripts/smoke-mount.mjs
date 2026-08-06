@@ -210,7 +210,12 @@ const CASES = [
       flushSync();
       const tip = targetEl.getAttribute('data-tip') ?? '';
       if (!/through/.test(tip) || !/resets/.test(tip)) {
-        throw new Error(`armed tooltip read ${JSON.stringify(tip)}`);
+        throw new Error(`tooltip read ${JSON.stringify(tip)}`);
+      }
+      // `data-armed` is what shows it; the text is held constant so the
+      // pseudo-element's box survives the gesture and has something to fade.
+      if (targetEl.getAttribute('data-armed') == null) {
+        throw new Error('pointer on the marker did not arm the tooltip');
       }
       // The OS tooltip is gone rather than merely covered; both would show,
       // the native one arriving late on top of the instant one.
@@ -219,8 +224,12 @@ const CASES = [
       }
       targetEl.dispatchEvent(new window.PointerEvent('pointerleave', { bubbles: true }));
       flushSync();
-      if (targetEl.getAttribute('data-tip')) {
-        throw new Error('tooltip survived the pointer leaving the bar');
+      if (targetEl.getAttribute('data-armed') != null) {
+        throw new Error('tooltip stayed armed after the pointer left the bar');
+      }
+      // The text outlives the gesture by design — only the arming toggles.
+      if (!targetEl.getAttribute('data-tip')) {
+        throw new Error('tooltip text should persist so its box can fade');
       }
     },
   },

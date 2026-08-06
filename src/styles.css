@@ -388,19 +388,19 @@ button.primary {
    covers its own row's value and label while shown; it is describing that
    row.
 
-   Presence of `data-tip` is the switch: the component sets it only while the
-   pointer is within the armed zone. The pseudo-element is drawn either way,
-   though, and fades between the two — an element cannot transition into
-   existence, so gating its creation on the attribute would make it snap in.
-   `content` therefore reads the attribute unconditionally and resolves to the
-   empty string when it is absent. */
+   `data-armed` is the switch, and `data-tip` deliberately is not: `content`
+   reads `data-tip`, and changing `content` rebuilds the pseudo-element's box.
+   A freshly built box has no previous opacity to animate from, so it paints
+   straight at its final value and the transition below is discarded. Holding
+   the text constant and toggling a second attribute keeps one box alive
+   across the whole gesture, which is what gives it something to fade. */
 .hover-bar-target::after {
   content: attr(data-tip);
   opacity: 0;
-  /* Much slower than the app's 120ms window fade: this one arrives under the
-     pointer mid-gesture, where a quick fade reads as a pop — and it has to
-     stay out of the way of the marker's growth, which is what announces it. */
-  transition: opacity 380ms ease-out;
+  /* Slower than the app's 120ms window fade: this one arrives under the
+     pointer mid-gesture, where a quick fade reads as a pop, and it should not
+     outrun the marker's growth, which is what announces it. */
+  transition: opacity 220ms ease-out;
   position: absolute;
   /* Anchored to the row's right edge, not the bar's left: the bar column is
      the grid's flexible one, so a long account name squeezes it towards its
@@ -422,7 +422,7 @@ button.primary {
   line-height: 14px;
 }
 
-.hover-bar-target[data-tip]::after {
+.hover-bar-target[data-armed]::after {
   opacity: 1;
 }
 

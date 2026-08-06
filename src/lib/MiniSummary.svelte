@@ -269,7 +269,8 @@
                   class="hover-bar-target"
                   onpointermove={(e) => trackPointer(e, key, s.progress)}
                   onpointerleave={() => (nearest = null)}
-                  data-tip={armed(key) ? periodTooltip(s.window, s.progress, now) : null}
+                  data-tip={periodTooltip(s.window, s.progress, now)}
+                  data-armed={armed(key) ? '' : null}
                 ></span>
               {/if}
             </span>
