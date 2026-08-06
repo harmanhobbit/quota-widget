@@ -360,11 +360,13 @@ button.primary {
 }
 
 /* The mini summary's period marker sits on the cell, not inside the bar, so it
-   can grow taller than the bar's 5px. Centred on its position: `left` alone
-   pins the left edge, which would drift the line's centre away from the
-   pointer as it thickens — away from the very thing you are aiming at. Height
-   and width are set inline per pointer position; only `left` eases, so the
-   growth tracks the pointer instead of lagging 0.4s behind it. */
+   can grow taller than the bar's 5px. It grows only vertically — thickening
+   read as the line going blurry rather than as it responding — so it stays
+   the 1px hairline the shared rule gives it, and the height carries the whole
+   signal. Still centred on its position, which keeps the line on the instant
+   it denotes and holds it there as it grows. Height is set inline per pointer
+   position; only `left` eases, so the growth tracks the pointer instead of
+   lagging 0.4s behind it. */
 .hover-bar-cell .period-mark {
   top: 50%;
   bottom: auto;
@@ -386,18 +388,19 @@ button.primary {
    covers its own row's value and label while shown; it is describing that
    row.
 
-   Presence of `data-tip` is the switch: the component sets it only while the
-   pointer is within the armed zone. The pseudo-element is drawn either way,
-   though, and fades between the two — an element cannot transition into
-   existence, so gating its creation on the attribute would make it snap in.
-   `content` therefore reads the attribute unconditionally and resolves to the
-   empty string when it is absent. */
+   `data-armed` is the switch, and `data-tip` deliberately is not: `content`
+   reads `data-tip`, and changing `content` rebuilds the pseudo-element's box.
+   A freshly built box has no previous opacity to animate from, so it paints
+   straight at its final value and the transition below is discarded. Holding
+   the text constant and toggling a second attribute keeps one box alive
+   across the whole gesture, which is what gives it something to fade. */
 .hover-bar-target::after {
   content: attr(data-tip);
   opacity: 0;
-  /* Slower than the app's 120ms window fade: this one arrives under the
-     pointer mid-gesture, where a quick fade reads as a pop. */
-  transition: opacity 220ms ease-out;
+  /* Far slower than the app's 120ms window fade: this one arrives under the
+     pointer mid-gesture, where a quick fade reads as a pop, and it should not
+     outrun the marker's growth, which is what announces it. */
+  transition: opacity 450ms ease-out;
   position: absolute;
   /* Anchored to the row's right edge, not the bar's left: the bar column is
      the grid's flexible one, so a long account name squeezes it towards its
@@ -419,7 +422,7 @@ button.primary {
   line-height: 14px;
 }
 
-.hover-bar-target[data-tip]::after {
+.hover-bar-target[data-armed]::after {
   opacity: 1;
 }
 
