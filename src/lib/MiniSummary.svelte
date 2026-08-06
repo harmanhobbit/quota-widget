@@ -254,7 +254,7 @@
               {#if showBars && s.pct != null && s.progress != null}
                 <i
                   class="period-mark"
-                  style="left: {s.progress * 100}%; width: {1 + approach(key) * 2}px; height: calc(var(--hover-bar-h) + {approach(key) * 4}px); opacity: {0.8 + approach(key) * 0.2}"
+                  style="left: {s.progress * 100}%; height: calc(var(--hover-bar-h) + {approach(key) * 6}px); opacity: {0.8 + approach(key) * 0.2}"
                   aria-hidden="true"
                 ></i>
                 <!-- Deliberately pointer-only and out of the tab order. This
