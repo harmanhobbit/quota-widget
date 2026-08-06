@@ -67,6 +67,7 @@
     config.sort_order ??= 'manual';
     config.sort_basis ??= 'icon';
     config.check_updates ??= true;
+    config.scroll_opacity_invert ??= false;
     // Normalize configured accounts only. Do not recreate removed defaults.
     for (const account of Object.values(config.providers)) {
       account.settings ??= {};
@@ -743,6 +744,10 @@
       <p class="note">Ordering applies to the main window, the mini summary, and the tray tooltip alike. Accounts with no matching number — a credits-only balance, or an account that isn't in the tray — stay at the bottom in your own order.</p>
       <label class="row"><input type="checkbox" bind:checked={config.mini_summary_bars} /> Show usage bars in the mini summary</label>
       <label class="row"><input type="checkbox" bind:checked={config.scroll_opacity} /> Fade windows when scrolling over them</label>
+      <!-- The wheel's sign is the platform's, not ours: the flick that fades on
+           Linux restores on Windows. Rather than guess per-OS, let the user
+           flip it to match the machine in front of them. -->
+      <label class="row sub-toggle" class:disabled={!config.scroll_opacity}><input type="checkbox" bind:checked={config.scroll_opacity_invert} disabled={!config.scroll_opacity} /> Reverse which scroll direction fades</label>
       <!-- Update controls sit together at the end of the list: the checkbox,
            its Check now button, and the banner are one subject, and splitting
            the toggle from its button read as three unrelated settings. -->

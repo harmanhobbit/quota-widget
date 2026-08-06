@@ -147,6 +147,10 @@ pub struct Config {
     /// Let scrolling over a window fade its painted shell. The level itself is
     /// deliberately ephemeral so reopening the widget never leaves it hidden.
     pub scroll_opacity: bool,
+    /// Swap which wheel direction fades. The webview reports wheel deltas with
+    /// the platform's own sign convention, so the gesture that fades on one OS
+    /// restores on another — this lets the user match it to their machine.
+    pub scroll_opacity_invert: bool,
     /// Check the public distribution manifest for a newer released build.
     pub check_updates: bool,
     /// Display order for the account list. Defaults to `Manual`, so an existing
@@ -196,6 +200,7 @@ impl Default for Config {
             hide_on_blur: false,
             mini_summary_bars: true,
             scroll_opacity: true,
+            scroll_opacity_invert: false,
             check_updates: true,
             sort_order: SortOrder::default(),
             sort_basis: SortBasis::default(),
@@ -563,6 +568,7 @@ mod tests {
         assert_eq!(cfg.providers["claude"].kind, None);
         assert_eq!(cfg.providers["claude"].label, None);
         assert!(cfg.scroll_opacity);
+        assert!(!cfg.scroll_opacity_invert);
         assert!(cfg.check_updates);
     }
 

@@ -19,9 +19,14 @@ export function resetOpacity() {
 // Scrolling *up* fades and *down* restores. That is the opposite of the
 // original plan, and deliberate: the gesture reads as pushing the window back
 // into the desktop rather than as scrolling a document.
-export function stepOpacity(deltaY, minimum = 0) {
+//
+// Which physical gesture that *is* depends on the platform: the webview hands
+// us the OS's own wheel sign, so the same flick fades on Linux and restores on
+// Windows. `invert` flips the mapping so the user can match their machine.
+export function stepOpacity(deltaY, minimum = 0, invert = false) {
   if (!Number.isFinite(deltaY) || deltaY === 0) return false;
-  const next = Math.min(1, Math.max(minimum, level + Math.sign(deltaY) * STEP));
+  const direction = invert ? -1 : 1;
+  const next = Math.min(1, Math.max(minimum, level + Math.sign(deltaY) * direction * STEP));
   if (next === level) return false;
   level = next;
   write();

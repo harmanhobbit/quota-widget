@@ -88,7 +88,7 @@
     // The popup's actual content is scrollable, so only its chrome fades.
     // Let the cards and the Settings form keep their normal wheel behaviour.
     if (event.target.closest('.cards, .settings')) return;
-    if (stepOpacity(event.deltaY, 0.15)) event.preventDefault();
+    if (stepOpacity(event.deltaY, 0.15, appConfig.scroll_opacity_invert)) event.preventDefault();
   }
 
 </script>
