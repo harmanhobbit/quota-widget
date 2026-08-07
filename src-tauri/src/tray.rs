@@ -1,12 +1,13 @@
 //! Tray icon with runtime-generated status colors, menu, and popup placement.
 
+use quota_core::config::{Corner, MiniAnchor};
 use quota_core::model::Status;
 use tauri::image::Image;
 #[cfg(not(target_os = "linux"))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 #[cfg(not(target_os = "linux"))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Runtime};
+use tauri::{AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, Runtime};
 
 #[cfg(not(target_os = "linux"))]
 pub const TRAY_ID: &str = "quota-tray";
@@ -219,25 +220,91 @@ pub fn hide_popup<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Pin to the work area's lower edge: this is immediately above a bottom
-/// panel, unlike monitor bounds which place the popup underneath the panel.
-pub fn anchor_above_panel<R: Runtime>(win: &tauri::WebviewWindow<R>) {
-    let (Ok(size), Ok(Some(monitor))) = (win.outer_size(), win.current_monitor()) else {
+/// The monitor the anchor names, or the best available stand-in.
+///
+/// The stored name is a preference, not a fact about the current layout: when
+/// it matches nothing connected — an undocked laptop — this falls back to the
+/// primary monitor and the caller leaves the stored name alone, so reconnecting
+/// restores the summary without the user asking again. An anchor naming no
+/// monitor keeps the pre-existing behaviour of using whichever monitor the
+/// window is already on. See docs/adr/0001-monitor-identity-by-name.md.
+fn resolve_monitor<R: Runtime>(
+    win: &tauri::WebviewWindow<R>,
+    anchor: &MiniAnchor,
+) -> Option<Monitor> {
+    if let Some(name) = anchor.monitor.as_deref() {
+        if let Ok(monitors) = win.available_monitors() {
+            if let Some(found) = monitors
+                .into_iter()
+                .find(|m| m.name().is_some_and(|n| n == name))
+            {
+                return Some(found);
+            }
+        }
+        // Named a monitor that is not here: primary, then current.
+        if let Ok(Some(primary)) = win.primary_monitor() {
+            return Some(primary);
+        }
+    }
+    win.current_monitor().ok().flatten()
+}
+
+/// Pin the window to a corner of its anchored monitor's work area.
+///
+/// Work area rather than monitor bounds throughout: on the bottom edge that is
+/// immediately above a panel, where monitor bounds would put the window
+/// underneath it. The 12px inset applies to the left and right edges only, so a
+/// bottom-anchored summary still sits flush above the panel as it always has.
+pub fn anchor_to<R: Runtime>(win: &tauri::WebviewWindow<R>, anchor: &MiniAnchor) {
+    let (Ok(size), Some(monitor)) = (win.outer_size(), resolve_monitor(win, anchor)) else {
         return;
     };
+    let _ = win.set_position(corner_position(&monitor, &size, anchor.corner));
+}
+
+/// Where a window of `size` sits when pinned to `corner` of `monitor`.
+///
+/// The 12px inset is horizontal only, so a bottom-anchored summary stays flush
+/// above the panel exactly as it always has.
+fn corner_position(
+    monitor: &Monitor,
+    size: &PhysicalSize<u32>,
+    corner: Corner,
+) -> PhysicalPosition<i32> {
     let area = monitor.work_area();
-    let x = area.position.x + area.size.width as i32 - size.width as i32 - 12;
-    let y = area.position.y + area.size.height as i32 - size.height as i32;
-    let _ = win.set_position(PhysicalPosition::new(x.max(area.position.x), y));
+    let margin = 12;
+    let x = if corner.is_right() {
+        area.position.x + area.size.width as i32 - size.width as i32 - margin
+    } else {
+        area.position.x + margin
+    };
+    let y = if corner.is_bottom() {
+        area.position.y + area.size.height as i32 - size.height as i32
+    } else {
+        area.position.y
+    };
+    PhysicalPosition::new(x.max(area.position.x), y)
+}
+
+/// The anchor the user has chosen, or the default placement when state is not
+/// reachable (which is also what every build before the anchor existed did).
+pub fn current_anchor<R: Runtime>(app: &AppHandle<R>) -> MiniAnchor {
+    app.try_state::<std::sync::Arc<crate::AppState>>()
+        .map(|state| state.mini_anchor.lock().unwrap().clone())
+        .unwrap_or_default()
 }
 
 /// Resize the mini summary to fit its content and immediately re-anchor it.
 ///
-/// These are one operation, not two: `anchor_above_panel` pins the window's
+/// These are one operation, not two: a bottom-corner anchor pins the window's
 /// *bottom* edge to the work area, so changing the height moves the top edge.
 /// Resizing without re-anchoring in the same step leaves the window sitting
 /// wherever its old top-left put it, and the summary visibly jumps.
-pub fn resize_mini_to<R: Runtime>(win: &tauri::WebviewWindow<R>, logical_height: f64) {
+pub fn resize_mini_to<R: Runtime>(
+    win: &tauri::WebviewWindow<R>,
+    anchor: &MiniAnchor,
+    logical_height: f64,
+) {
     let Ok(scale) = win.scale_factor() else {
         return;
     };
@@ -252,7 +319,124 @@ pub fn resize_mini_to<R: Runtime>(win: &tauri::WebviewWindow<R>, logical_height:
         return;
     }
     let _ = win.set_size(PhysicalSize::new(size.width, height));
-    anchor_above_panel(win);
+    anchor_to(win, anchor);
+}
+
+/// How long the window must stop moving before a drag counts as dropped, and
+/// the snap animation's shape. The settle delay is a compromise: long enough
+/// that a pause mid-drag is not mistaken for a drop, short enough that the snap
+/// does not feel disconnected from letting go.
+const DRAG_SETTLE_MS: u64 = 180;
+const SNAP_STEPS: u32 = 8;
+const SNAP_STEP_MS: u64 = 15;
+
+/// Wait for a dragging mini summary to stop moving, then commit where it
+/// landed as the new anchor.
+///
+/// `gen` is the move counter's value when this was scheduled; a later move
+/// bumps it and makes this call a no-op, so only the last move of a drag
+/// resolves it. A native drag gives no end event, which is why the drop is
+/// inferred from stillness rather than observed.
+pub fn settle_mini_drag<R: Runtime>(app: &AppHandle<R>, gen: u64) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(DRAG_SETTLE_MS)).await;
+        use std::sync::atomic::Ordering::Relaxed;
+        let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() else {
+            return;
+        };
+        // Something moved after us: that later move owns the drop, not this one.
+        if state.mini_drag_gen.load(Relaxed) != gen {
+            return;
+        }
+        state.mini_dragging.store(false, Relaxed);
+        commit_drop(&app).await;
+    });
+}
+
+/// Turn the window's current spot into a stored anchor, then move it there.
+async fn commit_drop<R: Runtime>(app: &AppHandle<R>) {
+    let Some(win) = app.get_webview_window("mini") else {
+        return;
+    };
+    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+        return;
+    };
+    let centre_x = pos.x as f64 + size.width as f64 / 2.0;
+    let centre_y = pos.y as f64 + size.height as f64 / 2.0;
+    // The monitor under the window's centre, so a summary straddling two
+    // screens lands on the one it is mostly on.
+    let Ok(Some(monitor)) = win.monitor_from_point(centre_x, centre_y) else {
+        return;
+    };
+    let area = monitor.work_area();
+    let corner = Corner::nearest(
+        centre_x,
+        centre_y,
+        area.position.x as f64,
+        area.position.y as f64,
+        area.size.width as f64,
+        area.size.height as f64,
+    );
+    // An unnamed monitor cannot be stored (see ADR 0001), so the corner is
+    // kept and the monitor preference is left as it was.
+    let anchor = MiniAnchor {
+        monitor: monitor
+            .name()
+            .cloned()
+            .or_else(|| current_anchor(app).monitor),
+        corner,
+    };
+
+    if let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() {
+        *state.mini_anchor.lock().unwrap() = anchor.clone();
+        let mut config = state.config.write().await;
+        if config.mini_anchor != anchor {
+            config.mini_anchor = anchor.clone();
+            if let Err(e) = config.save(&state.config_dir) {
+                eprintln!("failed to save mini anchor: {e}");
+            }
+            // Same channel `set_config` uses: the frontend's copy is refreshed
+            // now, so a later Settings save carries this anchor rather than
+            // overwriting it with the config it was holding before the drag.
+            use tauri::Emitter;
+            let _ = app.emit("config", &*config);
+        }
+    }
+    snap_to(&win, &anchor);
+}
+
+/// Slide the window to its anchor.
+///
+/// Deliberately short and uninterruptible. A content-height change from the
+/// poller can land mid-flight and re-anchor at the new height; this finishes
+/// last and wins, so the window ends in the right corner, at worst a frame or
+/// two late in height. Nothing here can leave it in the wrong place.
+fn snap_to<R: Runtime>(win: &tauri::WebviewWindow<R>, anchor: &MiniAnchor) {
+    let (Ok(from), Ok(size), Some(monitor)) = (
+        win.outer_position(),
+        win.outer_size(),
+        resolve_monitor(win, anchor),
+    ) else {
+        return;
+    };
+    let to = corner_position(&monitor, &size, anchor.corner);
+    let win = win.clone();
+    tauri::async_runtime::spawn(async move {
+        for step in 1..=SNAP_STEPS {
+            // Ease-out: most of the distance early, so it reads as settling
+            // into the corner rather than sliding at a constant speed.
+            let t = step as f64 / SNAP_STEPS as f64;
+            let eased = 1.0 - (1.0 - t) * (1.0 - t);
+            let x = from.x as f64 + (to.x - from.x) as f64 * eased;
+            let y = from.y as f64 + (to.y - from.y) as f64 * eased;
+            let _ = win.set_position(PhysicalPosition::new(x.round() as i32, y.round() as i32));
+            tokio::time::sleep(std::time::Duration::from_millis(SNAP_STEP_MS)).await;
+        }
+        // Land exactly on the anchor: the eased steps are rounded, and a
+        // resize during the slide would have changed the target's height.
+        let _ = win.set_position(to);
+    });
 }
 
 /// Show the always-on-top popup, positioned near the tray click when we know
@@ -317,7 +501,7 @@ pub fn show_mini<R: Runtime>(app: &AppHandle<R>, _near: Option<PhysicalPosition<
     // An invisible X11 window has no reliable current monitor. Position after
     // mapping it so Nix/XWayland builds anchor above Plasma's panel instead of
     // accepting the window manager's top-left default.
-    anchor_above_panel(&win);
+    anchor_to(&win, &current_anchor(app));
     let _ = win.set_focus();
     // The webview survives hiding, so a summary scrolled to fully transparent
     // would come back invisible — and an invisible window still eats clicks.

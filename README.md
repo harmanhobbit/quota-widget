@@ -31,6 +31,13 @@ Platform differences are small but real:
   It hides when it loses focus unless you pin it with its circle button; the
   pin lasts only for the current app session. A Settings checkbox controls
   whether the mini summary includes usage bars.
+- **Drag the mini summary** by its title bar to move it, including onto another
+  screen: it snaps to the nearest corner of the screen you drop it on and
+  reopens there from then on, whichever screen's tray you click. With more than
+  one monitor connected, Settings also offers a picker for the screen alone —
+  the corner stays as you dragged it. The chosen screen is remembered by name
+  and kept even while it's disconnected, so undocking a laptop shows the
+  summary on your primary screen for now and puts it back when you redock.
 - **Hover** the tray icon for one native multiline tooltip that lists every
   provider's reported quota windows and balances. Windows draws its standard
   tray tooltip; Plasma draws the StatusNotifierItem tooltip.

@@ -39,6 +39,18 @@ pub struct AppState {
     /// Millis timestamp of the last title-bar press — blur events within the
     /// grace window are drag-induced (tauri#10767), not click-away.
     pub last_drag_ms: std::sync::atomic::AtomicI64,
+    /// Mirror of config.mini_anchor, readable from the sync event loop where
+    /// the async config lock cannot be taken.
+    pub mini_anchor: std::sync::Mutex<quota_core::config::MiniAnchor>,
+    /// Set while the mini summary's title bar is held down, so the move events
+    /// that follow are known to be the user dragging rather than our own
+    /// anchoring. Cleared when the drag is resolved into an anchor.
+    pub mini_dragging: std::sync::atomic::AtomicBool,
+    /// Bumped by every move of a dragging mini summary. A native drag has no
+    /// end event — the OS owns the pointer, so no mouseup reaches the webview —
+    /// so the drop is detected by movement going quiet, and this counter is how
+    /// a settle timer knows nothing moved while it waited.
+    pub mini_drag_gen: std::sync::atomic::AtomicU64,
     /// Last known upstream release, or `None` when no check has succeeded, the
     /// build is a dev branch, or the newest release is not newer than this one.
     pub update: RwLock<Option<quota_core::update::UpdateInfo>>,
@@ -122,7 +134,17 @@ async fn set_config(
     state
         .hide_on_blur
         .store(config.hide_on_blur, std::sync::atomic::Ordering::Relaxed);
+    *state.mini_anchor.lock().unwrap() = config.mini_anchor.clone();
     *state.config.write().await = config.clone();
+    // A monitor chosen in Settings should move a visible summary now, not on
+    // its next showing — the picker is otherwise a control with no visible
+    // effect. Corner and monitor both come from the anchor, so this covers
+    // either being changed.
+    if let Some(mini) = app.get_webview_window("mini") {
+        if mini.is_visible().unwrap_or(false) {
+            tray::anchor_to(&mini, &config.mini_anchor);
+        }
+    }
     let _ = app.emit("config", &config);
     // Apply autostart immediately.
     let autolaunch = app.autolaunch();
@@ -325,11 +347,11 @@ fn set_mini_pinned(
 /// sizing and positioning — so the frontend reports a measurement and Rust
 /// performs the move. Guarded on the label so nothing else can drive it.
 #[tauri::command]
-fn set_mini_height(window: tauri::WebviewWindow, height: f64) {
+fn set_mini_height(app: tauri::AppHandle, window: tauri::WebviewWindow, height: f64) {
     if window.label() != "mini" {
         return;
     }
-    tray::resize_mini_to(&window, height);
+    tray::resize_mini_to(&window, &tray::current_anchor(&app), height);
 }
 
 /// Fired by the frontend on a title-bar mousedown, just before the native
@@ -340,6 +362,55 @@ fn note_drag(state: tauri::State<'_, Arc<AppState>>) {
         chrono::Utc::now().timestamp_millis(),
         std::sync::atomic::Ordering::Relaxed,
     );
+}
+
+/// A connected monitor, as the Settings picker needs to describe it. Tauri
+/// exposes no friendlier identity than the name (`DP-1`, `\\.\DISPLAY1`), so
+/// the resolution and left-to-right order are what make a row recognisable.
+#[derive(serde::Serialize)]
+struct MonitorInfo {
+    /// `None` for a monitor the platform did not name; such a monitor cannot be
+    /// pinned, because there would be nothing to store. See ADR 0001.
+    name: Option<String>,
+    width: u32,
+    height: u32,
+    /// Virtual-desktop x, so the frontend can order the list left to right.
+    x: i32,
+    primary: bool,
+}
+
+#[tauri::command]
+fn list_monitors(window: tauri::WebviewWindow) -> Vec<MonitorInfo> {
+    let primary = window
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .and_then(|m| m.name().cloned());
+    let mut monitors: Vec<MonitorInfo> = window
+        .available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| MonitorInfo {
+            primary: primary.is_some() && m.name() == primary.as_ref(),
+            name: m.name().cloned(),
+            width: m.size().width,
+            height: m.size().height,
+            x: m.position().x,
+        })
+        .collect();
+    monitors.sort_by_key(|m| m.x);
+    monitors
+}
+
+/// Fired by the mini summary on a title-bar mousedown, just before the native
+/// drag begins. Arms the move handler so the moves that follow are attributed
+/// to the user rather than to our own anchoring and resizing, which also call
+/// `set_position` and must never rewrite the user's choice.
+#[tauri::command]
+fn note_mini_drag(state: tauri::State<'_, Arc<AppState>>) {
+    state
+        .mini_dragging
+        .store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[tauri::command]
@@ -359,6 +430,9 @@ pub fn run() {
         mini_pinned: std::sync::atomic::AtomicBool::new(false),
         reopen_mini_after_popup: std::sync::atomic::AtomicBool::new(false),
         last_drag_ms: std::sync::atomic::AtomicI64::new(0),
+        mini_anchor: std::sync::Mutex::new(config.mini_anchor.clone()),
+        mini_dragging: std::sync::atomic::AtomicBool::new(false),
+        mini_drag_gen: std::sync::atomic::AtomicU64::new(0),
         update: RwLock::new(None),
         config: RwLock::new(config),
         snapshots: RwLock::new(HashMap::new()),
@@ -399,6 +473,8 @@ pub fn run() {
             set_mini_pinned,
             set_mini_height,
             note_drag,
+            note_mini_drag,
+            list_monitors,
             updates::update_status,
             updates::check_update_now,
             quit,
@@ -423,6 +499,23 @@ pub fn run() {
                     } else {
                         tray::hide_popup(window.app_handle());
                     }
+                }
+                // A dragging mini summary settles into an anchor. Only moves
+                // during a user drag count: anchoring and resizing move the
+                // window too, and must never rewrite the user's choice.
+                WindowEvent::Moved(_) => {
+                    if window.label() != "mini" {
+                        return;
+                    }
+                    let Some(state) = window.app_handle().try_state::<Arc<AppState>>() else {
+                        return;
+                    };
+                    use std::sync::atomic::Ordering::Relaxed;
+                    if !state.mini_dragging.load(Relaxed) {
+                        return;
+                    }
+                    let gen = state.mini_drag_gen.fetch_add(1, Relaxed) + 1;
+                    tray::settle_mini_drag(window.app_handle(), gen);
                 }
                 // Click-away dismiss (opt-in), suppressed right after a
                 // title-bar press: starting a native drag on Windows drops
