@@ -201,15 +201,29 @@
     pinned = !pinned;
     await invoke('set_mini_pinned', { pinned });
   }
+
+  // Pinning holds the summary in place, so it holds its position too. `'false'`
+  // is how Tauri's drag script disables a region; `true` renders the bare
+  // attribute it looks for.
+  const dragAttr = $derived(pinned ? 'false' : true);
+
+  // Belt and braces with the attribute above: this only ever runs for a real
+  // drag, so a pinned summary never arms the anchor-on-drop machinery.
+  function startDrag() {
+    if (!pinned) invoke('note_mini_drag');
+  }
 </script>
 
 <div class="mini" bind:this={miniEl} onwheel={fadeOnWheel}>
-  <!-- The mousedown fires just before the native drag takes the pointer, which
-       is the only moment the webview hears about a drag at all: Rust attributes
-       the moves that follow to the user and anchors the summary where it lands. -->
-  <header role="toolbar" aria-label="Summary controls" tabindex="-1" data-tauri-drag-region onmousedown={() => invoke('note_mini_drag')}>
-    <span data-tauri-drag-region>Quota Widget <small class="build-version" data-tauri-drag-region>v{APP_VERSION}</small>{#if BUILD_BRANCH} <small class="build-branch" data-tauri-drag-region>{BUILD_BRANCH}</small>{/if}</span>
-    <span class="spacer" data-tauri-drag-region></span>
+  <!-- Pinning holds the summary in place, so it also holds its position: the
+       drag region is switched off while pinned ("false" is how Tauri's drag
+       script disables one). The mousedown fires just before the native drag
+       takes the pointer, which is the only moment the webview hears about a
+       drag at all — Rust attributes the moves that follow to the user and
+       anchors the summary where it lands. -->
+  <header role="toolbar" aria-label="Summary controls" tabindex="-1" title={pinned ? 'Unpin to move the summary' : 'Drag to move the summary'} data-tauri-drag-region={dragAttr} onmousedown={startDrag}>
+    <span data-tauri-drag-region={dragAttr}>Quota Widget <small class="build-version" data-tauri-drag-region={dragAttr}>v{APP_VERSION}</small>{#if BUILD_BRANCH} <small class="build-branch" data-tauri-drag-region={dragAttr}>{BUILD_BRANCH}</small>{/if}</span>
+    <span class="spacer" data-tauri-drag-region={dragAttr}></span>
     <button class="icon mini-pin" title={pinned ? 'Unpin summary' : 'Pin summary'} onclick={togglePin}>{pinned ? '●' : '○'}</button>
     <button class="icon mini-close" title="Hide summary" onclick={() => invoke('hide_window')}>✕</button>
   </header>
