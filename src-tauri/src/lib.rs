@@ -42,6 +42,10 @@ pub struct AppState {
     /// Mirror of config.mini_anchor, readable from the sync event loop where
     /// the async config lock cannot be taken.
     pub mini_anchor: std::sync::Mutex<quota_core::config::MiniAnchor>,
+    /// Millis timestamp of the last mini-summary title-bar press. The summary
+    /// is click-away transient, so without a grace period the focus loss a
+    /// native drag causes (tauri#10767) would dismiss it as it was being moved.
+    pub last_mini_drag_ms: std::sync::atomic::AtomicI64,
     /// Set while the mini summary's title bar is held down, so the move events
     /// that follow are known to be the user dragging rather than our own
     /// anchoring. Cleared when the drag is resolved into an anchor.
@@ -409,9 +413,13 @@ fn list_monitors(window: tauri::WebviewWindow) -> Vec<MonitorInfo> {
 /// `set_position` and must never rewrite the user's choice.
 #[tauri::command]
 fn note_mini_drag(state: tauri::State<'_, Arc<AppState>>) {
+    use std::sync::atomic::Ordering::Relaxed;
+    state.mini_dragging.store(true, Relaxed);
+    // Also arms the blur grace period: the summary is click-away transient, and
+    // the focus loss a native drag causes must not dismiss it mid-move.
     state
-        .mini_dragging
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+        .last_mini_drag_ms
+        .store(chrono::Utc::now().timestamp_millis(), Relaxed);
 }
 
 #[tauri::command]
@@ -432,6 +440,7 @@ pub fn run() {
         reopen_mini_after_popup: std::sync::atomic::AtomicBool::new(false),
         last_drag_ms: std::sync::atomic::AtomicI64::new(0),
         mini_anchor: std::sync::Mutex::new(config.mini_anchor.clone()),
+        last_mini_drag_ms: std::sync::atomic::AtomicI64::new(0),
         mini_dragging: std::sync::atomic::AtomicBool::new(false),
         mini_drag_gen: std::sync::atomic::AtomicU64::new(0),
         update: RwLock::new(None),
@@ -515,6 +524,16 @@ pub fn run() {
                     if !state.mini_dragging.load(Relaxed) {
                         return;
                     }
+                    // A press that never moved leaves the flag armed — no Moved
+                    // arrives to resolve it — so it also expires. Without this,
+                    // the next anchoring move after such a press would be
+                    // mistaken for a drag and rewrite the user's choice.
+                    let since_press = chrono::Utc::now().timestamp_millis()
+                        - state.last_mini_drag_ms.load(Relaxed);
+                    if since_press > 30_000 {
+                        state.mini_dragging.store(false, Relaxed);
+                        return;
+                    }
                     let gen = state.mini_drag_gen.fetch_add(1, Relaxed) + 1;
                     tray::settle_mini_drag(window.app_handle(), gen);
                 }
@@ -530,7 +549,13 @@ pub fn run() {
                     // its own pin button is active. The full window keeps the
                     // separate user-configured click-away preference.
                     if window.label() == "mini" {
-                        if !state.mini_pinned.load(Relaxed) {
+                        // Same drag grace period the full window needs: starting
+                        // a native drag drops focus momentarily (tauri#10767),
+                        // and dismissing the summary mid-drag would make it
+                        // impossible to move to another screen.
+                        let since_drag = chrono::Utc::now().timestamp_millis()
+                            - state.last_mini_drag_ms.load(Relaxed);
+                        if !state.mini_pinned.load(Relaxed) && since_drag > 2_000 {
                             tray::hide_mini(window.app_handle());
                         }
                         return;
