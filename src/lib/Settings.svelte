@@ -175,6 +175,14 @@
     void initialiseSettings();
     let unlisten;
     let unlistenUpdate;
+    let unlistenAnchor;
+    // Rust owns the anchor and writes it when the summary is dragged. This
+    // form holds a snapshot taken at mount, so without this it would save the
+    // pre-drag anchor back over the new one. Only the anchor is adopted:
+    // everything else on screen is the user's unsaved editing.
+    listen('config', (e) => {
+      if (e.payload?.mini_anchor) config.mini_anchor = e.payload.mini_anchor;
+    }).then((stop) => (unlistenAnchor = stop));
     listen('codex-oauth', (e) => {
       const flow = codexFor(e.payload.provider);
       if (e.payload.ok) {
@@ -200,6 +208,7 @@
     return () => {
       unlisten?.();
       unlistenUpdate?.();
+      unlistenAnchor?.();
       window.removeEventListener('keydown', escape, true);
     };
   });

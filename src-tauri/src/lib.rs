@@ -336,7 +336,8 @@ fn set_mini_pinned(
         .store(pinned, std::sync::atomic::Ordering::Relaxed);
     let _ = window.set_always_on_top(pinned);
     if pinned {
-        tray::anchor_above_panel(&window);
+        let anchor = state.mini_anchor.lock().unwrap().clone();
+        tray::anchor_to(&window, &anchor);
     }
 }
 

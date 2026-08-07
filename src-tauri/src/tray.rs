@@ -342,7 +342,12 @@ pub fn settle_mini_drag<R: Runtime>(app: &AppHandle<R>, gen: u64) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(DRAG_SETTLE_MS)).await;
         use std::sync::atomic::Ordering::Relaxed;
-        let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() else {
+        // Cloned out of the borrowed `State`, which must not be held across the
+        // await below.
+        let Some(state) = app
+            .try_state::<std::sync::Arc<crate::AppState>>()
+            .map(|s| (*s).clone())
+        else {
             return;
         };
         // Something moved after us: that later move owns the drop, not this one.
@@ -388,19 +393,37 @@ async fn commit_drop<R: Runtime>(app: &AppHandle<R>) {
         corner,
     };
 
-    if let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() {
-        *state.mini_anchor.lock().unwrap() = anchor.clone();
-        let mut config = state.config.write().await;
-        if config.mini_anchor != anchor {
-            config.mini_anchor = anchor.clone();
-            if let Err(e) = config.save(&state.config_dir) {
-                eprintln!("failed to save mini anchor: {e}");
+    // Cloned out of the borrowed `State` before any await: the guard below is
+    // held across one, and a borrow of the app handle must not be.
+    let state = app
+        .try_state::<std::sync::Arc<crate::AppState>>()
+        .map(|s| (*s).clone());
+    if let Some(state) = state {
+        // Scoped: this is a std Mutex, whose guard is not Send and so must be
+        // dropped before the async config lock is taken below.
+        {
+            *state.mini_anchor.lock().unwrap() = anchor.clone();
+        }
+        // The write guard is released before emitting: a listener that calls
+        // back into config would otherwise deadlock against it.
+        let changed = {
+            let mut config = state.config.write().await;
+            if config.mini_anchor == anchor {
+                None
+            } else {
+                config.mini_anchor = anchor.clone();
+                if let Err(e) = config.save(&state.config_dir) {
+                    eprintln!("failed to save mini anchor: {e}");
+                }
+                Some(config.clone())
             }
-            // Same channel `set_config` uses: the frontend's copy is refreshed
-            // now, so a later Settings save carries this anchor rather than
-            // overwriting it with the config it was holding before the drag.
+        };
+        // Same channel `set_config` uses: the frontend's copy is refreshed now,
+        // so a later Settings save carries this anchor rather than overwriting
+        // it with the config it was holding before the drag.
+        if let Some(config) = changed {
             use tauri::Emitter;
-            let _ = app.emit("config", &*config);
+            let _ = app.emit("config", &config);
         }
     }
     snap_to(&win, &anchor);
