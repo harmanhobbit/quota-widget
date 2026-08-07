@@ -1,7 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "mini",
-  "description": "Tray-click mini summary: reads snapshots, listens for updates, and toggles its own pin/visibility through Rust commands. Rust does all positioning and always-on-top work, so this window gets no window-management permissions of its own.",
+  "description": "Tray-click mini summary: reads snapshots, listens for updates, and toggles its own pin/visibility through Rust commands. Rust still owns all sizing and positioning — the one exception is start-dragging, which cannot be driven from Rust because a native drag has to begin from the webview's own pointer press. Dragging is how the summary is moved to another screen; Rust observes where it lands and anchors it there.",
   "windows": ["mini"],
-  "permissions": ["core:default", "core:event:default"]
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-start-dragging"
+  ]
 }

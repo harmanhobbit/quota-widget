@@ -61,7 +61,47 @@
     { id: 'worst_case', label: 'the worst window' },
   ];
 
+  // Connected monitors, for the mini-summary screen picker. Empty until the
+  // command answers, and on a single-screen machine the picker is not shown.
+  let monitors = $state([]);
+
+  /// The screen currently chosen, which may name a monitor that is not
+  /// connected — an undocked laptop keeps its preference rather than losing it,
+  /// so the picker has to be able to show an absent monitor as the selection.
+  const selectedMonitor = $derived(config.mini_anchor?.monitor ?? '');
+  const selectedIsAbsent = $derived(
+    selectedMonitor !== '' && !monitors.some((m) => m.name === selectedMonitor),
+  );
+
+  function monitorLabel(monitor) {
+    // The name alone (DP-1, \\.\DISPLAY1) identifies a port, not a screen you
+    // can pick out by looking. Resolution and side are what make it one.
+    const side = monitors.length > 1 ? `, ${describeSide(monitor)}` : '';
+    const primary = monitor.primary ? ', primary' : '';
+    return `${monitor.name} — ${monitor.width}×${monitor.height}${side}${primary}`;
+  }
+
+  function describeSide(monitor) {
+    const xs = monitors.map((m) => m.x);
+    if (monitor.x === Math.min(...xs)) return 'left';
+    if (monitor.x === Math.max(...xs)) return 'right';
+    return 'middle';
+  }
+
   async function initialiseSettings() {
+    // A config written before the anchor existed has no field at all; the
+    // picker must not then save `null` over Rust's default.
+    config.mini_anchor ??= { monitor: null, corner: 'bottom_right' };
+    try {
+      // Coerced, not trusted: a failed or absent monitor list must leave this
+      // an array. Everything downstream calls .length and .some on it, and a
+      // null here throws mid-render, which leaves the old DOM on screen with
+      // no error shown rather than degrading to "no picker".
+      const listed = await invoke('list_monitors');
+      monitors = Array.isArray(listed) ? listed : [];
+    } catch {
+      monitors = [];
+    }
     // A config written before sorting existed has neither field; `undefined`
     // would leave the selects blank and then save `null` back to Rust.
     config.sort_order ??= 'manual';
@@ -135,6 +175,14 @@
     void initialiseSettings();
     let unlisten;
     let unlistenUpdate;
+    let unlistenAnchor;
+    // Rust owns the anchor and writes it when the summary is dragged. This
+    // form holds a snapshot taken at mount, so without this it would save the
+    // pre-drag anchor back over the new one. Only the anchor is adopted:
+    // everything else on screen is the user's unsaved editing.
+    listen('config', (e) => {
+      if (e.payload?.mini_anchor) config.mini_anchor = e.payload.mini_anchor;
+    }).then((stop) => (unlistenAnchor = stop));
     listen('codex-oauth', (e) => {
       const flow = codexFor(e.payload.provider);
       if (e.payload.ok) {
@@ -160,6 +208,7 @@
     return () => {
       unlisten?.();
       unlistenUpdate?.();
+      unlistenAnchor?.();
       window.removeEventListener('keydown', escape, true);
     };
   });
@@ -743,6 +792,32 @@
       </div>
       <p class="note">Ordering applies to the main window, the mini summary, and the tray tooltip alike. Accounts with no matching number — a credits-only balance, or an account that isn't in the tray — stay at the bottom in your own order.</p>
       <label class="row"><input type="checkbox" bind:checked={config.mini_summary_bars} /> Show usage bars in the mini summary</label>
+      <!-- Only worth a control when there is a choice to make. The picker sets
+           the screen alone; the corner comes from wherever you last dragged
+           the summary, so one setting never silently undoes the other. -->
+      {#if monitors.length > 1 || selectedIsAbsent}
+        <div class="row">
+          <label class="inline">Show the mini summary on
+            <select value={selectedMonitor} onchange={(e) => (config.mini_anchor.monitor = e.currentTarget.value || null)}>
+              <option value="">Wherever it is</option>
+              {#each monitors as monitor}
+                {#if monitor.name}<option value={monitor.name}>{monitorLabel(monitor)}</option>{/if}
+              {/each}
+              <!-- The stored screen, listed even when unplugged, so the setting
+                   reads as intact rather than as having been forgotten. -->
+              {#if selectedIsAbsent}
+                <option value={selectedMonitor}>{selectedMonitor} — not connected</option>
+              {/if}
+            </select>
+          </label>
+        </div>
+        <p class="note">
+          Drag the summary by its title bar to move it — it snaps to the nearest corner of the screen you drop it on, and reopens there.
+          {#if selectedIsAbsent}
+            {selectedMonitor} isn't connected right now, so the summary is showing on your primary screen. It'll go back when that screen returns.
+          {/if}
+        </p>
+      {/if}
       <label class="row"><input type="checkbox" bind:checked={config.scroll_opacity} /> Fade windows when scrolling over them</label>
       <!-- The wheel's sign is the platform's, not ours: the flick that fades on
            Linux restores on Windows. Rather than guess per-OS, let the user

@@ -206,7 +206,10 @@
 </script>
 
 <div class="mini" bind:this={miniEl} onwheel={fadeOnWheel}>
-  <header data-tauri-drag-region>
+  <!-- The mousedown fires just before the native drag takes the pointer, which
+       is the only moment the webview hears about a drag at all: Rust attributes
+       the moves that follow to the user and anchors the summary where it lands. -->
+  <header role="toolbar" aria-label="Summary controls" tabindex="-1" data-tauri-drag-region onmousedown={() => invoke('note_mini_drag')}>
     <span data-tauri-drag-region>Quota Widget <small class="build-version" data-tauri-drag-region>v{APP_VERSION}</small>{#if BUILD_BRANCH} <small class="build-branch" data-tauri-drag-region>{BUILD_BRANCH}</small>{/if}</span>
     <span class="spacer" data-tauri-drag-region></span>
     <button class="icon mini-pin" title={pinned ? 'Unpin summary' : 'Pin summary'} onclick={togglePin}>{pinned ? '●' : '○'}</button>
