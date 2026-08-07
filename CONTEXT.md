@@ -40,6 +40,28 @@ A usage window that is shown but never colours a card or the tray, because
 exhausting it does not actually block calls.
 _Avoid_: Muted window, non-gating window
 
+**Anchor**:
+The corner of a monitor's work area that a window is pinned to, and the
+monitor it is pinned on. It is a corner rather than a position because the
+summary resizes to its content: an edge to grow from is what stops the window
+jumping when an account appears. Work area rather than monitor bounds, because
+the latter puts the window underneath a panel.
+_Avoid_: Position, placement, location
+
+**Preferred monitor**:
+The screen the user chose for a window, stored by monitor name. It is a
+*preference*, not a fact about the current display layout: when that monitor is
+not connected the window is shown elsewhere while the preference stays put, so
+reconnecting the monitor restores the window without the user asking again.
+_Avoid_: Current monitor (that is what the window is on now), display, screen
+
+**Snap**:
+Moving a window to its [[anchor]] after the user drops it somewhere that is not
+a corner. A drop states an intent — *this screen, roughly here* — and the snap
+resolves it to the nearest corner, so what is on screen always matches what is
+stored.
+_Avoid_: Align, dock, reposition
+
 **Account**:
 One configured sign-in to a provider, with its own name, secrets and settings.
 A provider may have several, and each is ordered and displayed independently.

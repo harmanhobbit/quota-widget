@@ -41,6 +41,67 @@ pub struct SortKey {
     pub resets_at: Option<DateTime<Utc>>,
 }
 
+/// A corner of a monitor's work area. The mini summary pins to one of these
+/// rather than to a free position, because it resizes to fit its content: an
+/// anchored edge is what stops the window jumping when an account appears.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    /// What every build before this one did, so an old config keeps its place.
+    #[default]
+    BottomRight,
+}
+
+impl Corner {
+    /// The corner nearest a window's centre within the given work area, used to
+    /// resolve where a drag was dropped into a corner to store.
+    pub fn nearest(
+        centre_x: f64,
+        centre_y: f64,
+        area_x: f64,
+        area_y: f64,
+        area_w: f64,
+        area_h: f64,
+    ) -> Self {
+        let right = centre_x >= area_x + area_w / 2.0;
+        let bottom = centre_y >= area_y + area_h / 2.0;
+        match (bottom, right) {
+            (true, true) => Corner::BottomRight,
+            (true, false) => Corner::BottomLeft,
+            (false, true) => Corner::TopRight,
+            (false, false) => Corner::TopLeft,
+        }
+    }
+
+    pub fn is_bottom(self) -> bool {
+        matches!(self, Corner::BottomLeft | Corner::BottomRight)
+    }
+
+    pub fn is_right(self) -> bool {
+        matches!(self, Corner::TopRight | Corner::BottomRight)
+    }
+}
+
+/// Where the mini summary sits: a preferred monitor and a corner of its work
+/// area.
+///
+/// `monitor` is a *preference*, not a fact about the current display layout. It
+/// holds the name Tauri reports (`DP-1`, `\\.\DISPLAY1`) and is deliberately
+/// kept when no connected monitor matches — undocking a laptop must not destroy
+/// the choice. Resolve it against the live monitor list on every use and never
+/// write the fallback back here. See docs/adr/0001-monitor-identity-by-name.md.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct MiniAnchor {
+    /// `None` means "wherever the window already is" — the pre-existing
+    /// behaviour, and what an unnamed monitor falls back to.
+    pub monitor: Option<String>,
+    pub corner: Corner,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Thresholds {
@@ -158,6 +219,10 @@ pub struct Config {
     pub sort_order: SortOrder,
     /// Which number the non-manual orders sort on.
     pub sort_basis: SortBasis,
+    /// Where the mini summary is pinned. Defaults to the bottom-right corner of
+    /// whatever monitor the window is already on, which is what every build
+    /// before this one did unconditionally.
+    pub mini_anchor: MiniAnchor,
     /// Account iteration order is the user-selected display order everywhere.
     pub providers: IndexMap<String, ProviderConfig>,
 }
@@ -204,6 +269,7 @@ impl Default for Config {
             check_updates: true,
             sort_order: SortOrder::default(),
             sort_basis: SortBasis::default(),
+            mini_anchor: MiniAnchor::default(),
             providers,
         }
     }
@@ -533,6 +599,46 @@ mod tests {
         assert_eq!(loaded, cfg);
         assert!(loaded.providers["openrouter"].enabled);
         assert_eq!(loaded.effective_thresholds("claude").warn_pct, 80.0);
+    }
+
+    #[test]
+    fn config_without_mini_anchor_defaults_to_bottom_right() {
+        // A config.json written before the anchor existed must keep the
+        // placement it has always had, not land in a corner it never chose.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"version":2,"poll_interval_secs":60}"#,
+        )
+        .unwrap();
+        let loaded = Config::load(dir.path());
+        assert_eq!(loaded.mini_anchor.corner, Corner::BottomRight);
+        assert_eq!(loaded.mini_anchor.monitor, None);
+    }
+
+    #[test]
+    fn mini_anchor_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.mini_anchor = MiniAnchor {
+            monitor: Some("DP-1".into()),
+            corner: Corner::TopLeft,
+        };
+        cfg.save(dir.path()).unwrap();
+        assert_eq!(Config::load(dir.path()).mini_anchor, cfg.mini_anchor);
+    }
+
+    #[test]
+    fn nearest_corner_splits_the_work_area_in_quadrants() {
+        // Work area offset from the origin, as a secondary monitor always is.
+        let (x, y, w, h) = (1920.0, 0.0, 2560.0, 1440.0);
+        let at = |cx, cy| Corner::nearest(cx, cy, x, y, w, h);
+        assert_eq!(at(2000.0, 100.0), Corner::TopLeft);
+        assert_eq!(at(4400.0, 100.0), Corner::TopRight);
+        assert_eq!(at(2000.0, 1300.0), Corner::BottomLeft);
+        assert_eq!(at(4400.0, 1300.0), Corner::BottomRight);
+        // Exactly centred resolves to bottom-right, matching the default.
+        assert_eq!(at(x + w / 2.0, y + h / 2.0), Corner::BottomRight);
     }
 
     #[test]
