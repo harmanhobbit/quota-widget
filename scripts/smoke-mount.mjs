@@ -263,13 +263,19 @@ const CASES = [
         error: null,
         credits: null,
         windows: [{
-          metric_id: 'monthly_credits', label: 'Credits', used_pct: 0,
+          metric_id: 'monthly_credits', label: 'Credits', used_pct: -3,
           resets_at: null, period_start: null, informational: false,
           allowance: { remaining: 1025, total: 1000, unit: 'credits' },
         }],
       },
     }),
-    expect: ['1,025 / 1,000 credits remaining'],
+    expect: ['-3%', '1,025 / 1,000 credits remaining'],
+    verify: ({ target }) => {
+      const fill = target.querySelector('.fill');
+      if (fill?.style.width !== '0%') {
+        throw new Error(`negative usage drew ${fill?.style.width ?? 'no'} bar instead of 0%`);
+      }
+    },
   },
   {
     file: 'src/lib/MiniSummary.svelte',

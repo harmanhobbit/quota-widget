@@ -473,11 +473,6 @@ fn parse_billing_state(
                     label: "Monthly cap".into(),
                     used_pct: spent / limit * 100.0,
                     resets_at: None,
-                    allowance: Some(Allowance {
-                        remaining: limit - spent,
-                        total: limit,
-                        unit: "USD".into(),
-                    }),
                     ..Default::default()
                 });
             }
@@ -545,7 +540,9 @@ fn parse_subscription(body: &Value, balance: f64) -> Vec<UsageWindow> {
     vec![UsageWindow {
         metric_id: "monthly_allowance".into(),
         label: format!("Monthly allowance ({tier})"),
-        used_pct: ((monthly - remaining) / monthly * 100.0).clamp(0.0, 100.0),
+        // Hermes subscriptions can roll unused credits forward, so a balance
+        // above the nominal monthly grant is meaningful negative usage.
+        used_pct: (monthly - remaining) / monthly * 100.0,
         resets_at,
         period_start: resets_at.and_then(calendar_month_start),
         allowance: Some(Allowance {
@@ -636,7 +633,7 @@ mod tests {
         assert_eq!(w[0].label, "Monthly cap");
         assert_eq!(w[0].metric_id, "monthly_cap");
         assert!((w[0].used_pct - 18.0).abs() < 1e-9);
-        assert_eq!(w[0].allowance.as_ref().unwrap().remaining, 820.0);
+        assert!(w[0].allowance.is_none());
     }
 
     #[test]
@@ -705,6 +702,20 @@ mod tests {
         )
         .is_empty());
         assert!(parse_subscription(&serde_json::json!({}), 0.0).is_empty());
+    }
+
+    #[test]
+    fn subscription_rollover_keeps_negative_usage_and_exact_credits() {
+        let body = serde_json::json!({
+            "current": {
+                "tierName": "Plus",
+                "monthlyCredits": "20",
+                "creditsRemaining": "25"
+            }
+        });
+        let window = parse_subscription(&body, 0.0).pop().unwrap();
+        assert_eq!(window.used_pct, -25.0);
+        assert_eq!(window.allowance.unwrap().remaining, 25.0);
     }
 
     /// A cycle is a calendar month, not 30 days: one ending in March began in

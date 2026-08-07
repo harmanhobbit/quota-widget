@@ -169,7 +169,9 @@
     value: `${window.used_pct.toFixed(0)}%`,
     label: window.label,
     level: levelOf(window.used_pct),
-    pct: Math.min(window.used_pct, 100),
+    // Negative usage is a real rollover/bonus state, but CSS has no useful
+    // negative bar width. Keep the signed number while drawing an empty bar.
+    pct: Math.max(0, Math.min(window.used_pct, 100)),
     progress: periodProgress(window),
     // Kept so the period marker's tooltip can read the reset time. The row
     // itself shows no countdown, which is what makes that tooltip worth having.

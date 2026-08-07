@@ -102,11 +102,10 @@ fn parse_window(body: &Value) -> Option<UsageWindow> {
     Some(UsageWindow {
         metric_id: "monthly_credits".into(),
         label: "Credits".into(),
-        // Credits spent, as a share of the plan's grant. Overage is possible
-        // in principle. A bonus or rollover can also put `remaining` above
-        // the nominal plan: it is still shown in `allowance`, but cannot mean
-        // negative usage.
-        used_pct: ((plan - remaining) / plan * 100.0).max(0.0),
+        // Credits spent, as a share of the plan's grant. Overage and bonus or
+        // rollover credits are both real states, so the percentage may sit
+        // above 100 or below zero; the UI clamps only the bar's width.
+        used_pct: (plan - remaining) / plan * 100.0,
         resets_at,
         period_start,
         allowance: Some(Allowance {
@@ -172,12 +171,12 @@ mod tests {
     }
 
     #[test]
-    fn bonus_credits_keep_their_exact_amount_without_negative_usage() {
+    fn bonus_credits_keep_their_exact_amount_and_negative_usage() {
         let mut body = sample();
         body["data"]["remainingCredits"] = serde_json::json!(1_025);
         body["data"]["planCredits"] = serde_json::json!(1_000);
         let window = parse_window(&body).unwrap();
-        assert_eq!(window.used_pct, 0.0);
+        assert_eq!(window.used_pct, -2.5);
         assert_eq!(window.allowance.unwrap().remaining, 1_025.0);
     }
 
