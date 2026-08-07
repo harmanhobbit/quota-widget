@@ -348,9 +348,11 @@ fn set_mini_pinned(
 /// Fit the mini summary's height to its rendered content.
 ///
 /// The main window does this from JS with `setSize`, but `mini`'s capability
-/// deliberately grants no window-management permissions — Rust owns all of its
-/// sizing and positioning — so the frontend reports a measurement and Rust
-/// performs the move. Guarded on the label so nothing else can drive it.
+/// deliberately withholds sizing and positioning permissions — Rust owns both —
+/// so the frontend reports a measurement and Rust performs the move. Guarded on
+/// the label so nothing else can drive it. (`start-dragging` is the one
+/// window permission `mini` does hold: a native drag can only begin from the
+/// webview's own pointer press, so it cannot be driven from here.)
 #[tauri::command]
 fn set_mini_height(app: tauri::AppHandle, window: tauri::WebviewWindow, height: f64) {
     if window.label() != "mini" {
