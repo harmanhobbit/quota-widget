@@ -66,3 +66,28 @@ _Avoid_: Align, dock, reposition
 One configured sign-in to a provider, with its own name, secrets and settings.
 A provider may have several, and each is ordered and displayed independently.
 _Avoid_: Provider (the vendor), profile, connection
+
+**Distribution artifact**:
+A release file published for people to install on one platform, independent of
+whether the source repository is public.
+_Avoid_: Build, package (unless a platform-specific format is meant), source release
+
+**Installable artifact**:
+A distribution artifact the running build can replace through the in-app updater.
+An AppImage is installable in place; a Nix build is not.
+_Avoid_: Available download, update (which may only be detectable)
+
+**Compatibility floor**:
+The oldest operating-system environment a distribution artifact is promised to
+run on; newer environments are compatible by implication.
+_Avoid_: Build runner, latest Linux
+
+**Release signature**:
+The minisign signature over a distribution artifact, used by both the updater
+and a person verifying a download.
+_Avoid_: Checksum, release key
+
+**Desktop integration**:
+A per-user launcher and icon registration that makes a standalone AppImage
+discoverable from the desktop environment's application menu.
+_Avoid_: System installation, AppImage daemon
