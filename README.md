@@ -32,7 +32,8 @@ Platform differences are small but real:
   pin lasts only for the current app session. A Settings checkbox controls
   whether the mini summary includes usage bars.
 - **Drag the mini summary** by its title bar to move it, including onto another
-  screen: it snaps to the nearest corner of the screen you drop it on and
+  screen — unpin it first, since pinning holds its position as well as keeping
+  it on top. It snaps to the nearest corner of the screen you drop it on and
   reopens there from then on, whichever screen's tray you click. With more than
   one monitor connected, Settings also offers a picker for the screen alone —
   the corner stays as you dragged it. The chosen screen is remembered by name

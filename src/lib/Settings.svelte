@@ -792,6 +792,11 @@
       </div>
       <p class="note">Ordering applies to the main window, the mini summary, and the tray tooltip alike. Accounts with no matching number — a credits-only balance, or an account that isn't in the tray — stay at the bottom in your own order.</p>
       <label class="row"><input type="checkbox" bind:checked={config.mini_summary_bars} /> Show usage bars in the mini summary</label>
+      <!-- Outside the monitor-picker block below, which only appears with more
+           than one screen: pinning holds the summary's position on a single
+           screen too, and that is where "why won't it drag?" would otherwise
+           have no answer anywhere in Settings. -->
+      <p class="note">Drag the mini summary by its title bar to move it. Pinning it with its circle button holds it in place, so unpin it before moving it.</p>
       <!-- Only worth a control when there is a choice to make. The picker sets
            the screen alone; the corner comes from wherever you last dragged
            the summary, so one setting never silently undoes the other. -->
@@ -812,7 +817,7 @@
           </label>
         </div>
         <p class="note">
-          Drag the summary by its title bar to move it — it snaps to the nearest corner of the screen you drop it on, and reopens there.
+          It snaps to the nearest corner of the screen you drop it on, and reopens there.
           {#if selectedIsAbsent}
             {selectedMonitor} isn't connected right now, so the summary is showing on your primary screen. It'll go back when that screen returns.
           {/if}
