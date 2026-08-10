@@ -487,6 +487,7 @@
 <svelte:window onclick={closeMetricMenus} />
 
 <div class="settings">
+  <div class="settings-form">
     <section>
       <h2>Providers</h2>
       {#if addingAccount}
@@ -868,13 +869,20 @@
       {/if}
     </section>
 
+  </div>
+
+  <!-- Outside .settings-form on purpose: the form scrolls, this does not, so
+       the commit action, any save error, and the version stay on screen no
+       matter how far down the form the user is. -->
+  <div class="settings-footer">
     <div class="actions">
       <button class="primary" onclick={save}>Save &amp; close</button>
     </div>
     {#if saveError}
-      <p class="test bad">{saveError}</p>
+      <p class="test bad save-error">{saveError}</p>
     {/if}
     {#if appVersion}
       <p class="version">Quota Widget v{appVersion}</p>
     {/if}
   </div>
+</div>
