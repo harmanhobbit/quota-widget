@@ -19,6 +19,42 @@
 
   const SETTINGS_HEIGHT = 560;
 
+  // First-run desktop integration, AppImage only. Shown once: whichever way it
+  // is answered, Rust records that the question was put, so "Not now" is
+  // remembered as firmly as yes and no launch nags again. Settings keeps the
+  // explicit add and remove controls, so a deferral is never final.
+  let integrationPrompt = $state(null);
+  let integrationResult = $state('');
+
+  async function maybeAskAboutIntegration() {
+    // Only a running AppImage answers with a status, and only an unclaimed
+    // launcher is worth asking about — a repair is a Settings decision, not a
+    // question to open with.
+    if (appConfig?.desktop_integration_prompted) return;
+    try {
+      const status = await invoke('desktop_integration_status');
+      if (status?.state === 'absent') integrationPrompt = status;
+    } catch {
+      // No such command in this shell: nothing to integrate.
+    }
+  }
+
+  async function answerIntegration(add) {
+    integrationPrompt = null;
+    try {
+      if (add) {
+        await invoke('desktop_integration_add');
+        integrationResult = 'Added to your applications menu.';
+      }
+    } catch (error) {
+      integrationResult = `Could not add the launcher: ${error}`;
+    }
+    // Recorded whichever way it was answered, and even if the write failed:
+    // the user has been asked, and re-asking at every launch is the nag this
+    // exists to prevent. Settings still offers the action.
+    await invoke('mark_desktop_integration_prompted').catch(() => {});
+  }
+
   // The popup shrinks to exactly fit the usage meters; settings gets a fixed
   // comfortable height (still user-resizable from there).
   async function fitToContent() {
@@ -46,6 +82,7 @@
     invoke('get_snapshots').then((initial) => {
       snapshots = initial.snapshots;
       appConfig = initial.config;
+      void maybeAskAboutIntegration();
     });
     const unlisten = [];
     listen('snapshots', (e) => (snapshots = e.payload)).then((u) => unlisten.push(u));
@@ -105,6 +142,21 @@
     {/if}
     <button class="icon" title="Hide to tray" onclick={() => invoke('hide_window')}>✕</button>
   </header>
+
+  <!-- Consent before anything is written outside the config dir. It sits above
+       the cards rather than in a modal so it can be ignored: it disappears on
+       either answer, and Settings keeps both controls afterwards. -->
+  {#if integrationPrompt}
+    <div class="integration-prompt">
+      <p>Add Quota Widget to your applications menu? This writes a launcher and icons under your home directory only.</p>
+      <div class="integration-actions">
+        <button class="link" onclick={() => answerIntegration(false)}>Not now</button>
+        <button onclick={() => answerIntegration(true)}>Add it</button>
+      </div>
+    </div>
+  {:else if integrationResult}
+    <p class="integration-result">{integrationResult}</p>
+  {/if}
 
   {#if view === 'popup'}
     <div class="cards" bind:this={cardsEl}>

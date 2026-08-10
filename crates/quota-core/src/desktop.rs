@@ -602,6 +602,25 @@ mod tests {
         assert_eq!(owned_target(&text), Some(appimage));
     }
 
+    /// The frontend branches on these strings, so the wire shape is part of the
+    /// contract rather than an implementation detail of the enum.
+    #[test]
+    fn the_status_crosses_ipc_as_a_flat_tagged_object() {
+        let (_dir, service) = fixture();
+        let absent = serde_json::to_value(service.status()).unwrap();
+        assert_eq!(absent["state"], "absent");
+        assert_eq!(absent["appimage"], service.appimage().display().to_string());
+
+        service.install(ICONS).unwrap();
+        assert_eq!(serde_json::to_value(service.status()).unwrap()["state"], "current");
+
+        let moved = DesktopIntegration::new(service.data_dir.clone(), "/elsewhere/q.AppImage");
+        let stale = serde_json::to_value(moved.status()).unwrap();
+        assert_eq!(stale["state"], "stale");
+        // The old target is named so the UI can say what repair would change.
+        assert_eq!(stale["target"], service.appimage().display().to_string());
+    }
+
     #[test]
     fn only_a_running_appimage_has_anything_to_integrate() {
         let env = |vars: &[(&str, &str)]| {

@@ -20,6 +20,7 @@ Platform differences are small but real:
 | Tray hover | Native detailed tooltip | Plasma-drawn native SNI tooltip |
 | Secret storage | Credential Manager (DPAPI) | `0600` plaintext file in the config dir |
 | Autostart | `HKCU` run entry | XDG autostart entry |
+| Applications-menu entry | Written by the installer | Owned by the Nix package; opt-in and app-managed for the AppImage |
 
 ## How it works
 
@@ -254,6 +255,33 @@ has the matching `minisign` verification command. The Nix flake is distinct: it
 is a reproducible source build that pins GTK/WebKit, and remains available only
 to collaborators with access to this private repository.
 
+#### AppImage desktop integration
+
+An AppImage is just a file you downloaded, so nothing puts it in your
+applications menu. The first time you run one, the widget **asks** whether to
+add a launcher, and remembers your answer either way — "Not now" is remembered
+as firmly as yes, so it never asks twice. Settings → **Applications menu** has
+explicit **Add** and **Remove** buttons afterwards, so a deferral is never
+final.
+
+It is deliberately small: a `.desktop` file and two icons under your own
+`$XDG_DATA_HOME` (`~/.local/share` by default), nothing system-wide, no
+`appimaged` and no background daemon. The launcher runs
+`env GDK_BACKEND=x11 <your AppImage>`, matching the Nix package's entry — the
+XWayland workaround is what lets the popup position and raise itself (see
+[Known limitations](#known-limitations)).
+
+The launcher points at the AppImage **where it is**, not at a copy. Replacing
+the file in place — which is what the in-app update does — keeps it working.
+*Moving* it does not, so the widget then offers to **repair** the launcher
+rather than silently retargeting it.
+
+Removal only deletes files the app wrote and you have not since edited: a
+launcher or icon you changed is left exactly as it is, and Settings tells you
+where it is so you can delete it yourself. A `.desktop` file at that path that
+the app did not write is never touched at all — Settings says so instead of
+offering buttons that would overwrite it.
+
 ### Releases and update checks
 
 Cut a release with **`npm run release`**, which prompts for the version and
@@ -302,6 +330,7 @@ crates/quota-core   pure Rust, no UI deps — fully unit-tested
   model.rs          UsageSnapshot / UsageWindow / Credits / FetchError
   config.rs         config persistence + per-provider overrides
   alerts.rs         edge-triggered alert engine
+  desktop.rs        per-user AppImage launcher/icon integration (plan + apply)
   providers/        one adapter per provider behind a common trait
 src-tauri           the Tauri shell
   tray.rs           runtime-generated status icons, full window + mini summary placement
@@ -309,6 +338,7 @@ src-tauri           the Tauri shell
   oauth.rs          built-in Claude sign-in (PKCE paste-back)
   codex_oauth.rs    built-in Codex sign-in (device code)
   updates.rs        6-hourly check of the public release manifest
+  desktop.rs        IPC around quota-core's AppImage desktop integration
   secrets.rs        Credential Manager (Windows) / 0600 plaintext file (elsewhere)
 src/                Svelte UI
   App.svelte        popup shell (usage list / settings)

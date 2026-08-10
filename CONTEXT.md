@@ -62,6 +62,32 @@ resolves it to the nearest corner, so what is on screen always matches what is
 stored.
 _Avoid_: Align, dock, reposition
 
+**Launcher**:
+The single `.desktop` file that puts the app in the applications menu. For the
+AppImage it is app-managed and opt-in; for the Nix package it belongs to the
+package. It names the AppImage *where the user keeps it*, so an in-place update
+leaves it valid and a move breaks it.
+_Avoid_: Shortcut, desktop entry (that is the file format), menu item
+
+**Ownership marker**:
+What licenses the app to delete a launcher or icon: a marker key in the file
+*and* a byte-for-byte match against what would be written for the path the file
+itself records. Both together, because either alone would let an edited file be
+destroyed.
+_Avoid_: Signature, checksum, tag
+
+**Repair**:
+Retargeting an app-owned launcher whose AppImage has moved. Always offered,
+never silent — the file is the user's and may have been pointed somewhere
+deliberately.
+_Avoid_: Fix, update, refresh
+
+**Deferral**:
+The record that the first-run integration question has been *asked*. It stores
+that the user was asked, not what they answered, so declining sticks as firmly
+as accepting and no launch nags.
+_Avoid_: Dismissal, opt-out, snooze
+
 **Account**:
 One configured sign-in to a provider, with its own name, secrets and settings.
 A provider may have several, and each is ordered and displayed independently.
