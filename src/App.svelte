@@ -81,7 +81,7 @@
     const esc = (e) => {
       if (e.key === 'Escape') {
         // Escape out of Settings discards the unsaved draft — the component is
-        // unmounted with it — and takes the same exit as Back and Save & close.
+        // unmounted with it — and takes the same exit as Save & close.
         if (view === 'settings') leaveSettings();
         else invoke('hide_window');
       }
@@ -100,11 +100,23 @@
     view = 'settings';
   }
 
-  // Every successful exit from Settings — Save & close, Back, Escape — lands
-  // on the captured return state. The usage popup is the frontend's own to
-  // restore; the other two are window lifecycle, which only Rust can drive.
-  // A failed save never reaches here, so Settings stays mounted with its error
-  // and its captured return state intact.
+  // Back is navigation *within* this window, not an exit: it swaps the view to
+  // the usage list and leaves the window on screen, whatever the visit was
+  // entered from. Unsaved edits go with the unmounted component, as they always
+  // did — what changed is where the user ends up.
+  //
+  // The capture is deliberately left alone rather than cleared here: every way
+  // back into Settings sets it first — the gear through `openSettings`, the
+  // tray through `navigate` — so a stale value is unreachable, and clearing it
+  // would be a write no test could observe.
+  function backToUsage() {
+    view = 'popup';
+  }
+
+  // Leaving Settings — Save & close, or Escape — lands on the captured return
+  // state. The usage popup is the frontend's own to restore; the other two are
+  // window lifecycle, which only Rust can drive. A failed save never reaches
+  // here, so Settings stays mounted with its error and its return state intact.
   function leaveSettings() {
     const to = settingsReturn;
     view = 'popup';
@@ -136,7 +148,7 @@
       <button class="icon" title="Refresh now" class:spin={refreshing} onclick={refresh}>⟳</button>
       <button class="icon" title="Settings" onclick={openSettings}>⚙</button>
     {:else}
-      <button class="icon" title="Back" onclick={leaveSettings}>←</button>
+      <button class="icon" title="Back" onclick={backToUsage}>←</button>
     {/if}
     <button class="icon" title="Hide to tray" onclick={() => invoke('hide_window')}>✕</button>
   </header>

@@ -72,6 +72,7 @@ Where a Settings visit goes when it exits — the usage popup, the mini summary,
 or no window at all. It is *transient*: captured when Settings opens and gone
 when that visit ends, never written to the config file, because it describes
 what was on screen a moment ago rather than anything the user chose. Only the
-three successful exits honour it (Save & close, Back, Esc); ✕ is an explicit
-hide and ignores it.
+two exits honour it: Save & close and Esc. ✕ is an explicit hide and ignores
+it, and ← Back is navigation within the window rather than an exit at all — it
+shows the usage list, ends the visit, and leaves the window on screen.
 _Avoid_: Previous view, back target, exit destination, saved view

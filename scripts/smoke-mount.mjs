@@ -312,19 +312,18 @@ const CASES = [
   },
   // Tray entry carries the return state with the navigation. A mini summary —
   // pinned or transient, a distinction the frontend never sees — comes back
-  // through the shell on each of the three exits, and the full window is not
-  // left showing the usage list behind it.
+  // through the shell when the visit *ends*, and the full window is not left
+  // showing the usage list behind it.
   {
     file: 'src/App.svelte',
     props: () => ({}),
     verify: async ({ target, flushSync, emit, shellCalls }) => {
       const inSettings = () => Boolean(target.querySelector('.settings'));
-      for (const [returnTo, exit] of [['mini', 'back'], ['mini', 'escape'], ['mini', 'save'], ['hidden', 'back'], ['hidden', 'escape'], ['hidden', 'save']]) {
+      for (const [returnTo, exit] of [['mini', 'escape'], ['mini', 'save'], ['hidden', 'escape'], ['hidden', 'save']]) {
         shellCalls().length = 0;
         emit('navigate', { view: 'settings', return_to: returnTo });
         if (!inSettings()) throw new Error(`tray navigation did not open Settings (${returnTo})`);
-        if (exit === 'back') target.querySelector('button[title="Back"]').click();
-        else if (exit === 'escape') {
+        if (exit === 'escape') {
           window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
         } else {
           target.querySelector('.settings .primary').click();
@@ -334,6 +333,46 @@ const CASES = [
         if (inSettings()) throw new Error(`${returnTo}/${exit} did not leave Settings`);
         if (shellCalls().join(',') !== `exit_settings:${returnTo}`) {
           throw new Error(`${returnTo}/${exit} drove the shell as ${shellCalls().join(',') || 'nothing'}`);
+        }
+      }
+    },
+  },
+  // Back is navigation, not an exit. Even from a tray visit whose return state
+  // is the mini summary, it lands on the usage list in the window that is
+  // already open and asks the shell for nothing — the user came to look at the
+  // widget, and Back is how they get to it.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: ({ target, flushSync, emit, shellCalls }) => {
+      for (const returnTo of ['mini', 'hidden']) {
+        shellCalls().length = 0;
+        emit('navigate', { view: 'settings', return_to: returnTo });
+        target.querySelector('button[title="Back"]').click();
+        flushSync();
+        if (target.querySelector('.settings')) throw new Error(`Back (${returnTo}) stayed in Settings`);
+        if (!target.querySelector('.cards')) throw new Error(`Back (${returnTo}) did not land on the usage list`);
+        if (shellCalls().length) {
+          throw new Error(`Back (${returnTo}) drove the shell as ${shellCalls().join(',')}`);
+        }
+        // The visit ended with the window still up, so its capture ended too.
+        // Escape on the usage list is an ordinary hide — never a restore of the
+        // summary that visit came from.
+        window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        flushSync();
+        if (shellCalls().join(',') !== 'hide_window') {
+          throw new Error(`a capture outlived Back (${returnTo}): ${shellCalls().join(',') || 'nothing'}`);
+        }
+        // Re-entering through the gear is a fresh, direct visit: leaving it
+        // returns to the usage list, not to the summary the *tray* visit was
+        // carrying before Back ended it.
+        shellCalls().length = 0;
+        target.querySelector('button[title="Settings"]').click();
+        flushSync();
+        window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        flushSync();
+        if (shellCalls().length) {
+          throw new Error(`Back (${returnTo}) left its capture for the next visit: ${shellCalls().join(',')}`);
         }
       }
     },
@@ -386,7 +425,10 @@ const CASES = [
       if (target.querySelector('.settings')) throw new Error('a reshow left the window in Settings');
       target.querySelector('button[title="Settings"]').click();
       flushSync();
-      target.querySelector('button[title="Back"]').click();
+      shellCalls().length = 0;
+      // Escape, not Back: Back asks the shell for nothing either way, so it
+      // could not tell a cleared capture from a surviving one.
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       flushSync();
       if (shellCalls().length) {
         throw new Error(`a stale return state survived the reshow: ${shellCalls().join(',')}`);
