@@ -105,10 +105,10 @@ and shows an unobtrusive "Update available" line in Settings with a **Check
 now** button. Uncheck **Check for updates** in Settings to turn the automatic
 checks off; **Check now** keeps working either way.
 
-On Windows an **Install update** button appears alongside it: the app downloads
-the new installer, verifies its signature, and runs it. The app closes and
-reopens partway through, which is expected. This works only if you installed via
-the installer — a portable EXE cannot replace itself, so update it by
+On Windows an **Install update** button appears only for an installed bundle:
+the app downloads the new installer, verifies its signature, and runs it. The
+app closes and reopens partway through, which is expected. A portable EXE cannot
+replace itself, so it instead shows the normal upgrade guidance; update it by
 downloading the new one.
 
 Where a release publishes nothing for your platform, the app still tells you a

@@ -844,18 +844,18 @@
           <span class="note">Update available: v{updateInfo.latest}</span>
         {/if}
       </div>
-      {#if updateInfo?.url}
-        <!-- Only offered when the release published something this build can
-             install. Elsewhere the note below explains the real upgrade path. -->
+      {#if updateInfo?.url && updateInfo.installable}
+        <!-- A release download does not prove this executable can install it:
+             a portable EXE has the download too, but cannot replace itself. -->
         <div class="row">
           <button class="small" onclick={installUpdate} disabled={!!installState}>Install update</button>
           {#if installState}<span class="note">{installState}</span>{/if}
         </div>
       {/if}
-      {#if updateInfo && !updateInfo.url}
-        <!-- A release exists but published nothing this build can install —
-             *nix, where releases are Windows-only. Say how to upgrade rather
-             than dangling a version number with no next step. -->
+      {#if updateInfo && (!updateInfo.url || !updateInfo.installable)}
+        <!-- A release exists but this build cannot install it: either no
+             download was published for its platform, or it is a portable EXE.
+             Say how to upgrade rather than dangling a failed install action. -->
         <p class="note">Upgrade the way you installed it — on Nix, <code>nix profile upgrade quota-widget</code>.</p>
       {/if}
       <p class="note">Esc, ✕, and the tray icon always hide the widget. This extra click-away dismiss can occasionally fight window dragging.</p>
