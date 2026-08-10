@@ -489,6 +489,7 @@ pub fn run() {
             list_monitors,
             updates::update_status,
             updates::check_update_now,
+            updates::restart_app,
             quit,
         ])
         .setup(move |app| {

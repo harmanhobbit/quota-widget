@@ -128,6 +128,16 @@ const SNAPSHOTS = [
   },
 ];
 
+// Installing crosses a dynamic import and several awaits, so a single
+// macrotask does not reliably get from the click to the rendered result. Turn
+// the loop a few times rather than guessing at one long sleep.
+async function settle(flushSync, turns = 5) {
+  for (let i = 0; i < turns; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+  }
+}
+
 // Every component under test, with the props App would really pass. Settings
 // takes its config as a prop that has been through $state in App, so it
 // arrives as a proxy — mirror that exactly, since it is what broke it before.
@@ -512,39 +522,107 @@ const CASES = [
       }
     },
   },
-  // An update with a download for this platform offers Install; one without —
-  // the *nix case, where releases are Windows-only — must offer the upgrade
-  // instructions instead, and must never render an install button it cannot
-  // honour.
+  // An installed Windows build offers Install; a build that cannot replace
+  // itself must offer the upgrade instructions instead, and must never render
+  // an install button it cannot honour.
   {
     file: 'src/lib/Settings.svelte',
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     update: {
       available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
-      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe', installable: true,
+      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe',
+      installable: true, restart_after_install: false,
     },
     expect: ['Update available: v0.2.0', 'Install update'],
-    verify: async ({ target }) => {
+    verify: async ({ target, flushSync }) => {
       const install = [...target.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === 'Install update');
       if (!install) throw new Error('an installable update offered no Install button');
       install.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await settle(flushSync);
       if (!globalThis.__SMOKE_INSTALLED__) throw new Error('Install update did not reach downloadAndInstall');
+      // The NSIS installer relaunches the app itself, so no restart is offered
+      // and the message says the app comes back on its own.
+      const restart = [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Restart now');
+      if (restart) throw new Error('Windows offered a manual restart the installer performs itself');
+      if (!globalThis.__SMOKE_INSTALLING_TEXT__.includes('close and reopen')) {
+        throw new Error('Windows install did not warn the app is about to exit and relaunch');
+      }
     },
   },
+  // An AppImage is the Linux installable artifact. It installs in place, so
+  // the old version keeps running: completion must offer Restart now and
+  // Later, and must never claim the app relaunched itself.
   {
     file: 'src/lib/Settings.svelte',
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     update: {
       available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
-      pub_date: '2026-08-05T09:21:10Z', url: null, installable: false,
+      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/app.AppImage',
+      installable: true, restart_after_install: true,
+    },
+    expect: ['Update available: v0.2.0', 'Install update'],
+    verify: async ({ target, flushSync }) => {
+      const button = (label) => [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === label);
+      if (button('Restart now')) throw new Error('offered a restart before anything was installed');
+      button('Install update').click();
+      await settle(flushSync);
+      if (!globalThis.__SMOKE_INSTALLED__) throw new Error('Install update did not reach downloadAndInstall');
+      // Checked over the whole run, not just the end state: telling a Linux
+      // user the app will reopen by itself is wrong even transiently.
+      if (globalThis.__SMOKE_INSTALLING_TEXT__.includes('close and reopen')
+        || target.textContent.includes('close and reopen')) {
+        throw new Error('Linux claimed an automatic relaunch it does not perform');
+      }
+      if (!button('Restart now')) throw new Error('a completed Linux install offered no Restart now');
+      if (!button('Later')) throw new Error('a completed Linux install offered no Later');
+      button('Restart now').click();
+      await settle(flushSync);
+      if (!globalThis.__SMOKE_RESTARTED__) throw new Error('Restart now did not reach restart_app');
+    },
+  },
+  // Later dismisses the prompt without restarting: the new version is already
+  // on disk, so the only thing left to decide is when it starts.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    update: {
+      available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
+      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/app.AppImage',
+      installable: true, restart_after_install: true,
+    },
+    verify: async ({ target, flushSync }) => {
+      const button = (label) => [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === label);
+      button('Install update').click();
+      await settle(flushSync);
+      button('Later').click();
+      flushSync();
+      if (globalThis.__SMOKE_RESTARTED__) throw new Error('Later restarted the app anyway');
+      if (button('Restart now')) throw new Error('Later left the restart prompt on screen');
+      if (!target.textContent.includes('next time you open the app')) {
+        throw new Error('Later did not say when the new version starts');
+      }
+    },
+  },
+  // Nix: a release exists, and on Linux it even publishes an AppImage, but a
+  // package-managed build is not an installable artifact. Guidance, not an
+  // Install action that would fail.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    update: {
+      available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
+      pub_date: '2026-08-05T09:21:10Z', url: null,
+      installable: false, restart_after_install: false,
     },
     expect: ['Update available: v0.2.0', 'nix profile upgrade quota-widget'],
     verify: async ({ target }) => {
       const install = [...target.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === 'Install update');
-      if (install) throw new Error('offered Install for a release with no download for this platform');
+      if (install) throw new Error('offered Install for a release with no artifact for this build');
     },
   },
   // A portable EXE sees the same Windows installer URL as an installed build,
@@ -555,7 +633,8 @@ const CASES = [
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     update: {
       available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
-      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe', installable: false,
+      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe',
+      installable: false, restart_after_install: false,
     },
     expect: ['Update available: v0.2.0', 'nix profile upgrade quota-widget'],
     verify: async ({ target }) => {
@@ -614,6 +693,7 @@ export async function invoke(cmd, args) {
       if (globalThis.__SMOKE_SAVE_ERROR__) throw new Error(globalThis.__SMOKE_SAVE_ERROR__);
       globalThis.__SMOKE_LAST_CONFIG__ = args.config; return null;
     case 'update_status': case 'check_update_now': return globalThis.__SMOKE_UPDATE__ ?? null;
+    case 'restart_app': globalThis.__SMOKE_RESTARTED__ = true; return null;
     default: return null;
   }
 }`);
@@ -624,7 +704,17 @@ export async function invoke(cmd, args) {
   w('@tauri-apps/plugin-updater/index.js', `
 export async function check() {
   if (globalThis.__SMOKE_UPDATE_CHECK_NULL__) return null;
-  return { downloadAndInstall: async () => { globalThis.__SMOKE_INSTALLED__ = true; } };
+  return {
+    downloadAndInstall: async () => {
+      // Yield first, so Svelte flushes the message shown *while* the install
+      // runs. That message is a contract of its own — it is the last thing a
+      // Windows user sees before the app exits — and the completion message
+      // overwrites it, so a check made afterwards cannot see it.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      globalThis.__SMOKE_INSTALLING_TEXT__ = globalThis.document.body.textContent;
+      globalThis.__SMOKE_INSTALLED__ = true;
+    },
+  };
 }`);
   w('@tauri-apps/api/window.js', `
 export function getCurrentWindow() {
@@ -698,6 +788,8 @@ for (const c of CASES) {
     globalThis.__SMOKE_UPDATE__ = c.update ?? null;
     globalThis.__SMOKE_SAVE_ERROR__ = c.saveError ?? '';
     globalThis.__SMOKE_INSTALLED__ = false;
+    globalThis.__SMOKE_RESTARTED__ = false;
+    globalThis.__SMOKE_INSTALLING_TEXT__ = '';
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle

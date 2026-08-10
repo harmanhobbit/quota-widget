@@ -5,15 +5,16 @@
 //! reports it; the updater plugin installs releases only for bundle types it
 //! can safely replace.
 //!
-//! Version comparison and manifest parsing deliberately live in `quota-core`
-//! (`quota_core::update`) because that is the crate with tests. This file is
-//! the shell around them: when to check, and how the result reaches the UI.
+//! Version comparison, manifest parsing, and artifact selection deliberately
+//! live in `quota-core` (`quota_core::update`) because that is the crate with
+//! tests. This file is the shell around them: when to check, which artifact
+//! this build actually is, and how the result reaches the UI.
 
 use crate::AppState;
-use quota_core::update::UpdateInfo;
-use serde::Serialize;
+use quota_core::update::{Artifact, UpdateInfo, UpdateTarget};
 use std::sync::Arc;
 use std::time::Duration;
+use tauri::utils::config::BundleType;
 use tauri::Emitter;
 
 /// The stable URL of the public manifest. `latest/download` always resolves to
@@ -25,34 +26,33 @@ const MANIFEST_URL: &str =
 /// poller's own quota cycle runs far more often than this.
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
-/// Target triple key in the manifest's `platforms` map. Windows installers and
-/// Linux AppImages are published; a build whose key is absent still learns that
-/// a newer version exists — it just gets no download URL, which remains the
-/// honest result for package-managed installs such as Nix.
+/// Platform half of the manifest key. The artifact half is discovered at
+/// runtime, because one platform has several package formats and only the
+/// running bundle knows which one it is.
 #[cfg(windows)]
-const TARGET: &str = "windows-x86_64";
+const PLATFORM: &str = "windows-x86_64";
 #[cfg(not(windows))]
-const TARGET: &str = "linux-x86_64";
+const PLATFORM: &str = "linux-x86_64";
 
-/// What Settings needs to know about a detected release. A platform download
-/// and an installable running bundle are separate facts: a portable Windows
-/// executable can download the NSIS installer but cannot replace itself.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub(crate) struct UpdateStatus {
-    #[serde(flatten)]
-    info: UpdateInfo,
-    installable: bool,
+/// The package format this build is running as, in quota-core's vocabulary.
+///
+/// `None` is the honest answer for a portable Windows EXE and for a
+/// package-managed install such as Nix: Tauri sets the bundle-type marker only
+/// when its own bundler produced the binary, and nothing else can be replaced
+/// in place. Dmg maps to App because the updater plugin treats them alike.
+fn running_artifact() -> Option<Artifact> {
+    match tauri::utils::platform::bundle_type()? {
+        BundleType::AppImage => Some(Artifact::AppImage),
+        BundleType::Deb => Some(Artifact::Deb),
+        BundleType::Rpm => Some(Artifact::Rpm),
+        BundleType::Nsis => Some(Artifact::Nsis),
+        BundleType::Msi => Some(Artifact::Msi),
+        BundleType::App | BundleType::Dmg => Some(Artifact::App),
+    }
 }
 
-fn status_for(info: Option<UpdateInfo>, installable: bool) -> Option<UpdateStatus> {
-    info.map(|info| UpdateStatus { info, installable })
-}
-
-/// The updater uses Tauri's bundle type to select an installer. It returns
-/// `None` for a portable executable, which is exactly the signal Settings
-/// needs to avoid offering an action that would fail.
-fn current_status(info: Option<UpdateInfo>) -> Option<UpdateStatus> {
-    status_for(info, tauri::utils::platform::bundle_type().is_some())
+fn current_target() -> UpdateTarget {
+    UpdateTarget::new(PLATFORM, running_artifact())
 }
 
 /// A dev build must never be told to "update" to a main release — its version
@@ -79,7 +79,7 @@ async fn fetch() -> Option<UpdateInfo> {
         .await
         .ok()?;
 
-    match UpdateInfo::from_latest_json(env!("CARGO_PKG_VERSION"), &body, TARGET) {
+    match UpdateInfo::from_latest_json(env!("CARGO_PKG_VERSION"), &body, &current_target()) {
         Ok(info) => Some(info),
         Err(e) => {
             eprintln!("update: ignoring unusable manifest: {e}");
@@ -99,7 +99,7 @@ async fn check_once(app: &tauri::AppHandle, state: &Arc<AppState>) -> Option<Upd
     *state.update.write().await = info.clone();
     // Emitted even when nothing is available: a check that finds no update must
     // still clear a previously shown banner.
-    let _ = app.emit("update", current_status(info.clone()));
+    let _ = app.emit("update", info.clone());
     info
 }
 
@@ -125,8 +125,8 @@ pub fn spawn(app: tauri::AppHandle, state: Arc<AppState>) {
 #[tauri::command]
 pub async fn update_status(
     state: tauri::State<'_, Arc<AppState>>,
-) -> Result<Option<UpdateStatus>, String> {
-    Ok(current_status(state.update.read().await.clone()))
+) -> Result<Option<UpdateInfo>, String> {
+    Ok(state.update.read().await.clone())
 }
 
 /// Force a check now, for the Settings "Check now" button.
@@ -134,7 +134,7 @@ pub async fn update_status(
 pub async fn check_update_now(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
-) -> Result<Option<UpdateStatus>, String> {
+) -> Result<Option<UpdateInfo>, String> {
     if is_branch_build() {
         return Ok(None);
     }
@@ -142,39 +142,18 @@ pub async fn check_update_now(
     // consent, and the button stays useful for someone who keeps checks off.
     let info = fetch().await;
     *state.update.write().await = info.clone();
-    let status = current_status(info);
-    let _ = app.emit("update", status.clone());
-    Ok(status)
+    let _ = app.emit("update", info.clone());
+    Ok(info)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn update() -> UpdateInfo {
-        UpdateInfo {
-            current: "0.20.0".into(),
-            latest: "0.20.3".into(),
-            url: Some("https://example.test/setup.exe".into()),
-            notes: String::new(),
-            pub_date: "2026-08-10T00:00:00Z".into(),
-            available: true,
-        }
-    }
-
-    #[test]
-    fn status_keeps_download_and_installability_independent() {
-        let portable = status_for(Some(update()), false).expect("status for available update");
-        assert!(portable.info.url.is_some());
-        assert!(!portable.installable);
-
-        let installed = status_for(Some(update()), true).expect("status for available update");
-        assert!(installed.info.url.is_some());
-        assert!(installed.installable);
-    }
-
-    #[test]
-    fn status_stays_absent_without_an_update() {
-        assert_eq!(status_for(None, true), None);
-    }
+/// Restart into the version just installed.
+///
+/// Only Linux needs this. The Windows installers relaunch the app themselves,
+/// but replacing an AppImage rewrites the file underneath a process that keeps
+/// running the old code, so nothing changes until it is restarted. `restart`
+/// resolves the AppImage path from `APPIMAGE` rather than the mounted
+/// executable, which is why re-exec works at all here.
+#[tauri::command]
+pub fn restart_app(app: tauri::AppHandle) {
+    app.restart();
 }
