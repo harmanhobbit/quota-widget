@@ -254,6 +254,143 @@ const CASES = [
       }
     },
   },
+  // The Settings return state, exercised through the app's navigation seam:
+  // what is on screen after the exit, and what the exit asked the shell to do.
+  // Direct entry from the usage popup returns to the usage popup and involves
+  // the shell not at all — the window it would act on is already the right one.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: async ({ target, flushSync, shellCalls }) => {
+      const settingsButton = () => target.querySelector('button[title="Settings"]');
+      const inSettings = () => Boolean(target.querySelector('.settings'));
+      const warnInput = () => [...target.querySelectorAll('.settings input.num')]
+        .find((el) => el.closest('label')?.textContent.includes('Warn at'));
+      for (const exit of ['back', 'escape', 'save']) {
+        settingsButton().click();
+        flushSync();
+        if (!inSettings()) throw new Error(`did not reach Settings before the ${exit} exit`);
+        // An unsaved edit, so Back and Escape can be shown to discard it: the
+        // next visit must read the persisted value, not this draft.
+        const edit = warnInput();
+        edit.value = '31';
+        edit.dispatchEvent(new window.Event('input', { bubbles: true }));
+        flushSync();
+        if (exit === 'back') target.querySelector('button[title="Back"]').click();
+        else if (exit === 'escape') {
+          window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        } else {
+          target.querySelector('.settings .primary').click();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        flushSync();
+        if (inSettings()) throw new Error(`${exit} did not leave Settings`);
+        if (!target.querySelector('.cards')) throw new Error(`${exit} did not return to the usage popup`);
+        if (shellCalls().length) {
+          throw new Error(`${exit} from the popup drove the shell: ${shellCalls().join(',')}`);
+        }
+        // Only Save commits. Back and Escape reach Rust with nothing, and the
+        // next visit opens on the unedited config — the discard being visible
+        // rather than merely unpersisted.
+        const saved = globalThis.__SMOKE_LAST_CONFIG__?.thresholds.warn_pct;
+        if (exit === 'save' ? saved !== 31 : saved === 31) {
+          throw new Error(`${exit} persisted warn_pct ${saved}`);
+        }
+        globalThis.__SMOKE_LAST_CONFIG__ = undefined;
+        settingsButton().click();
+        flushSync();
+        if (exit !== 'save' && warnInput().value !== String(CONFIG.thresholds.warn_pct)) {
+          throw new Error(`${exit} left its unsaved edit in the reopened form`);
+        }
+        target.querySelector('button[title="Back"]').click();
+        flushSync();
+        shellCalls().length = 0;
+      }
+    },
+  },
+  // Tray entry carries the return state with the navigation. A mini summary —
+  // pinned or transient, a distinction the frontend never sees — comes back
+  // through the shell on each of the three exits, and the full window is not
+  // left showing the usage list behind it.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: async ({ target, flushSync, emit, shellCalls }) => {
+      const inSettings = () => Boolean(target.querySelector('.settings'));
+      for (const [returnTo, exit] of [['mini', 'back'], ['mini', 'escape'], ['mini', 'save'], ['hidden', 'back'], ['hidden', 'escape'], ['hidden', 'save']]) {
+        shellCalls().length = 0;
+        emit('navigate', { view: 'settings', return_to: returnTo });
+        if (!inSettings()) throw new Error(`tray navigation did not open Settings (${returnTo})`);
+        if (exit === 'back') target.querySelector('button[title="Back"]').click();
+        else if (exit === 'escape') {
+          window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        } else {
+          target.querySelector('.settings .primary').click();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        flushSync();
+        if (inSettings()) throw new Error(`${returnTo}/${exit} did not leave Settings`);
+        if (shellCalls().join(',') !== `exit_settings:${returnTo}`) {
+          throw new Error(`${returnTo}/${exit} drove the shell as ${shellCalls().join(',') || 'nothing'}`);
+        }
+      }
+    },
+  },
+  // ✕ stays an explicit hide-to-tray whatever the captured return state is: it
+  // means "no window", not "put back what was there".
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: ({ target, emit, shellCalls }) => {
+      emit('navigate', { view: 'settings', return_to: 'mini' });
+      target.querySelector('button[title="Hide to tray"]').click();
+      if (shellCalls().join(',') !== 'hide_window') {
+        throw new Error(`✕ from Settings ran ${shellCalls().join(',') || 'nothing'}`);
+      }
+    },
+  },
+  // A failed save keeps Settings mounted with its error, and keeps the captured
+  // return state: retrying successfully still lands on the mini summary.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    saveFails: true,
+    verify: async ({ target, flushSync, emit, shellCalls }) => {
+      emit('navigate', { view: 'settings', return_to: 'mini' });
+      target.querySelector('.settings .primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!target.querySelector('.settings')) throw new Error('a failed save closed Settings');
+      if (!target.querySelector('.settings .test.bad')) throw new Error('a failed save showed no error');
+      if (shellCalls().length) throw new Error(`a failed save drove the shell: ${shellCalls().join(',')}`);
+      globalThis.__SMOKE_SAVE_FAILS__ = false;
+      target.querySelector('.settings .primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (shellCalls().join(',') !== 'exit_settings:mini') {
+        throw new Error(`the retry lost the return state: ${shellCalls().join(',') || 'nothing'}`);
+      }
+    },
+  },
+  // A reopen after a tray Settings visit starts a fresh visit: `window-shown`
+  // clears the previous capture, so the next exit does not restore a summary
+  // belonging to a visit that already ended.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: ({ target, flushSync, emit, shellCalls }) => {
+      emit('navigate', { view: 'settings', return_to: 'mini' });
+      emit('window-shown', undefined);
+      if (target.querySelector('.settings')) throw new Error('a reshow left the window in Settings');
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+      target.querySelector('button[title="Back"]').click();
+      flushSync();
+      if (shellCalls().length) {
+        throw new Error(`a stale return state survived the reshow: ${shellCalls().join(',')}`);
+      }
+    },
+  },
   {
     file: 'src/lib/ProviderCard.svelte',
     props: () => ({
@@ -533,12 +670,24 @@ export async function invoke(cmd, args) {
     case 'app_version': return '0.0.0-test';
     case 'has_secret': return false;
     case 'on_wayland': return true;
-    case 'set_config': globalThis.__SMOKE_LAST_CONFIG__ = args.config; return null;
+    case 'set_config':
+      if (globalThis.__SMOKE_SAVE_FAILS__) throw new Error('disk on fire');
+      globalThis.__SMOKE_LAST_CONFIG__ = args.config; return null;
+    case 'exit_settings': (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push(\`exit_settings:\${args.to}\`); return null;
+    case 'hide_window': (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push('hide_window'); return null;
     case 'update_status': case 'check_update_now': return globalThis.__SMOKE_UPDATE__ ?? null;
     default: return null;
   }
 }`);
-  w('@tauri-apps/api/event.js', `export async function listen() { return () => {}; }`);
+  // Listeners are retained rather than dropped so a case can deliver a Rust
+  // event — the tray's `navigate` payload is only reachable that way, and it is
+  // what carries the Settings return state across the navigation boundary.
+  w('@tauri-apps/api/event.js', `
+export async function listen(event, handler) {
+  const all = (globalThis.__SMOKE_LISTENERS__ ??= {});
+  (all[event] ??= []).push(handler);
+  return () => { all[event] = (all[event] ?? []).filter((h) => h !== handler); };
+}`);
   // Settings imports this lazily when Install update is pressed. Stubbed so the
   // button can be exercised without a real updater or a real download.
   mkdirSync(join(WORK, '@tauri-apps/plugin-updater'), { recursive: true });
@@ -618,11 +767,22 @@ for (const c of CASES) {
     globalThis.__QUOTA_WIDGET_BRANCH__ = c.buildBranch ?? '';
     globalThis.__SMOKE_UPDATE__ = c.update ?? null;
     globalThis.__SMOKE_INSTALLED__ = false;
+    globalThis.__SMOKE_LISTENERS__ = {};
+    globalThis.__SMOKE_SHELL_CALLS__ = [];
+    globalThis.__SMOKE_SAVE_FAILS__ = Boolean(c.saveFails);
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle
     flushSync();
-    await c.verify?.({ target, flushSync });
+    // `emit` plays a Rust event to the component's own listeners; `shellCalls`
+    // is what it asked Rust to do in return. Together they cover the navigation
+    // seam in both directions without reaching into component internals.
+    const emit = (event, payload) => {
+      for (const h of globalThis.__SMOKE_LISTENERS__[event] ?? []) h({ payload });
+      flushSync();
+    };
+    const shellCalls = () => globalThis.__SMOKE_SHELL_CALLS__;
+    await c.verify?.({ target, flushSync, emit, shellCalls });
   } catch (e) {
     console.error(`FAIL ${c.file}\n      ${String(e.message).split('\n')[0]}`);
     failed++;
@@ -643,6 +803,7 @@ for (const c of CASES) {
   globalThis.__SMOKE_SNAPSHOTS_ERROR__ = false;
   globalThis.__SMOKE_CONFIG__ = undefined;
   globalThis.__SMOKE_UPDATE__ = null;
+  globalThis.__SMOKE_SAVE_FAILS__ = false;
   target.remove();
 }
 

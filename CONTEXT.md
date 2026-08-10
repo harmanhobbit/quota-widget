@@ -66,3 +66,12 @@ _Avoid_: Align, dock, reposition
 One configured sign-in to a provider, with its own name, secrets and settings.
 A provider may have several, and each is ordered and displayed independently.
 _Avoid_: Provider (the vendor), profile, connection
+
+**Settings return state**:
+Where a Settings visit goes when it exits — the usage popup, the mini summary,
+or no window at all. It is *transient*: captured when Settings opens and gone
+when that visit ends, never written to the config file, because it describes
+what was on screen a moment ago rather than anything the user chose. Only the
+three successful exits honour it (Save & close, Back, Esc); ✕ is an explicit
+hide and ignores it.
+_Avoid_: Previous view, back target, exit destination, saved view
