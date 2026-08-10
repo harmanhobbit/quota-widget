@@ -8,8 +8,9 @@ OpenAI organization spend. It collapses to
 the tray and pops up as a compact always-on-top window.
 
 Built with Tauri 2 (Rust) + Svelte 5. The portable EXE is self-contained —
-Windows 11 ships the WebView2 runtime it renders with. On Linux it's packaged as
-a Nix flake (see [Building](#nixos--nix)).
+Windows 11 ships the WebView2 runtime it renders with. Linux releases ship an
+x86_64 AppImage built on Ubuntu 22.04; a Nix flake remains available to source
+repository collaborators (see [Building](#nixos--nix)).
 
 Platform differences are small but real:
 
@@ -239,14 +240,13 @@ and optionally enable **Start on login** (a `HKCU` run entry on Windows, an XDG
 autostart entry on Linux — no admin rights needed either way). Updating =
 replacing the EXE; on Nix, `nix profile upgrade`.
 
-**Published releases are Windows-only.** A Linux build links the host's GTK3 and
-WebKitGTK rather than bundling them, so there is no single binary that runs
-across distributions — hence the flake, which pins them. The in-app update check
-is Windows-only to match: `updates.rs` asks the manifest for `linux-x86_64`,
-which no release publishes, so a Linux build reports no update rather than
-offering one it cannot install. Adding an AppImage or `.deb` to `release.yml`
-is the route if that changes; both are Tauri bundle targets and would build on
-a 1x-metered Linux runner.
+**Linux releases** publish a signed x86_64 AppImage, built on pinned Ubuntu
+22.04 as the compatibility floor. Download the `.AppImage` and its `.sig` from
+the public dist repository, then run `chmod +x QuotaWidget_<version>_amd64.AppImage`
+followed by `./QuotaWidget_<version>_amd64.AppImage`. The public download page
+has the matching `minisign` verification command. The Nix flake is distinct: it
+is a reproducible source build that pins GTK/WebKit, and remains available only
+to collaborators with access to this private repository.
 
 ### Releases and update checks
 
@@ -257,11 +257,13 @@ does and the by-hand equivalent.
 
 This repo is private, so releases are published to the public
 [`harmanhobbit/quota-widget-dist`](https://github.com/harmanhobbit/quota-widget-dist)
-repo: pushing a `v*.*.*` tag runs `release.yml`, which builds a signed NSIS
-installer and uploads it, its `.sig`, the portable EXE (renamed
+repo: pushing a `v*.*.*` tag runs `release.yml`, which builds signed Windows
+and Ubuntu-22.04 AppImage artifacts, then uploads the NSIS installer, its
+`.sig`, the portable EXE (renamed
 `QuotaWidget_<version>_x64-portable.exe`, since an asset name is its download
-URL and a bare `quota-widget.exe` reads identically across every release), and
-a `latest.json` manifest. It also republishes `docs/dist-README.md` as that
+URL and a bare `quota-widget.exe` reads identically across every release), the
+AppImage and its `.sig`, and a `latest.json` manifest. It only publishes after
+both platform builds succeed. It also republishes `docs/dist-README.md` as that
 repo's landing page, so the public download instructions cannot drift from what
 ships — edit that file, not the dist repo directly. The tag must match the
 workspace `Cargo.toml` version — CI refuses to publish a mislabelled tree. A `workflow_dispatch` defaults to a **dry run**: it builds and signs, then
