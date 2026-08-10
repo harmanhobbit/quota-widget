@@ -526,9 +526,12 @@ pub fn show_mini<R: Runtime>(app: &AppHandle<R>, _near: Option<PhysicalPosition<
     // accepting the window manager's top-left default.
     anchor_to(&win, &current_anchor(app));
     let _ = win.set_focus();
-    // The webview survives hiding, so a summary scrolled to fully transparent
-    // would come back invisible — and an invisible window still eats clicks.
-    // `main` gets the same reset from `window-shown` above.
+    // The show notification for the summary's webview, which survives hiding.
+    // Unlike `main`/`window-shown`, this deliberately does **not** reset the
+    // scroll fade: the summary keeps the level it was left at for the life of
+    // the process, so a tray toggle brings it back exactly as it looked. A
+    // fully transparent unpinned summary is recoverable by the same click that
+    // opened it, which is why it is allowed to reach zero at all.
     use tauri::Emitter;
     let _ = app.emit("mini-shown", ());
 }

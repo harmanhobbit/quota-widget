@@ -18,6 +18,10 @@
   let loaded = $state(false);
 
   onMount(async () => {
+    // Fresh webview, fresh level. This is the *only* thing that puts the
+    // summary back to fully opaque apart from turning the preference off, so
+    // the fade survives every hide/show cycle within one app process and a
+    // restart is what clears it.
     resetOpacity();
     try {
       const initial = await invoke('get_snapshots');
@@ -41,9 +45,13 @@
       // freeze it at whatever level it happened to be on.
       if (!e.payload.scroll_opacity) resetOpacity();
     }).then((u) => unlisten.push(u));
-    // The webview survives hiding, so the fade level has to be cleared on
-    // every show or the summary reopens as invisible as it was left.
-    listen('mini-shown', resetOpacity).then((u) => unlisten.push(u));
+    // Deliberately *not* reset on 'mini-shown': the summary keeps whatever
+    // fade level it was left at for the rest of the app's life, across tray
+    // toggles, click-away, the close button and the temporary hide while the
+    // full popup is open. The webview survives all of those, so doing nothing
+    // is what retains the level — including a fully transparent unpinned
+    // summary, which the next tray click brings back at the same level.
+    // A fresh process gets a fresh webview and the `resetOpacity()` above.
     // Hiding the window resets the pin in Rust; the webview survives that, so
     // the button has to follow or it reopens looking pinned when it isn't.
     listen('mini-pinned', (e) => (pinned = e.payload)).then((u) => unlisten.push(u));

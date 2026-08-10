@@ -137,15 +137,17 @@ const CASES = [
     props: () => ({}),
     buildBranch: 'smoke-branch',
     expect: ['smoke-branch'],
-    verify: ({ target, flushSync }) => {
+    verify: async ({ target, flushSync, emit }) => {
       const main = target.querySelector('main');
       const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
       main.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
       flushSync();
       if (opacity() !== '0.92') throw new Error(`scroll did not fade popup: ${opacity()}`);
-      // A config broadcast turns the toggle off and restores the normal shell.
-      // The event stub does not retain listeners, so exercise the disabled
-      // configuration directly through the initial IPC payload in its own case.
+      // The full popup's show-time reset is unchanged: unlike the summary, it
+      // opens opaque every time it is shown.
+      await emit('window-shown', 'popup');
+      flushSync();
+      if (opacity() !== '1') throw new Error(`popup kept its fade across a show: ${opacity()}`);
     },
   },
   {
@@ -280,19 +282,39 @@ const CASES = [
   {
     file: 'src/lib/MiniSummary.svelte',
     props: () => ({}),
-    verify: ({ target, flushSync }) => {
+    verify: async ({ target, flushSync, emit }) => {
       const mini = target.querySelector('.mini');
       const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
       const wheel = () =>
         mini.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
+      // A newly mounted summary — the fresh-app-start case — opens opaque.
+      if (opacity() !== '1') throw new Error(`summary did not open opaque: ${opacity()}`);
       wheel();
       flushSync();
       if (opacity() !== '0.92') throw new Error(`scroll did not fade summary: ${opacity()}`);
+      // Every native hide/show path ends in this one notification, so playing
+      // it back is what proves the level survives tray toggles, click-away,
+      // the close button, and the temporary hide while the popup is open.
+      await emit('mini-shown', null);
+      flushSync();
+      if (opacity() !== '0.92') throw new Error(`showing the summary reset its fade to ${opacity()}`);
       // Unlike the popup the unpinned summary may reach zero: click-away
       // dismisses it, so fully transparent is recoverable rather than a trap.
       for (let i = 0; i < 20; i += 1) wheel();
       flushSync();
       if (Number(opacity()) !== 0) throw new Error(`unpinned summary floored at ${opacity()}`);
+      // Zero is retained too — the case most likely to be "helpfully" reset.
+      await emit('mini-shown', null);
+      flushSync();
+      if (Number(opacity()) !== 0) throw new Error(`a fully faded summary came back at ${opacity()}`);
+      // Turning the preference off is still the escape hatch, and turning it
+      // back on must not restore the level that was just cleared.
+      await emit('config', { ...CONFIG, scroll_opacity: false });
+      flushSync();
+      if (opacity() !== '1') throw new Error(`disabling fade left the summary at ${opacity()}`);
+      await emit('config', CONFIG);
+      flushSync();
+      if (opacity() !== '1') throw new Error(`re-enabling fade restored a stale level: ${opacity()}`);
     },
   },
   { file: 'src/lib/MiniSummary.svelte', props: () => ({}), snapshotsError: true, expect: ['Could not load summary'] },
@@ -538,7 +560,23 @@ export async function invoke(cmd, args) {
     default: return null;
   }
 }`);
-  w('@tauri-apps/api/event.js', `export async function listen() { return () => {}; }`);
+  // Listeners are retained so a case can play back the events Rust really
+  // emits — 'mini-shown' in particular, whose whole contract now is that it
+  // does *not* disturb the summary's fade level. The registry is per case; the
+  // runner clears it between mounts so one component's listeners can never be
+  // fired by the next one's events.
+  w('@tauri-apps/api/event.js', `
+export async function listen(event, handler) {
+  const listeners = (globalThis.__SMOKE_LISTENERS__ ??= new Map());
+  const forEvent = listeners.get(event) ?? [];
+  forEvent.push(handler);
+  listeners.set(event, forEvent);
+  return () => {
+    const current = listeners.get(event) ?? [];
+    const at = current.indexOf(handler);
+    if (at >= 0) current.splice(at, 1);
+  };
+}`);
   // Settings imports this lazily when Install update is pressed. Stubbed so the
   // button can be exercised without a real updater or a real download.
   mkdirSync(join(WORK, '@tauri-apps/plugin-updater'), { recursive: true });
@@ -607,8 +645,17 @@ for (const f of readdirSync(join(ROOT, 'src/lib')).filter((f) => f.endsWith('.js
 const { mount, unmount, flushSync } = await import('svelte');
 const $ = await import('svelte/internal/client');
 
+// Plays back an event exactly as Rust's `app.emit` would, for the listeners
+// the component registered in `onMount`.
+async function emit(event, payload) {
+  for (const handler of [...(globalThis.__SMOKE_LISTENERS__?.get(event) ?? [])]) {
+    await handler({ event, payload });
+  }
+}
+
 let failed = 0;
 for (const c of CASES) {
+  globalThis.__SMOKE_LISTENERS__ = new Map();
   const target = dom.window.document.createElement('div');
   dom.window.document.body.appendChild(target);
   let app;
@@ -622,7 +669,7 @@ for (const c of CASES) {
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle
     flushSync();
-    await c.verify?.({ target, flushSync });
+    await c.verify?.({ target, flushSync, emit });
   } catch (e) {
     console.error(`FAIL ${c.file}\n      ${String(e.message).split('\n')[0]}`);
     failed++;
