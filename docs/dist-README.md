@@ -20,6 +20,8 @@ carries:
 | `QuotaWidget_<version>_x64-setup.exe` | NSIS installer — Start Menu entry and an uninstaller. Installs per-user, so no admin prompt. |
 | `QuotaWidget_<version>_x64-portable.exe` | The single self-contained EXE. Put it anywhere and run it; nothing is installed. |
 | `QuotaWidget_<version>_x64-setup.exe.sig` | Minisign signature over the installer, used to verify updates. |
+| `QuotaWidget_<version>_amd64.AppImage` | Standalone Linux x86_64 application image. |
+| `QuotaWidget_<version>_amd64.AppImage.sig` | Minisign signature over the AppImage. |
 | `latest.json` | Update manifest the app itself reads. Not something you download by hand. |
 
 Windows 11 ships the WebView2 runtime the UI renders with, so there is no
@@ -27,23 +29,20 @@ separate runtime to install.
 
 ### Linux
 
-**No Linux download is published here, and the app cannot update itself on
-Linux.** The releases above are Windows-only.
+Download the x86_64 `.AppImage` and its adjacent `.sig` file from the release
+you want. It is built on a pinned **Ubuntu 22.04** runner, which is the
+compatibility floor: use Ubuntu 22.04 or a newer compatible glibc-based Linux
+distribution. Make it executable and launch it directly:
 
-This is not an oversight. A Linux build links GTK3 and WebKitGTK from the host
-system rather than bundling them the way the Windows EXE bundles nothing at
-all, so a single "portable" Linux binary would fail on any distribution whose
-library versions differ from the one it was built on — which is most of them.
-The supported Linux route is instead a Nix flake, which pins those libraries
-exactly.
+```sh
+chmod +x QuotaWidget_<version>_amd64.AppImage
+./QuotaWidget_<version>_amd64.AppImage
+```
 
-The flake lives in the source repository, which is private, so it is currently
-available only to people who already have access to it. If you are reading this
-and want to run it on Linux, open an issue — a public flake or an AppImage is
-straightforward to add, it simply has not been needed yet.
-
-The app's own update check is Windows-only for the same reason: on Nix, upgrade
-with `nix profile upgrade`.
+The AppImage is the public direct-download route. The Nix flake remains a
+separate, reproducible packaging route for people with access to the private
+source repository; it pins the GTK/WebKit runtime rather than downloading this
+release asset. On Nix, keep upgrading with `nix profile upgrade`.
 
 ## How far each provider has been tested
 
@@ -105,10 +104,10 @@ and shows an unobtrusive "Update available" line in Settings with a **Check
 now** button. Uncheck **Check for updates** in Settings to turn the automatic
 checks off; **Check now** keeps working either way.
 
-On Windows an **Install update** button appears alongside it: the app downloads
-the new installer, verifies its signature, and runs it. The app closes and
-reopens partway through, which is expected. This works only if you installed via
-the installer — a portable EXE cannot replace itself, so update it by
+On Windows an **Install update** button appears only for an installed bundle:
+the app downloads the new installer, verifies its signature, and runs it. The
+app closes and reopens partway through, which is expected. A portable EXE cannot
+replace itself, so it instead shows the normal upgrade guidance; update it by
 downloading the new one.
 
 Where a release publishes nothing for your platform, the app still tells you a
@@ -121,13 +120,19 @@ release rather than behind it.
 
 ## Verifying a download
 
-Releases are signed with minisign. To check an installer yourself, take the
-`signature` value for your platform out of `latest.json` and verify it against
-the public key baked into the app:
+Releases are signed with minisign. To manually verify an AppImage, download its
+matching `.sig` file as well, install `minisign` (for example `sudo apt install
+minisign` on Ubuntu), and verify with the public key baked into the app:
 
 ```
 RWQHEg24HhWu6QFITG26y7995k+xW1CG3IHAplDddbIF1LahMc7G7fsz
 ```
 
-The app verifies this signature itself before running a downloaded installer, so
-checking by hand is only for the curious or the cautious.
+```sh
+minisign -Vm QuotaWidget_<version>_amd64.AppImage \
+  -x QuotaWidget_<version>_amd64.AppImage.sig \
+  -P RWQHEg24HhWu6QFITG26y7995k+xW1CG3IHAplDddbIF1LahMc7G7fsz
+```
+
+The app verifies this signature itself before installing an in-app update, so
+checking a direct download by hand is for the curious or the cautious.

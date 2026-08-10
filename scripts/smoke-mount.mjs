@@ -137,15 +137,17 @@ const CASES = [
     props: () => ({}),
     buildBranch: 'smoke-branch',
     expect: ['smoke-branch'],
-    verify: ({ target, flushSync }) => {
+    verify: async ({ target, flushSync, emit }) => {
       const main = target.querySelector('main');
       const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
       main.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
       flushSync();
       if (opacity() !== '0.92') throw new Error(`scroll did not fade popup: ${opacity()}`);
-      // A config broadcast turns the toggle off and restores the normal shell.
-      // The event stub does not retain listeners, so exercise the disabled
-      // configuration directly through the initial IPC payload in its own case.
+      // The full popup's show-time reset is unchanged: unlike the summary, it
+      // opens opaque every time it is shown.
+      await emit('window-shown', 'popup');
+      flushSync();
+      if (opacity() !== '1') throw new Error(`popup kept its fade across a show: ${opacity()}`);
     },
   },
   {
@@ -354,7 +356,7 @@ const CASES = [
   {
     file: 'src/App.svelte',
     props: () => ({}),
-    saveFails: true,
+    saveError: 'disk on fire',
     verify: async ({ target, flushSync, emit, shellCalls }) => {
       emit('navigate', { view: 'settings', return_to: 'mini' });
       target.querySelector('.settings .primary').click();
@@ -363,7 +365,7 @@ const CASES = [
       if (!target.querySelector('.settings')) throw new Error('a failed save closed Settings');
       if (!target.querySelector('.settings .test.bad')) throw new Error('a failed save showed no error');
       if (shellCalls().length) throw new Error(`a failed save drove the shell: ${shellCalls().join(',')}`);
-      globalThis.__SMOKE_SAVE_FAILS__ = false;
+      globalThis.__SMOKE_SAVE_ERROR__ = '';
       target.querySelector('.settings .primary').click();
       await new Promise((resolve) => setTimeout(resolve, 0));
       flushSync();
@@ -417,19 +419,41 @@ const CASES = [
   {
     file: 'src/lib/MiniSummary.svelte',
     props: () => ({}),
-    verify: ({ target, flushSync }) => {
+    verify: async ({ target, flushSync, emit }) => {
       const mini = target.querySelector('.mini');
       const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
       const wheel = () =>
         mini.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
+      // A newly mounted summary — the fresh-app-start case — opens opaque.
+      if (opacity() !== '1') throw new Error(`summary did not open opaque: ${opacity()}`);
       wheel();
       flushSync();
       if (opacity() !== '0.92') throw new Error(`scroll did not fade summary: ${opacity()}`);
-      // Unlike the popup the unpinned summary may reach zero: click-away
-      // dismisses it, so fully transparent is recoverable rather than a trap.
+      // Every native hide/show path ends in this one notification, so playing
+      // it back is what proves the level survives tray toggles, click-away,
+      // the close button, and the temporary hide while the popup is open.
+      await emit('mini-shown', null);
+      flushSync();
+      if (opacity() !== '0.92') throw new Error(`showing the summary reset its fade to ${opacity()}`);
+      // Even unpinned it stops at the shared floor rather than nothing: the
+      // level outlives every hide now, so a zero floor would mean reopening
+      // an invisible window indefinitely.
       for (let i = 0; i < 20; i += 1) wheel();
       flushSync();
-      if (Number(opacity()) !== 0) throw new Error(`unpinned summary floored at ${opacity()}`);
+      if (Number(opacity()) !== 0.15) throw new Error(`unpinned summary floored at ${opacity()}`);
+      // The floor is retained too — the case most likely to be "helpfully"
+      // reset, and the one that has to stay findable after a reopen.
+      await emit('mini-shown', null);
+      flushSync();
+      if (Number(opacity()) !== 0.15) throw new Error(`a fully faded summary came back at ${opacity()}`);
+      // Turning the preference off is still the escape hatch, and turning it
+      // back on must not restore the level that was just cleared.
+      await emit('config', { ...CONFIG, scroll_opacity: false });
+      flushSync();
+      if (opacity() !== '1') throw new Error(`disabling fade left the summary at ${opacity()}`);
+      await emit('config', CONFIG);
+      flushSync();
+      if (opacity() !== '1') throw new Error(`re-enabling fade restored a stale level: ${opacity()}`);
     },
   },
   { file: 'src/lib/MiniSummary.svelte', props: () => ({}), snapshotsError: true, expect: ['Could not load summary'] },
@@ -521,6 +545,66 @@ const CASES = [
       }
     },
   },
+  // The footer is fixed: only the form scrolls, and the commit action, the
+  // save error and the version live outside the scrolling region so they are
+  // on screen wherever the user has scrolled to. jsdom lays nothing out, so
+  // what is assertable is the structure that makes it true — which region the
+  // footer's parts belong to — rather than any measured position.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    expect: ['Quota Widget v0.0.0-test'],
+    verify: ({ target }) => {
+      const form = target.querySelector('.settings > .settings-form');
+      const footer = target.querySelector('.settings > .settings-footer');
+      if (!form) throw new Error('settings rendered no scrollable form region');
+      if (!footer) throw new Error('settings rendered no fixed footer');
+      if (!form.querySelector('section')) throw new Error('the fields are not inside the scrolling region');
+      // Anything in the footer must not also be in the scrolling region.
+      if (form.contains(footer)) throw new Error('the footer scrolls with the form');
+      const save = [...footer.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Save & close');
+      if (!save) throw new Error('Save & close is not in the fixed footer');
+      if (!save.closest('.actions')) throw new Error('Save & close is not in the right-aligned action row');
+      const version = footer.querySelector('.version');
+      if (!version) throw new Error('the version is not in the fixed footer');
+      if (!/Quota Widget v/.test(version.textContent)) {
+        throw new Error(`footer version read ${JSON.stringify(version.textContent)}`);
+      }
+      // Centred beneath the action, so it follows the action row in order.
+      if (!(save.closest('.actions').compareDocumentPosition(version) & 4 /* FOLLOWING */)) {
+        throw new Error('the version is not beneath the action');
+      }
+    },
+  },
+  // A failed save keeps Settings mounted with the error visible in the footer,
+  // rather than closing on a write that never landed.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({
+      initialConfig: $.proxy(structuredClone(CONFIG)),
+      snapshots: structuredClone(SNAPSHOTS),
+      onclose() { globalThis.__SMOKE_CLOSED__ = true; },
+    }),
+    saveError: 'disk is full',
+    verify: async ({ target, flushSync }) => {
+      globalThis.__SMOKE_CLOSED__ = false;
+      globalThis.__SMOKE_LAST_CONFIG__ = undefined;
+      target.querySelector('.primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (globalThis.__SMOKE_CLOSED__) throw new Error('a failed save still closed Settings');
+      const footer = target.querySelector('.settings > .settings-footer');
+      if (!footer?.textContent.includes('disk is full')) {
+        throw new Error(`the save error is not visible in the footer: ${footer?.textContent}`);
+      }
+      // Still the whole panel, not a stub left over from a mid-render throw.
+      if (!target.querySelector('.settings-form section')) {
+        throw new Error('the form did not survive the failed save');
+      }
+      if (!footer.querySelector('.version')) throw new Error('the version left the footer on a failed save');
+    },
+  },
   // Ordering: the basis select is inert while the order is Manual, both
   // selects reach Rust as the snake_case strings serde expects, and a config
   // predating the feature fills them in rather than saving nulls.
@@ -598,7 +682,7 @@ const CASES = [
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     update: {
       available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
-      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe',
+      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe', installable: true,
     },
     expect: ['Update available: v0.2.0', 'Install update'],
     verify: async ({ target }) => {
@@ -615,13 +699,30 @@ const CASES = [
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     update: {
       available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
-      pub_date: '2026-08-05T09:21:10Z', url: null,
+      pub_date: '2026-08-05T09:21:10Z', url: null, installable: false,
     },
     expect: ['Update available: v0.2.0', 'nix profile upgrade quota-widget'],
     verify: async ({ target }) => {
       const install = [...target.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === 'Install update');
       if (install) throw new Error('offered Install for a release with no download for this platform');
+    },
+  },
+  // A portable EXE sees the same Windows installer URL as an installed build,
+  // but Tauri reports no bundle type for it. It must get the upgrade guidance,
+  // never an Install action that cannot replace the running executable.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    update: {
+      available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
+      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe', installable: false,
+    },
+    expect: ['Update available: v0.2.0', 'nix profile upgrade quota-widget'],
+    verify: async ({ target }) => {
+      const install = [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Install update');
+      if (install) throw new Error('offered Install to a portable executable');
     },
   },
   {
@@ -671,7 +772,7 @@ export async function invoke(cmd, args) {
     case 'has_secret': return false;
     case 'on_wayland': return true;
     case 'set_config':
-      if (globalThis.__SMOKE_SAVE_FAILS__) throw new Error('disk on fire');
+      if (globalThis.__SMOKE_SAVE_ERROR__) throw new Error(globalThis.__SMOKE_SAVE_ERROR__);
       globalThis.__SMOKE_LAST_CONFIG__ = args.config; return null;
     case 'exit_settings': (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push(\`exit_settings:\${args.to}\`); return null;
     case 'hide_window': (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push('hide_window'); return null;
@@ -679,14 +780,23 @@ export async function invoke(cmd, args) {
     default: return null;
   }
 }`);
-  // Listeners are retained rather than dropped so a case can deliver a Rust
-  // event — the tray's `navigate` payload is only reachable that way, and it is
-  // what carries the Settings return state across the navigation boundary.
+  // Listeners are retained so a case can play back the events Rust really
+  // emits: 'mini-shown', whose whole contract is that it does *not* disturb the
+  // summary's fade level, and the tray's 'navigate' payload, which is the only
+  // way the Settings return state crosses the navigation boundary. The registry
+  // is per case; the runner clears it between mounts so one component's
+  // listeners can never be fired by the next one's events.
   w('@tauri-apps/api/event.js', `
 export async function listen(event, handler) {
-  const all = (globalThis.__SMOKE_LISTENERS__ ??= {});
-  (all[event] ??= []).push(handler);
-  return () => { all[event] = (all[event] ?? []).filter((h) => h !== handler); };
+  const listeners = (globalThis.__SMOKE_LISTENERS__ ??= new Map());
+  const forEvent = listeners.get(event) ?? [];
+  forEvent.push(handler);
+  listeners.set(event, forEvent);
+  return () => {
+    const current = listeners.get(event) ?? [];
+    const at = current.indexOf(handler);
+    if (at >= 0) current.splice(at, 1);
+  };
 }`);
   // Settings imports this lazily when Install update is pressed. Stubbed so the
   // button can be exercised without a real updater or a real download.
@@ -756,8 +866,23 @@ for (const f of readdirSync(join(ROOT, 'src/lib')).filter((f) => f.endsWith('.js
 const { mount, unmount, flushSync } = await import('svelte');
 const $ = await import('svelte/internal/client');
 
+// Plays back an event exactly as Rust's `app.emit` would, for the listeners
+// the component registered in `onMount`.
+//
+// Handlers are invoked synchronously and the result flushed before anything is
+// awaited, so a case that does not await this still sees the render — a handler
+// that only assigns state (`navigate` swapping the view) has already done its
+// work by then. Awaiting additionally waits out handlers that go async.
+function emit(event, payload) {
+  const pending = [...(globalThis.__SMOKE_LISTENERS__?.get(event) ?? [])]
+    .map((handler) => handler({ event, payload }));
+  flushSync();
+  return Promise.all(pending);
+}
+
 let failed = 0;
 for (const c of CASES) {
+  globalThis.__SMOKE_LISTENERS__ = new Map();
   const target = dom.window.document.createElement('div');
   dom.window.document.body.appendChild(target);
   let app;
@@ -766,10 +891,9 @@ for (const c of CASES) {
     globalThis.__SMOKE_CONFIG__ = c.config ? { snapshots: SNAPSHOTS, config: c.config } : undefined;
     globalThis.__QUOTA_WIDGET_BRANCH__ = c.buildBranch ?? '';
     globalThis.__SMOKE_UPDATE__ = c.update ?? null;
+    globalThis.__SMOKE_SAVE_ERROR__ = c.saveError ?? '';
     globalThis.__SMOKE_INSTALLED__ = false;
-    globalThis.__SMOKE_LISTENERS__ = {};
     globalThis.__SMOKE_SHELL_CALLS__ = [];
-    globalThis.__SMOKE_SAVE_FAILS__ = Boolean(c.saveFails);
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle
@@ -777,10 +901,6 @@ for (const c of CASES) {
     // `emit` plays a Rust event to the component's own listeners; `shellCalls`
     // is what it asked Rust to do in return. Together they cover the navigation
     // seam in both directions without reaching into component internals.
-    const emit = (event, payload) => {
-      for (const h of globalThis.__SMOKE_LISTENERS__[event] ?? []) h({ payload });
-      flushSync();
-    };
     const shellCalls = () => globalThis.__SMOKE_SHELL_CALLS__;
     await c.verify?.({ target, flushSync, emit, shellCalls });
   } catch (e) {
@@ -803,7 +923,7 @@ for (const c of CASES) {
   globalThis.__SMOKE_SNAPSHOTS_ERROR__ = false;
   globalThis.__SMOKE_CONFIG__ = undefined;
   globalThis.__SMOKE_UPDATE__ = null;
-  globalThis.__SMOKE_SAVE_FAILS__ = false;
+  globalThis.__SMOKE_SAVE_ERROR__ = '';
   target.remove();
 }
 

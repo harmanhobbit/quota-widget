@@ -57,8 +57,8 @@ jobs:
       - run: cargo test -p quota-core
       - run: npm run check-versions
 
-  publish:
-    name: Build and publish to dist repo
+  build-windows:
+    name: Signed Windows artifacts
     needs: [verify-tag, test]
     # verify-tag is skipped on a dispatch, so accept skipped — but never accept
     # a failure. Mirrors build.yml's build-windows gate.
@@ -89,7 +89,7 @@ jobs:
       # and specifically if it is missing: the alternative is publishing a
       # manifest whose signature field is empty, which every client rejects with
       # a far less obvious error, days later.
-      - name: Locate installer and signature
+      - name: Stage signed Windows assets
         id: assets
         shell: bash
         run: |
@@ -103,10 +103,6 @@ jobs:
             echo "::error::$installer.sig is missing — is bundle.createUpdaterArtifacts set in tauri.conf.json, and is TAURI_SIGNING_PRIVATE_KEY set?"
             exit 1
           fi
-          echo "installer=$installer" >> "$GITHUB_OUTPUT"
-          echo "signature=$installer.sig" >> "$GITHUB_OUTPUT"
-          echo "basename=$(basename "$installer")" >> "$GITHUB_OUTPUT"
-
           # The portable EXE ships too, for anyone who does not want an
           # installed app. Rename it per-version: release asset names are the
           # download URL, and a bare quota-widget.exe would read identically
@@ -118,31 +114,143 @@ jobs:
             exit 1
           fi
           cp target/release/quota-widget.exe "$portable"
-          echo "portable=$portable" >> "$GITHUB_OUTPUT"
+          mkdir -p release-assets
+          cp "$installer" "$installer.sig" "$portable" release-assets/
+
+      - name: Upload signed Windows assets
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-windows-assets
+          path: release-assets/
+
+  build-linux:
+    name: Signed AppImage (Ubuntu 22.04)
+    needs: [verify-tag, test]
+    # Keep the oldest supported glibc baseline explicit. Newer runners can
+    # quietly raise it, producing an AppImage that no longer starts on 22.04.
+    if: |
+      !cancelled() && needs.test.result == 'success'
+      && needs.verify-tag.result != 'failure'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Install Tauri's Ubuntu 22.04 bundle prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential \
+            file \
+            libayatana-appindicator3-dev \
+            libgtk-3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.0-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            patchelf
+      - run: npm ci
+
+      # --bundles overrides the Windows-only default in tauri.conf.json. The
+      # updater signature is emitted beside the AppImage by the same configured
+      # signing key that produces the NSIS signature.
+      - name: Build signed AppImage
+        run: npm run tauri build -- --bundles appimage
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Stage signed AppImage
+        run: |
+          set -euo pipefail
+          appimage=$(find target/release/bundle/appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)
+          if [ -z "$appimage" ]; then
+            echo "::error::no AppImage in target/release/bundle/appimage"
+            exit 1
+          fi
+          if [ ! -f "$appimage.sig" ]; then
+            echo "::error::$appimage.sig is missing — is bundle.createUpdaterArtifacts set in tauri.conf.json, and is TAURI_SIGNING_PRIVATE_KEY set?"
+            exit 1
+          fi
+          mkdir -p release-assets
+          cp "$appimage" "$appimage.sig" release-assets/
+
+      - name: Upload signed Linux assets
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-linux-assets
+          path: release-assets/
+
+  publish:
+    name: Publish to dist repo
+    needs: [verify-tag, test, build-windows, build-linux]
+    # Publication is deliberately a separate, cheap Linux job. It cannot begin
+    # until both platform-specific builds have produced signed artifacts.
+    if: |
+      !cancelled() && needs.test.result == 'success'
+      && needs.verify-tag.result != 'failure'
+      && needs.build-windows.result == 'success'
+      && needs.build-linux.result == 'success'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download signed release assets
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-*-assets
+          path: release-assets
+          merge-multiple: true
 
       # Schema is fixed in docs/plan-updates-and-providers.md, "The latest.json
       # contract". It is tauri-plugin-updater's own format because that plugin
       # consumes this exact file in the next minor. `version` is bare SemVer:
       # the tag keeps its v, the manifest does not.
       - name: Generate latest.json
+        id: assets
         shell: bash
         run: |
           set -euo pipefail
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           tag="v$version"
-          url="https://github.com/harmanhobbit/quota-widget-dist/releases/download/$tag/${{ steps.assets.outputs.basename }}"
+          installer=$(find release-assets -maxdepth 1 -type f -name '*-setup.exe' -print -quit)
+          appimage=$(find release-assets -maxdepth 1 -type f -name '*.AppImage' -print -quit)
+          if [ -z "$installer" ] || [ -z "$appimage" ]; then
+            echo "::error::signed Windows installer or AppImage was not downloaded"
+            exit 1
+          fi
+          if [ ! -f "$installer.sig" ] || [ ! -f "$appimage.sig" ]; then
+            echo "::error::a signed release artifact is missing its signature"
+            exit 1
+          fi
+          windows_url="https://github.com/harmanhobbit/quota-widget-dist/releases/download/$tag/$(basename "$installer")"
+          linux_url="https://github.com/harmanhobbit/quota-widget-dist/releases/download/$tag/$(basename "$appimage")"
           # jq -Rs slurps the signature verbatim, so newlines and any quoting in
           # the minisign output survive into valid JSON.
           jq -n \
             --arg version "$version" \
             --arg notes "See https://github.com/harmanhobbit/quota-widget-dist/releases/tag/$tag" \
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg url "$url" \
-            --rawfile signature "${{ steps.assets.outputs.signature }}" \
+            --arg windows_url "$windows_url" \
+            --arg linux_url "$linux_url" \
+            --rawfile windows_signature "$installer.sig" \
+            --rawfile linux_signature "$appimage.sig" \
             '{version: $version, notes: $notes, pub_date: $pub_date,
-              platforms: {"windows-x86_64": {signature: $signature, url: $url}}}' \
+              platforms: {
+                "windows-x86_64": {signature: $windows_signature, url: $windows_url},
+                "linux-x86_64": {signature: $linux_signature, url: $linux_url}
+              }}' \
             > latest.json
           cat latest.json
+          echo "installer=$installer" >> "$GITHUB_OUTPUT"
+          echo "installer_signature=$installer.sig" >> "$GITHUB_OUTPUT"
+          echo "portable=$(find release-assets -maxdepth 1 -type f -name '*-portable.exe' -print -quit)" >> "$GITHUB_OUTPUT"
+          echo "appimage=$appimage" >> "$GITHUB_OUTPUT"
+          echo "appimage_signature=$appimage.sig" >> "$GITHUB_OUTPUT"
 
       - name: Publish release to dist repo
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
@@ -176,8 +284,10 @@ jobs:
             --title "$tag" \
             --notes "Quota Widget $tag" \
             "${{ steps.assets.outputs.installer }}" \
-            "${{ steps.assets.outputs.signature }}" \
+            "${{ steps.assets.outputs.installer_signature }}" \
             "${{ steps.assets.outputs.portable }}" \
+            "${{ steps.assets.outputs.appimage }}" \
+            "${{ steps.assets.outputs.appimage_signature }}" \
             latest.json
 
       # On a dry run, and on any dispatch, the manifest and binaries are still
@@ -192,4 +302,6 @@ jobs:
             ${{ steps.assets.outputs.portable }}
             latest.json
             ${{ steps.assets.outputs.installer }}
-            ${{ steps.assets.outputs.signature }}
+            ${{ steps.assets.outputs.installer_signature }}
+            ${{ steps.assets.outputs.appimage }}
+            ${{ steps.assets.outputs.appimage_signature }}

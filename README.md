@@ -8,8 +8,9 @@ OpenAI organization spend. It collapses to
 the tray and pops up as a compact always-on-top window.
 
 Built with Tauri 2 (Rust) + Svelte 5. The portable EXE is self-contained —
-Windows 11 ships the WebView2 runtime it renders with. On Linux it's packaged as
-a Nix flake (see [Building](#nixos--nix)).
+Windows 11 ships the WebView2 runtime it renders with. Linux releases ship an
+x86_64 AppImage built on Ubuntu 22.04; a Nix flake remains available to source
+repository collaborators (see [Building](#nixos--nix)).
 
 Platform differences are small but real:
 
@@ -52,13 +53,19 @@ Platform differences are small but real:
   is the only thing that writes — and a save that fails leaves Settings open
   with its error. ✕ always means *hide the widget*, whatever you came from.
 - **Scroll** over either window to fade it: up towards transparent, down back
-  to opaque. The level is temporary and resets whenever the window is shown
-  again, so a faded widget is never left that way. Scrolling the card list or
-  the Settings form still scrolls normally, and the full popup stops at a
-  faint-but-visible floor rather than becoming an invisible thing that eats
-  clicks — as does a *pinned* mini summary, which ignores click-away. An
-  unpinned summary may fade all the way out, since clicking elsewhere
-  dismisses it. A Settings checkbox turns the whole behaviour off.
+  to opaque. The two windows keep that level for different lengths of time. The
+  **full popup** forgets it on every open, so it always comes back opaque. The
+  **mini summary** keeps exactly the level you left it at — through tray
+  toggles, clicking away, its close button, and while the full window is open —
+  for as long as the app is running; restarting the app opens it opaque again.
+  The level is never written to your configuration either way. Scrolling the
+  card list or the Settings form still scrolls normally, and every window
+  stops at the same faint-but-visible 15% floor rather than becoming an
+  invisible thing that eats clicks. A mini summary left at that floor comes
+  back just as faint on the next tray click rather than fully opaque. Unticking
+  the Settings checkbox turns the behaviour off and restores both windows to
+  fully opaque; ticking it again starts from opaque rather than from the level
+  you had before.
 - **Account order** is yours by default: accounts appear in the order you
   arranged them in Settings. Two Settings dropdowns can instead sort them by
   usage (high→low or low→high) or by expiry (soonest or furthest reset), with a
@@ -108,6 +115,12 @@ window (or credits), while a specific window or credit balance keeps that
 compact row focused. Choose None to omit the account from the compact summary.
 The selected value can also contribute to the tray icon's status and gauge;
 this does not change alerts or card status.
+
+Only the Settings fields scroll: **Save & close** sits in a fixed footer at the
+bottom of the window, with the app version beneath it, so the commit action is
+reachable from anywhere in the form. Save is the only thing that writes — if it
+fails, Settings stays open and shows the error in that footer rather than
+closing on a write that never landed.
 
 Secrets (API keys, cookies, OAuth tokens) are stored in the **Windows Credential
 Manager**, not on disk. On Linux they fall back to a `0600` `secrets.json` in the
@@ -246,14 +259,13 @@ and optionally enable **Start on login** (a `HKCU` run entry on Windows, an XDG
 autostart entry on Linux — no admin rights needed either way). Updating =
 replacing the EXE; on Nix, `nix profile upgrade`.
 
-**Published releases are Windows-only.** A Linux build links the host's GTK3 and
-WebKitGTK rather than bundling them, so there is no single binary that runs
-across distributions — hence the flake, which pins them. The in-app update check
-is Windows-only to match: `updates.rs` asks the manifest for `linux-x86_64`,
-which no release publishes, so a Linux build reports no update rather than
-offering one it cannot install. Adding an AppImage or `.deb` to `release.yml`
-is the route if that changes; both are Tauri bundle targets and would build on
-a 1x-metered Linux runner.
+**Linux releases** publish a signed x86_64 AppImage, built on pinned Ubuntu
+22.04 as the compatibility floor. Download the `.AppImage` and its `.sig` from
+the public dist repository, then run `chmod +x QuotaWidget_<version>_amd64.AppImage`
+followed by `./QuotaWidget_<version>_amd64.AppImage`. The public download page
+has the matching `minisign` verification command. The Nix flake is distinct: it
+is a reproducible source build that pins GTK/WebKit, and remains available only
+to collaborators with access to this private repository.
 
 ### Releases and update checks
 
@@ -264,11 +276,13 @@ does and the by-hand equivalent.
 
 This repo is private, so releases are published to the public
 [`harmanhobbit/quota-widget-dist`](https://github.com/harmanhobbit/quota-widget-dist)
-repo: pushing a `v*.*.*` tag runs `release.yml`, which builds a signed NSIS
-installer and uploads it, its `.sig`, the portable EXE (renamed
+repo: pushing a `v*.*.*` tag runs `release.yml`, which builds signed Windows
+and Ubuntu-22.04 AppImage artifacts, then uploads the NSIS installer, its
+`.sig`, the portable EXE (renamed
 `QuotaWidget_<version>_x64-portable.exe`, since an asset name is its download
-URL and a bare `quota-widget.exe` reads identically across every release), and
-a `latest.json` manifest. It also republishes `docs/dist-README.md` as that
+URL and a bare `quota-widget.exe` reads identically across every release), the
+AppImage and its `.sig`, and a `latest.json` manifest. It only publishes after
+both platform builds succeed. It also republishes `docs/dist-README.md` as that
 repo's landing page, so the public download instructions cannot drift from what
 ships — edit that file, not the dist repo directly. The tag must match the
 workspace `Cargo.toml` version — CI refuses to publish a mislabelled tree. A `workflow_dispatch` defaults to a **dry run**: it builds and signs, then
@@ -282,12 +296,13 @@ keeps working regardless, since pressing it is itself the consent. Builds from a
 feature branch never check at all — they carry a dev badge and would otherwise
 nag about a "newer" release they are actually ahead of.
 
-On Windows, Settings also offers **Install update**, which downloads the new
-installer through `tauri-plugin-updater`, verifies its minisign signature
-against the `pubkey` in `tauri.conf.json`, and runs it in `passive` mode. The
-app exits partway through, so the UI says so before starting. The plugin cannot
-update a portable EXE in place — in-app updating requires having run the
-installer once — and CI publishes both artifacts regardless.
+On Windows, Settings offers **Install update** only when the running app was
+installed by an updatable bundle. It downloads the new installer through
+`tauri-plugin-updater`, verifies its minisign signature against the `pubkey` in
+`tauri.conf.json`, and runs it in `passive` mode. The app exits partway through,
+so the UI says so before starting. A portable EXE cannot update itself in place:
+it shows the normal upgrade guidance instead, and CI publishes both artifacts
+regardless.
 
 `updater:default` is granted in `capabilities/default.json` only. It is
 deliberately **not** in `mini.json`: the tray-click summary has no business
