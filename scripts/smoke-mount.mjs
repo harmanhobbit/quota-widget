@@ -384,6 +384,66 @@ const CASES = [
       }
     },
   },
+  // The footer is fixed: only the form scrolls, and the commit action, the
+  // save error and the version live outside the scrolling region so they are
+  // on screen wherever the user has scrolled to. jsdom lays nothing out, so
+  // what is assertable is the structure that makes it true — which region the
+  // footer's parts belong to — rather than any measured position.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    expect: ['Quota Widget v0.0.0-test'],
+    verify: ({ target }) => {
+      const form = target.querySelector('.settings > .settings-form');
+      const footer = target.querySelector('.settings > .settings-footer');
+      if (!form) throw new Error('settings rendered no scrollable form region');
+      if (!footer) throw new Error('settings rendered no fixed footer');
+      if (!form.querySelector('section')) throw new Error('the fields are not inside the scrolling region');
+      // Anything in the footer must not also be in the scrolling region.
+      if (form.contains(footer)) throw new Error('the footer scrolls with the form');
+      const save = [...footer.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Save & close');
+      if (!save) throw new Error('Save & close is not in the fixed footer');
+      if (!save.closest('.actions')) throw new Error('Save & close is not in the right-aligned action row');
+      const version = footer.querySelector('.version');
+      if (!version) throw new Error('the version is not in the fixed footer');
+      if (!/Quota Widget v/.test(version.textContent)) {
+        throw new Error(`footer version read ${JSON.stringify(version.textContent)}`);
+      }
+      // Centred beneath the action, so it follows the action row in order.
+      if (!(save.closest('.actions').compareDocumentPosition(version) & 4 /* FOLLOWING */)) {
+        throw new Error('the version is not beneath the action');
+      }
+    },
+  },
+  // A failed save keeps Settings mounted with the error visible in the footer,
+  // rather than closing on a write that never landed.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({
+      initialConfig: $.proxy(structuredClone(CONFIG)),
+      snapshots: structuredClone(SNAPSHOTS),
+      onclose() { globalThis.__SMOKE_CLOSED__ = true; },
+    }),
+    saveError: 'disk is full',
+    verify: async ({ target, flushSync }) => {
+      globalThis.__SMOKE_CLOSED__ = false;
+      globalThis.__SMOKE_LAST_CONFIG__ = undefined;
+      target.querySelector('.primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (globalThis.__SMOKE_CLOSED__) throw new Error('a failed save still closed Settings');
+      const footer = target.querySelector('.settings > .settings-footer');
+      if (!footer?.textContent.includes('disk is full')) {
+        throw new Error(`the save error is not visible in the footer: ${footer?.textContent}`);
+      }
+      // Still the whole panel, not a stub left over from a mid-render throw.
+      if (!target.querySelector('.settings-form section')) {
+        throw new Error('the form did not survive the failed save');
+      }
+      if (!footer.querySelector('.version')) throw new Error('the version left the footer on a failed save');
+    },
+  },
   // Ordering: the basis select is inert while the order is Manual, both
   // selects reach Rust as the snake_case strings serde expects, and a config
   // predating the feature fills them in rather than saving nulls.
@@ -533,7 +593,9 @@ export async function invoke(cmd, args) {
     case 'app_version': return '0.0.0-test';
     case 'has_secret': return false;
     case 'on_wayland': return true;
-    case 'set_config': globalThis.__SMOKE_LAST_CONFIG__ = args.config; return null;
+    case 'set_config':
+      if (globalThis.__SMOKE_SAVE_ERROR__) throw new Error(globalThis.__SMOKE_SAVE_ERROR__);
+      globalThis.__SMOKE_LAST_CONFIG__ = args.config; return null;
     case 'update_status': case 'check_update_now': return globalThis.__SMOKE_UPDATE__ ?? null;
     default: return null;
   }
@@ -617,6 +679,7 @@ for (const c of CASES) {
     globalThis.__SMOKE_CONFIG__ = c.config ? { snapshots: SNAPSHOTS, config: c.config } : undefined;
     globalThis.__QUOTA_WIDGET_BRANCH__ = c.buildBranch ?? '';
     globalThis.__SMOKE_UPDATE__ = c.update ?? null;
+    globalThis.__SMOKE_SAVE_ERROR__ = c.saveError ?? '';
     globalThis.__SMOKE_INSTALLED__ = false;
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
@@ -643,6 +706,7 @@ for (const c of CASES) {
   globalThis.__SMOKE_SNAPSHOTS_ERROR__ = false;
   globalThis.__SMOKE_CONFIG__ = undefined;
   globalThis.__SMOKE_UPDATE__ = null;
+  globalThis.__SMOKE_SAVE_ERROR__ = '';
   target.remove();
 }
 

@@ -102,6 +102,12 @@ compact row focused. Choose None to omit the account from the compact summary.
 The selected value can also contribute to the tray icon's status and gauge;
 this does not change alerts or card status.
 
+Only the Settings fields scroll: **Save & close** sits in a fixed footer at the
+bottom of the window, with the app version beneath it, so the commit action is
+reachable from anywhere in the form. Save is the only thing that writes — if it
+fails, Settings stays open and shows the error in that footer rather than
+closing on a write that never landed.
+
 Secrets (API keys, cookies, OAuth tokens) are stored in the **Windows Credential
 Manager**, not on disk. On Linux they fall back to a `0600` `secrets.json` in the
 config dir. Config lives at `%APPDATA%\quota-widget\config.json`
