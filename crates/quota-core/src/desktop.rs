@@ -344,6 +344,13 @@ fn unquote_exec(value: &str) -> Option<PathBuf> {
 /// Deliberately strict: the marker says a file claims to be ours, and the
 /// byte-comparison against regenerated content says nobody has changed it
 /// since. Only both together license a delete.
+///
+/// The cost of that strictness is that changing `launcher_contents` orphans
+/// every launcher an older build wrote — they read as `UserOwned`, so the new
+/// build will neither rewrite nor delete them, and the user is told to clean up
+/// a file they never touched. Treat the format as settled; if it genuinely must
+/// change, this function has to accept the previous rendering too rather than
+/// the new one alone.
 fn owned_target(text: &str) -> Option<PathBuf> {
     if !text.lines().any(|line| line.trim() == MARKER) {
         return None;
