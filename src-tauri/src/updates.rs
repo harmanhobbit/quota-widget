@@ -25,11 +25,10 @@ const MANIFEST_URL: &str =
 /// poller's own quota cycle runs far more often than this.
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
-/// Target triple key in the manifest's `platforms` map. Only Windows is
-/// published today. A build whose key is absent still learns that a newer
-/// version exists — it just gets no download URL, which is the honest result
-/// on *nix, where upgrading goes through whatever package manager installed
-/// the app.
+/// Target triple key in the manifest's `platforms` map. Windows installers and
+/// Linux AppImages are published; a build whose key is absent still learns that
+/// a newer version exists — it just gets no download URL, which remains the
+/// honest result for package-managed installs such as Nix.
 #[cfg(windows)]
 const TARGET: &str = "windows-x86_64";
 #[cfg(not(windows))]
