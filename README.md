@@ -45,6 +45,15 @@ Platform differences are small but real:
   tray tooltip; Plasma draws the StatusNotifierItem tooltip.
 - **Right-click** for Open / Refresh now / Settings / Quit. **Open** shows the
   full usage/settings window; reopening it always lands on the usage list.
+  **Settings** puts you back where you were when you *leave* it — via Save &
+  close or Esc. Opened from the usage list you return to the usage list; opened
+  from the tray while the mini summary was up, the summary comes back (pinned
+  or not); opened from the tray with nothing on screen, you end with nothing on
+  screen. The ← back arrow is different: it is navigation inside the window, so
+  it always shows the usage list and leaves the window open, whatever you came
+  from. Back and Esc discard unsaved edits — Save & close is the only thing
+  that writes — and a save that fails leaves Settings open with its error. ✕
+  always means *hide the widget*, whatever you came from.
 - **Scroll** over either window to fade it: up towards transparent, down back
   to opaque. The two windows keep that level for different lengths of time. The
   **full popup** forgets it on every open, so it always comes back opaque. The
@@ -308,6 +317,7 @@ crates/quota-core   pure Rust, no UI deps — fully unit-tested
   model.rs          UsageSnapshot / UsageWindow / Credits / FetchError
   config.rs         config persistence + per-provider overrides
   alerts.rs         edge-triggered alert engine
+  settings_return.rs  where a Settings visit goes when it exits
   providers/        one adapter per provider behind a common trait
 src-tauri           the Tauri shell
   tray.rs           runtime-generated status icons, full window + mini summary placement
