@@ -214,6 +214,13 @@ pub struct Config {
     pub scroll_opacity_invert: bool,
     /// Check the public distribution manifest for a newer released build.
     pub check_updates: bool,
+    /// Whether the AppImage desktop-integration question has been put to the
+    /// user. It records that they were *asked*, not what they answered: saying
+    /// "not now" must be remembered as firmly as saying yes, or every launch
+    /// would ask again. Settings keeps the explicit add and remove controls, so
+    /// a deferral is never final. Meaningless off Linux and on non-AppImage
+    /// builds, which never ask.
+    pub desktop_integration_prompted: bool,
     /// Display order for the account list. Defaults to `Manual`, so an existing
     /// config.json that predates this field keeps its hand-arranged order.
     pub sort_order: SortOrder,
@@ -267,6 +274,7 @@ impl Default for Config {
             scroll_opacity: true,
             scroll_opacity_invert: false,
             check_updates: true,
+            desktop_integration_prompted: false,
             sort_order: SortOrder::default(),
             sort_basis: SortBasis::default(),
             mini_anchor: MiniAnchor::default(),
@@ -676,6 +684,21 @@ mod tests {
         assert!(cfg.scroll_opacity);
         assert!(!cfg.scroll_opacity_invert);
         assert!(cfg.check_updates);
+        // An existing user has not been asked about desktop integration yet, so
+        // a file predating the field must read as "not yet prompted" rather
+        // than silently suppressing the question forever.
+        assert!(!cfg.desktop_integration_prompted);
+    }
+
+    /// The deferral has to survive a save, or "not now" would be forgotten at
+    /// the next launch and the prompt would nag.
+    #[test]
+    fn a_recorded_desktop_integration_prompt_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.desktop_integration_prompted = true;
+        cfg.save(dir.path()).unwrap();
+        assert!(Config::load(dir.path()).desktop_integration_prompted);
     }
 
     /// Every pre-v2 headline setting has to land on the equivalent list, or an
