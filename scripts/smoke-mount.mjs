@@ -461,7 +461,7 @@ const CASES = [
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     update: {
       available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
-      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe',
+      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe', installable: true,
     },
     expect: ['Update available: v0.2.0', 'Install update'],
     verify: async ({ target }) => {
@@ -478,13 +478,30 @@ const CASES = [
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     update: {
       available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
-      pub_date: '2026-08-05T09:21:10Z', url: null,
+      pub_date: '2026-08-05T09:21:10Z', url: null, installable: false,
     },
     expect: ['Update available: v0.2.0', 'nix profile upgrade quota-widget'],
     verify: async ({ target }) => {
       const install = [...target.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === 'Install update');
       if (install) throw new Error('offered Install for a release with no download for this platform');
+    },
+  },
+  // A portable EXE sees the same Windows installer URL as an installed build,
+  // but Tauri reports no bundle type for it. It must get the upgrade guidance,
+  // never an Install action that cannot replace the running executable.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    update: {
+      available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
+      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe', installable: false,
+    },
+    expect: ['Update available: v0.2.0', 'nix profile upgrade quota-widget'],
+    verify: async ({ target }) => {
+      const install = [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Install update');
+      if (install) throw new Error('offered Install to a portable executable');
     },
   },
   {

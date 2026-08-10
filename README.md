@@ -275,12 +275,13 @@ keeps working regardless, since pressing it is itself the consent. Builds from a
 feature branch never check at all — they carry a dev badge and would otherwise
 nag about a "newer" release they are actually ahead of.
 
-On Windows, Settings also offers **Install update**, which downloads the new
-installer through `tauri-plugin-updater`, verifies its minisign signature
-against the `pubkey` in `tauri.conf.json`, and runs it in `passive` mode. The
-app exits partway through, so the UI says so before starting. The plugin cannot
-update a portable EXE in place — in-app updating requires having run the
-installer once — and CI publishes both artifacts regardless.
+On Windows, Settings offers **Install update** only when the running app was
+installed by an updatable bundle. It downloads the new installer through
+`tauri-plugin-updater`, verifies its minisign signature against the `pubkey` in
+`tauri.conf.json`, and runs it in `passive` mode. The app exits partway through,
+so the UI says so before starting. A portable EXE cannot update itself in place:
+it shows the normal upgrade guidance instead, and CI publishes both artifacts
+regardless.
 
 `updater:default` is granted in `capabilities/default.json` only. It is
 deliberately **not** in `mini.json`: the tray-click summary has no business

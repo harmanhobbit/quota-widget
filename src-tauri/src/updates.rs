@@ -2,7 +2,8 @@
 //!
 //! The source repo is private, so the manifest and binaries live in the public
 //! `quota-widget-dist` repo. This module only *detects* a newer release and
-//! reports it; installing is the updater plugin's job in a later revision.
+//! reports it; the updater plugin installs releases only for bundle types it
+//! can safely replace.
 //!
 //! Version comparison and manifest parsing deliberately live in `quota-core`
 //! (`quota_core::update`) because that is the crate with tests. This file is
@@ -10,13 +11,15 @@
 
 use crate::AppState;
 use quota_core::update::UpdateInfo;
+use serde::Serialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Emitter;
 
 /// The stable URL of the public manifest. `latest/download` always resolves to
 /// the newest release, so the app never needs to know a version to find one.
-const MANIFEST_URL: &str = "https://github.com/harmanhobbit/quota-widget-dist/releases/latest/download/latest.json";
+const MANIFEST_URL: &str =
+    "https://github.com/harmanhobbit/quota-widget-dist/releases/latest/download/latest.json";
 
 /// GitHub is polled rarely on purpose: an update is not time-critical, and the
 /// poller's own quota cycle runs far more often than this.
@@ -31,6 +34,27 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const TARGET: &str = "windows-x86_64";
 #[cfg(not(windows))]
 const TARGET: &str = "linux-x86_64";
+
+/// What Settings needs to know about a detected release. A platform download
+/// and an installable running bundle are separate facts: a portable Windows
+/// executable can download the NSIS installer but cannot replace itself.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(crate) struct UpdateStatus {
+    #[serde(flatten)]
+    info: UpdateInfo,
+    installable: bool,
+}
+
+fn status_for(info: Option<UpdateInfo>, installable: bool) -> Option<UpdateStatus> {
+    info.map(|info| UpdateStatus { info, installable })
+}
+
+/// The updater uses Tauri's bundle type to select an installer. It returns
+/// `None` for a portable executable, which is exactly the signal Settings
+/// needs to avoid offering an action that would fail.
+fn current_status(info: Option<UpdateInfo>) -> Option<UpdateStatus> {
+    status_for(info, tauri::utils::platform::bundle_type().is_some())
+}
 
 /// A dev build must never be told to "update" to a main release — its version
 /// is whatever `main` last declared, so every branch build would nag forever.
@@ -76,7 +100,7 @@ async fn check_once(app: &tauri::AppHandle, state: &Arc<AppState>) -> Option<Upd
     *state.update.write().await = info.clone();
     // Emitted even when nothing is available: a check that finds no update must
     // still clear a previously shown banner.
-    let _ = app.emit("update", info.clone());
+    let _ = app.emit("update", current_status(info.clone()));
     info
 }
 
@@ -102,8 +126,8 @@ pub fn spawn(app: tauri::AppHandle, state: Arc<AppState>) {
 #[tauri::command]
 pub async fn update_status(
     state: tauri::State<'_, Arc<AppState>>,
-) -> Result<Option<UpdateInfo>, String> {
-    Ok(state.update.read().await.clone())
+) -> Result<Option<UpdateStatus>, String> {
+    Ok(current_status(state.update.read().await.clone()))
 }
 
 /// Force a check now, for the Settings "Check now" button.
@@ -111,7 +135,7 @@ pub async fn update_status(
 pub async fn check_update_now(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
-) -> Result<Option<UpdateInfo>, String> {
+) -> Result<Option<UpdateStatus>, String> {
     if is_branch_build() {
         return Ok(None);
     }
@@ -119,6 +143,39 @@ pub async fn check_update_now(
     // consent, and the button stays useful for someone who keeps checks off.
     let info = fetch().await;
     *state.update.write().await = info.clone();
-    let _ = app.emit("update", info.clone());
-    Ok(info)
+    let status = current_status(info);
+    let _ = app.emit("update", status.clone());
+    Ok(status)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn update() -> UpdateInfo {
+        UpdateInfo {
+            current: "0.20.0".into(),
+            latest: "0.20.3".into(),
+            url: Some("https://example.test/setup.exe".into()),
+            notes: String::new(),
+            pub_date: "2026-08-10T00:00:00Z".into(),
+            available: true,
+        }
+    }
+
+    #[test]
+    fn status_keeps_download_and_installability_independent() {
+        let portable = status_for(Some(update()), false).expect("status for available update");
+        assert!(portable.info.url.is_some());
+        assert!(!portable.installable);
+
+        let installed = status_for(Some(update()), true).expect("status for available update");
+        assert!(installed.info.url.is_some());
+        assert!(installed.installable);
+    }
+
+    #[test]
+    fn status_stays_absent_without_an_update() {
+        assert_eq!(status_for(None, true), None);
+    }
 }
