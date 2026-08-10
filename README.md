@@ -46,13 +46,19 @@ Platform differences are small but real:
 - **Right-click** for Open / Refresh now / Settings / Quit. **Open** shows the
   full usage/settings window; reopening it always lands on the usage list.
 - **Scroll** over either window to fade it: up towards transparent, down back
-  to opaque. The level is temporary and resets whenever the window is shown
-  again, so a faded widget is never left that way. Scrolling the card list or
-  the Settings form still scrolls normally, and the full popup stops at a
-  faint-but-visible floor rather than becoming an invisible thing that eats
-  clicks — as does a *pinned* mini summary, which ignores click-away. An
-  unpinned summary may fade all the way out, since clicking elsewhere
-  dismisses it. A Settings checkbox turns the whole behaviour off.
+  to opaque. The two windows keep that level for different lengths of time. The
+  **full popup** forgets it on every open, so it always comes back opaque. The
+  **mini summary** keeps exactly the level you left it at — through tray
+  toggles, clicking away, its close button, and while the full window is open —
+  for as long as the app is running; restarting the app opens it opaque again.
+  The level is never written to your configuration either way. Scrolling the
+  card list or the Settings form still scrolls normally, and every window
+  stops at the same faint-but-visible 15% floor rather than becoming an
+  invisible thing that eats clicks. A mini summary left at that floor comes
+  back just as faint on the next tray click rather than fully opaque. Unticking
+  the Settings checkbox turns the behaviour off and restores both windows to
+  fully opaque; ticking it again starts from opaque rather than from the level
+  you had before.
 - **Account order** is yours by default: accounts appear in the order you
   arranged them in Settings. Two Settings dropdowns can instead sort them by
   usage (high→low or low→high) or by expiry (soonest or furthest reset), with a
