@@ -51,11 +51,11 @@ Platform differences are small but real:
   toggles, clicking away, its close button, and while the full window is open —
   for as long as the app is running; restarting the app opens it opaque again.
   The level is never written to your configuration either way. Scrolling the
-  card list or the Settings form still scrolls normally, and the full popup
+  card list or the Settings form still scrolls normally, and every window
   stops at a faint-but-visible floor rather than becoming an invisible thing
-  that eats clicks — as does a *pinned* mini summary, which ignores click-away.
-  An unpinned summary may fade all the way out, since clicking elsewhere
-  dismisses it and the next tray click brings it back just as faint. Unticking
+  that eats clicks. The popup and a *pinned* mini summary stop at 15%; an
+  unpinned summary is allowed a fainter 10%, and the next tray click brings it
+  back just as faint rather than fully opaque. Unticking
   the Settings checkbox turns the behaviour off and restores both windows to
   fully opaque; ticking it again starts from opaque rather than from the level
   you had before.

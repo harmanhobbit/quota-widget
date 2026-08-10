@@ -298,15 +298,17 @@ const CASES = [
       await emit('mini-shown', null);
       flushSync();
       if (opacity() !== '0.92') throw new Error(`showing the summary reset its fade to ${opacity()}`);
-      // Unlike the popup the unpinned summary may reach zero: click-away
-      // dismisses it, so fully transparent is recoverable rather than a trap.
+      // The unpinned summary fades further than the popup or a pinned
+      // summary, but not to nothing: the level outlives every hide now, so a
+      // zero floor would mean reopening an invisible window indefinitely.
       for (let i = 0; i < 20; i += 1) wheel();
       flushSync();
-      if (Number(opacity()) !== 0) throw new Error(`unpinned summary floored at ${opacity()}`);
-      // Zero is retained too — the case most likely to be "helpfully" reset.
+      if (Number(opacity()) !== 0.1) throw new Error(`unpinned summary floored at ${opacity()}`);
+      // The floor is retained too — the case most likely to be "helpfully"
+      // reset, and the one that has to stay findable after a reopen.
       await emit('mini-shown', null);
       flushSync();
-      if (Number(opacity()) !== 0) throw new Error(`a fully faded summary came back at ${opacity()}`);
+      if (Number(opacity()) !== 0.1) throw new Error(`a fully faded summary came back at ${opacity()}`);
       // Turning the preference off is still the escape hatch, and turning it
       // back on must not restore the level that was just cleared.
       await emit('config', { ...CONFIG, scroll_opacity: false });

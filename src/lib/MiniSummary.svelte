@@ -197,14 +197,17 @@
   });
 
   // The summary has no scrollable content of its own, so unlike the popup
-  // every wheel event over it is a fade. How far it may fade depends on the
-  // pin: an unpinned window is dismissed by the next click anywhere else, so
-  // fully transparent is recoverable. A pinned one is always-on-top and
-  // ignores click-away, so at zero it would be an invisible thing eating
-  // clicks with no way back — floor it where it stays findable.
+  // every wheel event over it is a fade. Both floors keep it findable, for
+  // different reasons: a pinned summary is always-on-top and ignores
+  // click-away, so at zero it would be an invisible thing eating clicks with
+  // no way back. An unpinned one is dismissed by the next click anywhere
+  // else — but the level now survives that dismissal for the life of the
+  // process, so zero would mean reopening an invisible window every time
+  // rather than a single recoverable mistake. It floors lower than pinned
+  // because it is the fainter of the two by design.
   function fadeOnWheel(event) {
     if (!config?.scroll_opacity) return;
-    if (stepOpacity(event.deltaY, pinned ? 0.15 : 0, config.scroll_opacity_invert)) event.preventDefault();
+    if (stepOpacity(event.deltaY, pinned ? 0.15 : 0.1, config.scroll_opacity_invert)) event.preventDefault();
   }
 
   async function togglePin() {
