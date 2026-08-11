@@ -25,8 +25,6 @@
   let headerEl = $state(null);
   let cardsEl = $state(null);
 
-  const SETTINGS_HEIGHT = 560;
-
   // First-run desktop integration, AppImage only. Shown once: whichever way it
   // is answered, Rust records that the question was put, so "Not now" is
   // remembered as firmly as yes and no launch nags again. Settings keeps the
@@ -63,17 +61,20 @@
     await invoke('mark_desktop_integration_prompted').catch(() => {});
   }
 
-  // The popup shrinks to exactly fit the usage meters; settings gets a fixed
-  // comfortable height (still user-resizable from there).
+  // The popup shrinks to exactly fit the usage meters. Settings asks for no
+  // size at all, which is how it keeps the height the usage view had a moment
+  // ago: the window is one window, and resizing it under a view swap made the
+  // two screens read as two windows. Settings used to claim a fixed height of
+  // its own, and that jump is what this drops. Nothing here re-imposes a height
+  // for the duration of the visit, so a manual resize inside Settings also
+  // stands, and Back or Save & close hands the popup branch below its content
+  // fitting straight back.
   async function fitToContent() {
     try {
+      if (view !== 'popup' || !headerEl || !cardsEl) return;
       const win = getCurrentWindow();
-      if (view === 'popup' && headerEl && cardsEl) {
-        const h = Math.min(680, Math.max(120, headerEl.offsetHeight + cardsEl.scrollHeight + 2));
-        await win.setSize(new LogicalSize(window.innerWidth, h));
-      } else if (view === 'settings') {
-        await win.setSize(new LogicalSize(window.innerWidth, SETTINGS_HEIGHT));
-      }
+      const h = Math.min(680, Math.max(120, headerEl.offsetHeight + cardsEl.scrollHeight + 2));
+      await win.setSize(new LogicalSize(window.innerWidth, h));
     } catch {
       // sizing is cosmetic — never let it break the UI
     }
