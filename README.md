@@ -274,6 +274,12 @@ has the matching `minisign` verification command. The Nix flake is distinct: it
 is a reproducible source build that pins GTK/WebKit, and remains available only
 to collaborators with access to this private repository.
 
+That floor is checked by launching the AppImage directly on a Kubuntu 22.04 VM
+with nothing extra installed. Running it on NixOS through `appimage-run` is
+supplemental coverage only: `appimage-run` supplies its own glibc and GTK/WebKit
+runtime, so it shows the app works under Nix's shims rather than that the binary
+fits the userspace a stock Ubuntu 22.04 system provides.
+
 #### AppImage desktop integration
 
 An AppImage is just a file you downloaded, so nothing puts it in your
@@ -322,6 +328,15 @@ ships — edit that file, not the dist repo directly. The tag must match the
 workspace `Cargo.toml` version — CI refuses to publish a mislabelled tree. A `workflow_dispatch` defaults to a **dry run**: it builds and signs, then
 attaches the manifest and installer as workflow artifacts instead of publishing,
 which is the safe way to exercise the signing key end to end.
+
+Linux needs a manual pass on top of that, because nothing in a build log shows
+the tray, window placement against a real panel, the launcher written into a
+home directory, or an update that rewrites the running executable.
+[`docs/linux-release-validation.md`](docs/linux-release-validation.md) is the
+checklist: what to look for in the dry run's combined `latest.json`, then
+launch, tray, popup and mini-summary placement, opt-in desktop integration and
+one end-to-end signed update on a Kubuntu 22.04 VM — with a reduced
+launch/tray/popup set for every later release.
 
 The app checks that manifest at startup and every six hours, and shows an
 unobtrusive "Update available" line in Settings with a **Check now** button.
