@@ -37,6 +37,7 @@ const CONFIG = {
   scroll_opacity_invert: false,
   sort_order: 'manual',
   sort_basis: 'icon',
+  desktop_integration_prompted: false,
   thresholds: { warn_pct: 80, critical_pct: 95 },
   alerts: { toast: true, tray_color: true, auto_popup: false },
   providers: {
@@ -128,6 +129,16 @@ const SNAPSHOTS = [
   },
 ];
 
+// Installing crosses a dynamic import and several awaits, so a single
+// macrotask does not reliably get from the click to the rendered result. Turn
+// the loop a few times rather than guessing at one long sleep.
+async function settle(flushSync, turns = 5) {
+  for (let i = 0; i < turns; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+  }
+}
+
 // Every component under test, with the props App would really pass. Settings
 // takes its config as a prop that has been through $state in App, so it
 // arrives as a proxy — mirror that exactly, since it is what broke it before.
@@ -137,15 +148,17 @@ const CASES = [
     props: () => ({}),
     buildBranch: 'smoke-branch',
     expect: ['smoke-branch'],
-    verify: ({ target, flushSync }) => {
+    verify: async ({ target, flushSync, emit }) => {
       const main = target.querySelector('main');
       const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
       main.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
       flushSync();
       if (opacity() !== '0.92') throw new Error(`scroll did not fade popup: ${opacity()}`);
-      // A config broadcast turns the toggle off and restores the normal shell.
-      // The event stub does not retain listeners, so exercise the disabled
-      // configuration directly through the initial IPC payload in its own case.
+      // The full popup's show-time reset is unchanged: unlike the summary, it
+      // opens opaque every time it is shown.
+      await emit('window-shown', 'popup');
+      flushSync();
+      if (opacity() !== '1') throw new Error(`popup kept its fade across a show: ${opacity()}`);
     },
   },
   {
@@ -178,6 +191,94 @@ const CASES = [
       wheel(100);
       flushSync();
       if (opacity() !== '0.92') throw new Error(`inverted scroll down did not fade: ${opacity()}`);
+    },
+  },
+  // First-run desktop integration (AppImage only). A non-AppImage build gets
+  // null from the status command and must never see the question.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: ({ target }) => {
+      if (target.querySelector('.integration-prompt')) {
+        throw new Error('a build with no launcher to manage still asked about one');
+      }
+    },
+  },
+  // An AppImage with no launcher yet asks before writing anything, and taking
+  // the offer reaches the add command — consent first, files after.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    desktop: { state: 'absent', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    // Asserted here rather than through `expect`, which runs after verify has
+    // deliberately dismissed the prompt.
+    verify: async ({ target, flushSync }) => {
+      const button = (text) => [...target.querySelectorAll('.integration-prompt button')]
+        .find((b) => b.textContent.trim() === text);
+      const prompt = target.querySelector('.integration-prompt');
+      if (!/applications menu/.test(prompt?.textContent ?? '')) {
+        throw new Error(`the prompt did not say what it would do: ${prompt?.textContent}`);
+      }
+      if (!button('Not now') || !button('Add it')) {
+        throw new Error('the prompt did not offer both answers');
+      }
+      if (globalThis.__SMOKE_DESKTOP_CALLS__.length) {
+        throw new Error('the prompt wrote something before it was answered');
+      }
+      button('Add it').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!globalThis.__SMOKE_DESKTOP_CALLS__.includes('add')) {
+        throw new Error('accepting did not reach desktop_integration_add');
+      }
+      // The deferral is recorded either way, or the next launch asks again.
+      if (!globalThis.__SMOKE_DESKTOP_CALLS__.includes('prompted')) {
+        throw new Error('answering did not record that the question was put');
+      }
+      if (target.querySelector('.integration-prompt')) throw new Error('the prompt stayed up after being answered');
+    },
+  },
+  // Declining writes nothing but is still remembered, so it cannot nag.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    desktop: { state: 'absent', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    verify: async ({ target, flushSync }) => {
+      [...target.querySelectorAll('.integration-prompt button')]
+        .find((b) => b.textContent.trim() === 'Not now').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (globalThis.__SMOKE_DESKTOP_CALLS__.includes('add')) {
+        throw new Error('declining still added the launcher');
+      }
+      if (!globalThis.__SMOKE_DESKTOP_CALLS__.includes('prompted')) {
+        throw new Error('a deferral was not remembered');
+      }
+      if (target.querySelector('.integration-prompt')) throw new Error('declining left the prompt up');
+    },
+  },
+  // Already asked once: never again, whatever the launcher state is now.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, desktop_integration_prompted: true },
+    desktop: { state: 'absent', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    verify: ({ target }) => {
+      if (target.querySelector('.integration-prompt')) {
+        throw new Error('a remembered deferral did not suppress the prompt');
+      }
+    },
+  },
+  // A moved AppImage is a Settings decision, not an opening question: repair
+  // changes an existing user file, so it is never proposed unprompted.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    desktop: { state: 'stale', target: '/home/u/old/q.AppImage', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    verify: ({ target }) => {
+      if (target.querySelector('.integration-prompt')) {
+        throw new Error('a moved AppImage was offered a first-run prompt rather than a Settings repair');
+      }
     },
   },
   // Claude shows both selected headlines as separate rows; Codex's only
@@ -254,6 +355,222 @@ const CASES = [
       }
     },
   },
+  // The Settings return state, exercised through the app's navigation seam:
+  // what is on screen after the exit, and what the exit asked the shell to do.
+  // Direct entry from the usage popup returns to the usage popup and involves
+  // the shell not at all — the window it would act on is already the right one.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: async ({ target, flushSync, shellCalls }) => {
+      const settingsButton = () => target.querySelector('button[title="Settings"]');
+      const inSettings = () => Boolean(target.querySelector('.settings'));
+      const warnInput = () => [...target.querySelectorAll('.settings input.num')]
+        .find((el) => el.closest('label')?.textContent.includes('Warn at'));
+      for (const exit of ['back', 'escape', 'save']) {
+        settingsButton().click();
+        flushSync();
+        if (!inSettings()) throw new Error(`did not reach Settings before the ${exit} exit`);
+        // An unsaved edit, so Back and Escape can be shown to discard it: the
+        // next visit must read the persisted value, not this draft.
+        const edit = warnInput();
+        edit.value = '31';
+        edit.dispatchEvent(new window.Event('input', { bubbles: true }));
+        flushSync();
+        if (exit === 'back') target.querySelector('button[title="Back"]').click();
+        else if (exit === 'escape') {
+          window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        } else {
+          target.querySelector('.settings .primary').click();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        flushSync();
+        if (inSettings()) throw new Error(`${exit} did not leave Settings`);
+        if (!target.querySelector('.cards')) throw new Error(`${exit} did not return to the usage popup`);
+        if (shellCalls().length) {
+          throw new Error(`${exit} from the popup drove the shell: ${shellCalls().join(',')}`);
+        }
+        // Only Save commits. Back and Escape reach Rust with nothing, and the
+        // next visit opens on the unedited config — the discard being visible
+        // rather than merely unpersisted.
+        const saved = globalThis.__SMOKE_LAST_CONFIG__?.thresholds.warn_pct;
+        if (exit === 'save' ? saved !== 31 : saved === 31) {
+          throw new Error(`${exit} persisted warn_pct ${saved}`);
+        }
+        globalThis.__SMOKE_LAST_CONFIG__ = undefined;
+        settingsButton().click();
+        flushSync();
+        if (exit !== 'save' && warnInput().value !== String(CONFIG.thresholds.warn_pct)) {
+          throw new Error(`${exit} left its unsaved edit in the reopened form`);
+        }
+        target.querySelector('button[title="Back"]').click();
+        flushSync();
+        shellCalls().length = 0;
+      }
+    },
+  },
+  // Tray entry carries the return state with the navigation. A mini summary —
+  // pinned or transient, a distinction the frontend never sees — comes back
+  // through the shell when the visit *ends*, and the full window is not left
+  // showing the usage list behind it.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: async ({ target, flushSync, emit, shellCalls }) => {
+      const inSettings = () => Boolean(target.querySelector('.settings'));
+      for (const [returnTo, exit] of [['mini', 'escape'], ['mini', 'save'], ['hidden', 'escape'], ['hidden', 'save']]) {
+        shellCalls().length = 0;
+        emit('navigate', { view: 'settings', return_to: returnTo });
+        if (!inSettings()) throw new Error(`tray navigation did not open Settings (${returnTo})`);
+        if (exit === 'escape') {
+          window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        } else {
+          target.querySelector('.settings .primary').click();
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        flushSync();
+        if (inSettings()) throw new Error(`${returnTo}/${exit} did not leave Settings`);
+        if (shellCalls().join(',') !== `exit_settings:${returnTo}`) {
+          throw new Error(`${returnTo}/${exit} drove the shell as ${shellCalls().join(',') || 'nothing'}`);
+        }
+      }
+    },
+  },
+  // Back is navigation, not an exit. Even from a tray visit whose return state
+  // is the mini summary, it lands on the usage list in the window that is
+  // already open and asks the shell for nothing — the user came to look at the
+  // widget, and Back is how they get to it.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: ({ target, flushSync, emit, shellCalls }) => {
+      for (const returnTo of ['mini', 'hidden']) {
+        shellCalls().length = 0;
+        emit('navigate', { view: 'settings', return_to: returnTo });
+        target.querySelector('button[title="Back"]').click();
+        flushSync();
+        if (target.querySelector('.settings')) throw new Error(`Back (${returnTo}) stayed in Settings`);
+        if (!target.querySelector('.cards')) throw new Error(`Back (${returnTo}) did not land on the usage list`);
+        if (shellCalls().length) {
+          throw new Error(`Back (${returnTo}) drove the shell as ${shellCalls().join(',')}`);
+        }
+        // The visit ended with the window still up, so its capture ended too.
+        // Escape on the usage list is an ordinary hide — never a restore of the
+        // summary that visit came from.
+        window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        flushSync();
+        if (shellCalls().join(',') !== 'hide_window') {
+          throw new Error(`a capture outlived Back (${returnTo}): ${shellCalls().join(',') || 'nothing'}`);
+        }
+        // Re-entering through the gear is a fresh, direct visit: leaving it
+        // returns to the usage list, not to the summary the *tray* visit was
+        // carrying before Back ended it.
+        shellCalls().length = 0;
+        target.querySelector('button[title="Settings"]').click();
+        flushSync();
+        window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        flushSync();
+        if (shellCalls().length) {
+          throw new Error(`Back (${returnTo}) left its capture for the next visit: ${shellCalls().join(',')}`);
+        }
+      }
+    },
+  },
+  // The window is one window: entering Settings must not resize it, so the
+  // height the usage list was showing is the height Settings is read at. Both
+  // routes in are checked — the gear and the tray's `navigate` — because they
+  // set the view up differently and only the sizing effect is shared. Coming
+  // back re-fits to the usage content, which is the popup asking for a size of
+  // its own again rather than inheriting whatever Settings was left at.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: async ({ target, flushSync, emit, sizes }) => {
+      const enter = {
+        gear: () => target.querySelector('button[title="Settings"]').click(),
+        tray: () => emit('navigate', { view: 'settings', return_to: 'popup' }),
+      };
+      for (const [route, open] of Object.entries(enter)) {
+        await settle(flushSync);
+        const fitted = sizes().at(-1);
+        if (!fitted) throw new Error(`the usage list never sized the window (${route})`);
+        sizes().length = 0;
+        open();
+        flushSync();
+        await settle(flushSync);
+        if (!target.querySelector('.settings')) throw new Error(`${route} did not reach Settings`);
+        if (sizes().length) {
+          throw new Error(`${route} into Settings resized the window to ${JSON.stringify(sizes())}`);
+        }
+        target.querySelector('button[title="Back"]').click();
+        flushSync();
+        await settle(flushSync);
+        const back = sizes().at(-1);
+        if (!back) throw new Error(`returning from Settings (${route}) never re-fitted the usage list`);
+        if (back.height !== fitted.height) {
+          throw new Error(`the usage list came back at ${back.height}, not its content height ${fitted.height}`);
+        }
+      }
+    },
+  },
+  // ✕ stays an explicit hide-to-tray whatever the captured return state is: it
+  // means "no window", not "put back what was there".
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: ({ target, emit, shellCalls }) => {
+      emit('navigate', { view: 'settings', return_to: 'mini' });
+      target.querySelector('button[title="Hide to tray"]').click();
+      if (shellCalls().join(',') !== 'hide_window') {
+        throw new Error(`✕ from Settings ran ${shellCalls().join(',') || 'nothing'}`);
+      }
+    },
+  },
+  // A failed save keeps Settings mounted with its error, and keeps the captured
+  // return state: retrying successfully still lands on the mini summary.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    saveError: 'disk on fire',
+    verify: async ({ target, flushSync, emit, shellCalls }) => {
+      emit('navigate', { view: 'settings', return_to: 'mini' });
+      target.querySelector('.settings .primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!target.querySelector('.settings')) throw new Error('a failed save closed Settings');
+      if (!target.querySelector('.settings .test.bad')) throw new Error('a failed save showed no error');
+      if (shellCalls().length) throw new Error(`a failed save drove the shell: ${shellCalls().join(',')}`);
+      globalThis.__SMOKE_SAVE_ERROR__ = '';
+      target.querySelector('.settings .primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (shellCalls().join(',') !== 'exit_settings:mini') {
+        throw new Error(`the retry lost the return state: ${shellCalls().join(',') || 'nothing'}`);
+      }
+    },
+  },
+  // A reopen after a tray Settings visit starts a fresh visit: `window-shown`
+  // clears the previous capture, so the next exit does not restore a summary
+  // belonging to a visit that already ended.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: ({ target, flushSync, emit, shellCalls }) => {
+      emit('navigate', { view: 'settings', return_to: 'mini' });
+      emit('window-shown', undefined);
+      if (target.querySelector('.settings')) throw new Error('a reshow left the window in Settings');
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+      shellCalls().length = 0;
+      // Escape, not Back: Back asks the shell for nothing either way, so it
+      // could not tell a cleared capture from a surviving one.
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      flushSync();
+      if (shellCalls().length) {
+        throw new Error(`a stale return state survived the reshow: ${shellCalls().join(',')}`);
+      }
+    },
+  },
   {
     file: 'src/lib/ProviderCard.svelte',
     props: () => ({
@@ -280,19 +597,41 @@ const CASES = [
   {
     file: 'src/lib/MiniSummary.svelte',
     props: () => ({}),
-    verify: ({ target, flushSync }) => {
+    verify: async ({ target, flushSync, emit }) => {
       const mini = target.querySelector('.mini');
       const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
       const wheel = () =>
         mini.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
+      // A newly mounted summary — the fresh-app-start case — opens opaque.
+      if (opacity() !== '1') throw new Error(`summary did not open opaque: ${opacity()}`);
       wheel();
       flushSync();
       if (opacity() !== '0.92') throw new Error(`scroll did not fade summary: ${opacity()}`);
-      // Unlike the popup the unpinned summary may reach zero: click-away
-      // dismisses it, so fully transparent is recoverable rather than a trap.
+      // Every native hide/show path ends in this one notification, so playing
+      // it back is what proves the level survives tray toggles, click-away,
+      // the close button, and the temporary hide while the popup is open.
+      await emit('mini-shown', null);
+      flushSync();
+      if (opacity() !== '0.92') throw new Error(`showing the summary reset its fade to ${opacity()}`);
+      // Even unpinned it stops at the shared floor rather than nothing: the
+      // level outlives every hide now, so a zero floor would mean reopening
+      // an invisible window indefinitely.
       for (let i = 0; i < 20; i += 1) wheel();
       flushSync();
-      if (Number(opacity()) !== 0) throw new Error(`unpinned summary floored at ${opacity()}`);
+      if (Number(opacity()) !== 0.15) throw new Error(`unpinned summary floored at ${opacity()}`);
+      // The floor is retained too — the case most likely to be "helpfully"
+      // reset, and the one that has to stay findable after a reopen.
+      await emit('mini-shown', null);
+      flushSync();
+      if (Number(opacity()) !== 0.15) throw new Error(`a fully faded summary came back at ${opacity()}`);
+      // Turning the preference off is still the escape hatch, and turning it
+      // back on must not restore the level that was just cleared.
+      await emit('config', { ...CONFIG, scroll_opacity: false });
+      flushSync();
+      if (opacity() !== '1') throw new Error(`disabling fade left the summary at ${opacity()}`);
+      await emit('config', CONFIG);
+      flushSync();
+      if (opacity() !== '1') throw new Error(`re-enabling fade restored a stale level: ${opacity()}`);
     },
   },
   { file: 'src/lib/MiniSummary.svelte', props: () => ({}), snapshotsError: true, expect: ['Could not load summary'] },
@@ -384,6 +723,66 @@ const CASES = [
       }
     },
   },
+  // The footer is fixed: only the form scrolls, and the commit action, the
+  // save error and the version live outside the scrolling region so they are
+  // on screen wherever the user has scrolled to. jsdom lays nothing out, so
+  // what is assertable is the structure that makes it true — which region the
+  // footer's parts belong to — rather than any measured position.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    expect: ['Quota Widget v0.0.0-test'],
+    verify: ({ target }) => {
+      const form = target.querySelector('.settings > .settings-form');
+      const footer = target.querySelector('.settings > .settings-footer');
+      if (!form) throw new Error('settings rendered no scrollable form region');
+      if (!footer) throw new Error('settings rendered no fixed footer');
+      if (!form.querySelector('section')) throw new Error('the fields are not inside the scrolling region');
+      // Anything in the footer must not also be in the scrolling region.
+      if (form.contains(footer)) throw new Error('the footer scrolls with the form');
+      const save = [...footer.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Save & close');
+      if (!save) throw new Error('Save & close is not in the fixed footer');
+      if (!save.closest('.actions')) throw new Error('Save & close is not in the right-aligned action row');
+      const version = footer.querySelector('.version');
+      if (!version) throw new Error('the version is not in the fixed footer');
+      if (!/Quota Widget v/.test(version.textContent)) {
+        throw new Error(`footer version read ${JSON.stringify(version.textContent)}`);
+      }
+      // Centred beneath the action, so it follows the action row in order.
+      if (!(save.closest('.actions').compareDocumentPosition(version) & 4 /* FOLLOWING */)) {
+        throw new Error('the version is not beneath the action');
+      }
+    },
+  },
+  // A failed save keeps Settings mounted with the error visible in the footer,
+  // rather than closing on a write that never landed.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({
+      initialConfig: $.proxy(structuredClone(CONFIG)),
+      snapshots: structuredClone(SNAPSHOTS),
+      onclose() { globalThis.__SMOKE_CLOSED__ = true; },
+    }),
+    saveError: 'disk is full',
+    verify: async ({ target, flushSync }) => {
+      globalThis.__SMOKE_CLOSED__ = false;
+      globalThis.__SMOKE_LAST_CONFIG__ = undefined;
+      target.querySelector('.primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (globalThis.__SMOKE_CLOSED__) throw new Error('a failed save still closed Settings');
+      const footer = target.querySelector('.settings > .settings-footer');
+      if (!footer?.textContent.includes('disk is full')) {
+        throw new Error(`the save error is not visible in the footer: ${footer?.textContent}`);
+      }
+      // Still the whole panel, not a stub left over from a mid-render throw.
+      if (!target.querySelector('.settings-form section')) {
+        throw new Error('the form did not survive the failed save');
+      }
+      if (!footer.querySelector('.version')) throw new Error('the version left the footer on a failed save');
+    },
+  },
   // Ordering: the basis select is inert while the order is Manual, both
   // selects reach Rust as the snake_case strings serde expects, and a config
   // predating the feature fills them in rather than saving nulls.
@@ -452,39 +851,234 @@ const CASES = [
       }
     },
   },
-  // An update with a download for this platform offers Install; one without —
-  // the *nix case, where releases are Windows-only — must offer the upgrade
-  // instructions instead, and must never render an install button it cannot
-  // honour.
+  // An installed Windows build offers Install; a build that cannot replace
+  // itself must offer the upgrade instructions instead, and must never render
+  // an install button it cannot honour.
   {
     file: 'src/lib/Settings.svelte',
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     update: {
       available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
       pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe',
+      installable: true, restart_after_install: false,
     },
     expect: ['Update available: v0.2.0', 'Install update'],
-    verify: async ({ target }) => {
+    verify: async ({ target, flushSync }) => {
       const install = [...target.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === 'Install update');
       if (!install) throw new Error('an installable update offered no Install button');
       install.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await settle(flushSync);
       if (!globalThis.__SMOKE_INSTALLED__) throw new Error('Install update did not reach downloadAndInstall');
+      // The NSIS installer relaunches the app itself, so no restart is offered
+      // and the message says the app comes back on its own.
+      const restart = [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Restart now');
+      if (restart) throw new Error('Windows offered a manual restart the installer performs itself');
+      if (!globalThis.__SMOKE_INSTALLING_TEXT__.includes('close and reopen')) {
+        throw new Error('Windows install did not warn the app is about to exit and relaunch');
+      }
     },
   },
+  // An AppImage is the Linux installable artifact. It installs in place, so
+  // the old version keeps running: completion must offer Restart now and
+  // Later, and must never claim the app relaunched itself.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    update: {
+      available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
+      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/app.AppImage',
+      installable: true, restart_after_install: true,
+    },
+    expect: ['Update available: v0.2.0', 'Install update'],
+    verify: async ({ target, flushSync }) => {
+      const button = (label) => [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === label);
+      if (button('Restart now')) throw new Error('offered a restart before anything was installed');
+      button('Install update').click();
+      await settle(flushSync);
+      if (!globalThis.__SMOKE_INSTALLED__) throw new Error('Install update did not reach downloadAndInstall');
+      // Checked over the whole run, not just the end state: telling a Linux
+      // user the app will reopen by itself is wrong even transiently.
+      if (globalThis.__SMOKE_INSTALLING_TEXT__.includes('close and reopen')
+        || target.textContent.includes('close and reopen')) {
+        throw new Error('Linux claimed an automatic relaunch it does not perform');
+      }
+      if (!button('Restart now')) throw new Error('a completed Linux install offered no Restart now');
+      if (!button('Later')) throw new Error('a completed Linux install offered no Later');
+      button('Restart now').click();
+      await settle(flushSync);
+      if (!globalThis.__SMOKE_RESTARTED__) throw new Error('Restart now did not reach restart_app');
+    },
+  },
+  // Later dismisses the prompt without restarting: the new version is already
+  // on disk, so the only thing left to decide is when it starts.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    update: {
+      available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
+      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/app.AppImage',
+      installable: true, restart_after_install: true,
+    },
+    verify: async ({ target, flushSync }) => {
+      const button = (label) => [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === label);
+      button('Install update').click();
+      await settle(flushSync);
+      button('Later').click();
+      flushSync();
+      if (globalThis.__SMOKE_RESTARTED__) throw new Error('Later restarted the app anyway');
+      if (button('Restart now')) throw new Error('Later left the restart prompt on screen');
+      if (!target.textContent.includes('next time you open the app')) {
+        throw new Error('Later did not say when the new version starts');
+      }
+    },
+  },
+  // Nix: a release exists, and on Linux it even publishes an AppImage, but a
+  // package-managed build is not an installable artifact. Guidance, not an
+  // Install action that would fail.
   {
     file: 'src/lib/Settings.svelte',
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     update: {
       available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
       pub_date: '2026-08-05T09:21:10Z', url: null,
+      installable: false, restart_after_install: false,
     },
     expect: ['Update available: v0.2.0', 'nix profile upgrade quota-widget'],
     verify: async ({ target }) => {
       const install = [...target.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === 'Install update');
-      if (install) throw new Error('offered Install for a release with no download for this platform');
+      if (install) throw new Error('offered Install for a release with no artifact for this build');
+    },
+  },
+  // A portable EXE sees the same Windows installer URL as an installed build,
+  // but Tauri reports no bundle type for it. It must get the upgrade guidance,
+  // never an Install action that cannot replace the running executable.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    update: {
+      available: true, current: '0.1.0', latest: '0.2.0', notes: 'n',
+      pub_date: '2026-08-05T09:21:10Z', url: 'https://example.test/setup.exe',
+      installable: false, restart_after_install: false,
+    },
+    expect: ['Update available: v0.2.0', 'nix profile upgrade quota-widget'],
+    verify: async ({ target }) => {
+      const install = [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Install update');
+      if (install) throw new Error('offered Install to a portable executable');
+    },
+  },
+  // Desktop integration in Settings. Absent from every build that has no
+  // launcher to manage — the Windows installer and the Nix package own theirs.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    verify: ({ target }) => {
+      if (target.querySelector('.desktop-integration')) {
+        throw new Error('offered launcher controls to a build with no launcher to manage');
+      }
+    },
+  },
+  // An AppImage with no launcher offers to add one, and only that.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    desktop: { state: 'absent', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    expect: ['Applications menu', 'Add to applications menu'],
+    verify: async ({ target, flushSync }) => {
+      const button = (text) => [...target.querySelectorAll('.desktop-integration button')]
+        .find((b) => b.textContent.trim() === text);
+      if (button('Remove from applications menu')) {
+        throw new Error('offered to remove a launcher that does not exist');
+      }
+      button('Add to applications menu').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!globalThis.__SMOKE_DESKTOP_CALLS__.includes('add')) {
+        throw new Error('Add did not reach desktop_integration_add');
+      }
+    },
+  },
+  // An installed launcher offers removal, and removal that keeps a file the
+  // user edited has to say so rather than claiming a clean removal.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    desktop: { state: 'current', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    desktopRemove: { removed: ['/home/u/.local/share/applications/quota-widget.desktop'], preserved: ['/home/u/.local/share/icons/hicolor/32x32/apps/quota-widget.png'] },
+    expect: ['Remove from applications menu'],
+    verify: async ({ target, flushSync }) => {
+      const button = (text) => [...target.querySelectorAll('.desktop-integration button')]
+        .find((b) => b.textContent.trim() === text);
+      if (button('Add to applications menu')) throw new Error('offered to add a launcher that is already current');
+      button('Remove from applications menu').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!globalThis.__SMOKE_DESKTOP_CALLS__.includes('remove')) {
+        throw new Error('Remove did not reach desktop_integration_remove');
+      }
+      const message = target.querySelector('.desktop-message')?.textContent ?? '';
+      if (!message.includes('quota-widget.png') || !/by hand/.test(message)) {
+        throw new Error(`removal did not explain the manual cleanup: ${message}`);
+      }
+    },
+  },
+  // A moved AppImage offers repair, names both paths, and does not retarget
+  // until the button is pressed.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    desktop: { state: 'stale', target: '/home/u/old/q.AppImage', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    desktopAdd: { action: 'repaired', written: [], preserved: [] },
+    expect: ['Repair launcher', '/home/u/old/q.AppImage', '/home/u/Downloads/q.AppImage'],
+    verify: async ({ target, flushSync }) => {
+      const button = (text) => [...target.querySelectorAll('.desktop-integration button')]
+        .find((b) => b.textContent.trim() === text);
+      if (globalThis.__SMOKE_DESKTOP_CALLS__.length) {
+        throw new Error('a moved AppImage was retargeted just by opening Settings');
+      }
+      button('Repair launcher').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!globalThis.__SMOKE_DESKTOP_CALLS__.includes('add')) throw new Error('Repair did not reach the add command');
+      if (!/repaired/i.test(target.querySelector('.desktop-message')?.textContent ?? '')) {
+        throw new Error('repair did not report what it did');
+      }
+    },
+  },
+  // The deferral is Rust's to own. Settings edits a snapshot taken at mount,
+  // so a config that predates the field must save a real boolean rather than
+  // undefined — otherwise saving Settings would make the prompt return.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => {
+      const old = structuredClone(CONFIG);
+      delete old.desktop_integration_prompted;
+      return { initialConfig: $.proxy(old), snapshots: structuredClone(SNAPSHOTS), onclose() {} };
+    },
+    verify: async ({ target }) => {
+      target.querySelector('.primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (globalThis.__SMOKE_LAST_CONFIG__?.desktop_integration_prompted !== false) {
+        throw new Error(`saved deferral flag was ${globalThis.__SMOKE_LAST_CONFIG__?.desktop_integration_prompted}`);
+      }
+    },
+  },
+  // A launcher the user owns is never offered an action that would overwrite
+  // or delete it — only an explanation of where it is.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    desktop: { state: 'user_owned', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    expect: ['Applications menu', '/home/u/.local/share/applications/quota-widget.desktop'],
+    verify: ({ target }) => {
+      if (target.querySelectorAll('.desktop-integration button').length) {
+        throw new Error('offered an action over a launcher the user owns');
+      }
     },
   },
   {
@@ -533,23 +1127,75 @@ export async function invoke(cmd, args) {
     case 'app_version': return '0.0.0-test';
     case 'has_secret': return false;
     case 'on_wayland': return true;
-    case 'set_config': globalThis.__SMOKE_LAST_CONFIG__ = args.config; return null;
+    case 'set_config':
+      if (globalThis.__SMOKE_SAVE_ERROR__) throw new Error(globalThis.__SMOKE_SAVE_ERROR__);
+      globalThis.__SMOKE_LAST_CONFIG__ = args.config; return null;
+    case 'exit_settings': (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push(\`exit_settings:\${args.to}\`); return null;
+    case 'hide_window': (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push('hide_window'); return null;
     case 'update_status': case 'check_update_now': return globalThis.__SMOKE_UPDATE__ ?? null;
+    // Desktop integration. A non-AppImage build answers null, which is what
+    // keeps the section and the first-run prompt out of every other build.
+    case 'desktop_integration_status': return globalThis.__SMOKE_DESKTOP__ ?? null;
+    case 'desktop_integration_add':
+      if (globalThis.__SMOKE_DESKTOP_ERROR__) throw new Error(globalThis.__SMOKE_DESKTOP_ERROR__);
+      globalThis.__SMOKE_DESKTOP_CALLS__.push('add');
+      return globalThis.__SMOKE_DESKTOP_ADD__ ?? { action: 'created', written: [], preserved: [] };
+    case 'desktop_integration_remove':
+      globalThis.__SMOKE_DESKTOP_CALLS__.push('remove');
+      return globalThis.__SMOKE_DESKTOP_REMOVE__ ?? { removed: [], preserved: [] };
+    case 'mark_desktop_integration_prompted':
+      globalThis.__SMOKE_DESKTOP_CALLS__.push('prompted'); return null;
+    case 'restart_app': globalThis.__SMOKE_RESTARTED__ = true; return null;
     default: return null;
   }
 }`);
-  w('@tauri-apps/api/event.js', `export async function listen() { return () => {}; }`);
+  // Listeners are retained so a case can play back the events Rust really
+  // emits: 'mini-shown', whose whole contract is that it does *not* disturb the
+  // summary's fade level, and the tray's 'navigate' payload, which is the only
+  // way the Settings return state crosses the navigation boundary. The registry
+  // is per case; the runner clears it between mounts so one component's
+  // listeners can never be fired by the next one's events.
+  w('@tauri-apps/api/event.js', `
+export async function listen(event, handler) {
+  const listeners = (globalThis.__SMOKE_LISTENERS__ ??= new Map());
+  const forEvent = listeners.get(event) ?? [];
+  forEvent.push(handler);
+  listeners.set(event, forEvent);
+  return () => {
+    const current = listeners.get(event) ?? [];
+    const at = current.indexOf(handler);
+    if (at >= 0) current.splice(at, 1);
+  };
+}`);
   // Settings imports this lazily when Install update is pressed. Stubbed so the
   // button can be exercised without a real updater or a real download.
   mkdirSync(join(WORK, '@tauri-apps/plugin-updater'), { recursive: true });
   w('@tauri-apps/plugin-updater/index.js', `
 export async function check() {
   if (globalThis.__SMOKE_UPDATE_CHECK_NULL__) return null;
-  return { downloadAndInstall: async () => { globalThis.__SMOKE_INSTALLED__ = true; } };
+  return {
+    downloadAndInstall: async () => {
+      // Yield first, so Svelte flushes the message shown *while* the install
+      // runs. That message is a contract of its own — it is the last thing a
+      // Windows user sees before the app exits — and the completion message
+      // overwrites it, so a check made afterwards cannot see it.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      globalThis.__SMOKE_INSTALLING_TEXT__ = globalThis.document.body.textContent;
+      globalThis.__SMOKE_INSTALLED__ = true;
+    },
+  };
 }`);
+  // Every size the window is asked for is recorded, so a case can assert on
+  // what the view swap did to the window rather than on the helper that did it.
+  // "Settings kept the usage height" is only observable as the *absence* of a
+  // request, which needs the whole sequence, not just the latest value.
   w('@tauri-apps/api/window.js', `
 export function getCurrentWindow() {
-  return { setSize: async () => {}, outerPosition: async () => ({x:0,y:0}), scaleFactor: async () => 1 };
+  return {
+    setSize: async (size) => { (globalThis.__SMOKE_SIZES__ ??= []).push({ width: size.width, height: size.height }); },
+    outerPosition: async () => ({x:0,y:0}),
+    scaleFactor: async () => 1,
+  };
 }`);
   w('@tauri-apps/api/dpi.js', `
 export class LogicalSize { constructor(w,h){ this.width=w; this.height=h; } }
@@ -607,8 +1253,23 @@ for (const f of readdirSync(join(ROOT, 'src/lib')).filter((f) => f.endsWith('.js
 const { mount, unmount, flushSync } = await import('svelte');
 const $ = await import('svelte/internal/client');
 
+// Plays back an event exactly as Rust's `app.emit` would, for the listeners
+// the component registered in `onMount`.
+//
+// Handlers are invoked synchronously and the result flushed before anything is
+// awaited, so a case that does not await this still sees the render — a handler
+// that only assigns state (`navigate` swapping the view) has already done its
+// work by then. Awaiting additionally waits out handlers that go async.
+function emit(event, payload) {
+  const pending = [...(globalThis.__SMOKE_LISTENERS__?.get(event) ?? [])]
+    .map((handler) => handler({ event, payload }));
+  flushSync();
+  return Promise.all(pending);
+}
+
 let failed = 0;
 for (const c of CASES) {
+  globalThis.__SMOKE_LISTENERS__ = new Map();
   const target = dom.window.document.createElement('div');
   dom.window.document.body.appendChild(target);
   let app;
@@ -617,12 +1278,27 @@ for (const c of CASES) {
     globalThis.__SMOKE_CONFIG__ = c.config ? { snapshots: SNAPSHOTS, config: c.config } : undefined;
     globalThis.__QUOTA_WIDGET_BRANCH__ = c.buildBranch ?? '';
     globalThis.__SMOKE_UPDATE__ = c.update ?? null;
+    globalThis.__SMOKE_SAVE_ERROR__ = c.saveError ?? '';
     globalThis.__SMOKE_INSTALLED__ = false;
+    globalThis.__SMOKE_DESKTOP__ = c.desktop ?? null;
+    globalThis.__SMOKE_DESKTOP_ADD__ = c.desktopAdd ?? null;
+    globalThis.__SMOKE_DESKTOP_REMOVE__ = c.desktopRemove ?? null;
+    globalThis.__SMOKE_DESKTOP_ERROR__ = c.desktopError ?? '';
+    globalThis.__SMOKE_DESKTOP_CALLS__ = [];
+    globalThis.__SMOKE_RESTARTED__ = false;
+    globalThis.__SMOKE_INSTALLING_TEXT__ = '';
+    globalThis.__SMOKE_SHELL_CALLS__ = [];
+    globalThis.__SMOKE_SIZES__ = [];
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle
     flushSync();
-    await c.verify?.({ target, flushSync });
+    // `emit` plays a Rust event to the component's own listeners; `shellCalls`
+    // is what it asked Rust to do in return. Together they cover the navigation
+    // seam in both directions without reaching into component internals.
+    const shellCalls = () => globalThis.__SMOKE_SHELL_CALLS__;
+    const sizes = () => globalThis.__SMOKE_SIZES__;
+    await c.verify?.({ target, flushSync, emit, shellCalls, sizes });
   } catch (e) {
     console.error(`FAIL ${c.file}\n      ${String(e.message).split('\n')[0]}`);
     failed++;
@@ -643,6 +1319,8 @@ for (const c of CASES) {
   globalThis.__SMOKE_SNAPSHOTS_ERROR__ = false;
   globalThis.__SMOKE_CONFIG__ = undefined;
   globalThis.__SMOKE_UPDATE__ = null;
+  globalThis.__SMOKE_SAVE_ERROR__ = '';
+  globalThis.__SMOKE_DESKTOP__ = null;
   target.remove();
 }
 

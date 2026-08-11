@@ -5,7 +5,7 @@ use crate::{tray, AppState};
 use ksni::TrayMethods;
 use quota_core::model::Status;
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri::{AppHandle, Manager, PhysicalPosition};
 
 struct QuotaTray {
     app: AppHandle,
@@ -64,10 +64,7 @@ impl ksni::Tray for QuotaTray {
             .into(),
             StandardItem {
                 label: "Settings".into(),
-                activate: Box::new(|t: &mut QuotaTray| {
-                    tray::show_popup(&t.app, None);
-                    let _ = t.app.emit("navigate", "settings");
-                }),
+                activate: Box::new(|t: &mut QuotaTray| tray::open_settings_from_tray(&t.app)),
                 ..Default::default()
             }
             .into(),
@@ -87,6 +84,7 @@ fn handle() -> &'static Mutex<Option<ksni::Handle<QuotaTray>>> {
 }
 
 pub fn create_tray(app: AppHandle, _state: Arc<AppState>) {
+    let fallback = app.clone();
     tauri::async_runtime::spawn(async move {
         match (QuotaTray {
             app,
@@ -98,7 +96,14 @@ pub fn create_tray(app: AppHandle, _state: Arc<AppState>) {
         .await
         {
             Ok(h) => *handle().lock().unwrap() = Some(h),
-            Err(e) => eprintln!("failed to start Linux tray: {e}"),
+            Err(e) => {
+                // Launch is tray-first, which only works if there is a tray.
+                // A desktop with no StatusNotifierItem host would otherwise
+                // leave a running process with no way to reach it, so the main
+                // window becomes the point of access instead.
+                eprintln!("failed to start Linux tray: {e}; showing the main window instead");
+                tray::show_popup(&fallback, None);
+            }
         }
     });
 }

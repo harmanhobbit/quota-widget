@@ -1,7 +1,8 @@
 //! Tray icon with runtime-generated status colors, menu, and popup placement.
 
-use quota_core::config::{Corner, MiniAnchor};
+use quota_core::config::{Corner, MiniAnchor, Rect};
 use quota_core::model::Status;
+use quota_core::settings_return::SettingsReturn;
 use tauri::image::Image;
 #[cfg(not(target_os = "linux"))]
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -93,13 +94,7 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "open" => show_popup(app, None),
-            "settings" => {
-                // Show first: show_popup resets the view to the usage list,
-                // so navigating afterwards is what makes Settings stick.
-                show_popup(app, None);
-                use tauri::Emitter;
-                let _ = app.emit("navigate", "settings");
-            }
+            "settings" => open_settings_from_tray(app),
             "refresh" => {
                 if let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() {
                     state.refresh.notify_one();
@@ -359,40 +354,81 @@ pub fn settle_mini_drag<R: Runtime>(app: &AppHandle<R>, gen: u64) {
     });
 }
 
+/// The anchor the mini summary's current position implies, without moving it.
+///
+/// Where the window already is, is the answer to "which corner is this?" — so
+/// both a drag's drop and the moment of pinning derive their anchor from here
+/// and neither has to relocate the window to find out. `None` when the geometry
+/// or the monitor cannot be read, which is a reason to leave the anchor alone
+/// rather than to guess one.
+fn anchor_here<R: Runtime>(
+    app: &AppHandle<R>,
+    win: &tauri::WebviewWindow<R>,
+) -> Option<MiniAnchor> {
+    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+        return None;
+    };
+    let rect = Rect::new(
+        pos.x as f64,
+        pos.y as f64,
+        size.width as f64,
+        size.height as f64,
+    );
+    let (centre_x, centre_y) = rect.centre();
+    // The monitor under the window's centre, so a summary straddling two
+    // screens belongs to the one it is mostly on.
+    let monitor = win.monitor_from_point(centre_x, centre_y).ok().flatten()?;
+    let area = monitor.work_area();
+    // Work area, not monitor bounds: the corner derived here is the one the
+    // window will later be placed against, and placement avoids panels.
+    Some(MiniAnchor::derive(
+        rect,
+        Rect::new(
+            area.position.x as f64,
+            area.position.y as f64,
+            area.size.width as f64,
+            area.size.height as f64,
+        ),
+        monitor.name().cloned(),
+        &current_anchor(app),
+    ))
+}
+
+/// Adopt the summary's current spot as its anchor without moving it.
+///
+/// This is what pinning does. Pinning must never relocate the summary the user
+/// can already see — that was the whole defect (#72) — so the derived corner is
+/// stored purely so a *later* content resize grows from the right work-area
+/// edge. Spawned because storing takes the async config lock, and the pin
+/// command is a sync IPC call.
+pub fn adopt_position_as_anchor<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(win) = app.get_webview_window("mini") else {
+            return;
+        };
+        let Some(anchor) = anchor_here(&app, &win) else {
+            return;
+        };
+        store_anchor(&app, anchor).await;
+    });
+}
+
 /// Turn the window's current spot into a stored anchor, then move it there.
 async fn commit_drop<R: Runtime>(app: &AppHandle<R>) {
     let Some(win) = app.get_webview_window("mini") else {
         return;
     };
-    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+    let Some(anchor) = anchor_here(app, &win) else {
         return;
     };
-    let centre_x = pos.x as f64 + size.width as f64 / 2.0;
-    let centre_y = pos.y as f64 + size.height as f64 / 2.0;
-    // The monitor under the window's centre, so a summary straddling two
-    // screens lands on the one it is mostly on.
-    let Ok(Some(monitor)) = win.monitor_from_point(centre_x, centre_y) else {
-        return;
-    };
-    let area = monitor.work_area();
-    let corner = Corner::nearest(
-        centre_x,
-        centre_y,
-        area.position.x as f64,
-        area.position.y as f64,
-        area.size.width as f64,
-        area.size.height as f64,
-    );
-    // An unnamed monitor cannot be stored (see ADR 0001), so the corner is
-    // kept and the monitor preference is left as it was.
-    let anchor = MiniAnchor {
-        monitor: monitor
-            .name()
-            .cloned()
-            .or_else(|| current_anchor(app).monitor),
-        corner,
-    };
+    store_anchor(app, anchor.clone()).await;
+    snap_to(&win, &anchor);
+}
 
+/// Persist an anchor everywhere it is read from: the sync-loop mirror, the
+/// config file, and the frontend's copy.
+async fn store_anchor<R: Runtime>(app: &AppHandle<R>, anchor: MiniAnchor) {
     // Cloned out of the borrowed `State` before any await: the guard below is
     // held across one, and a borrow of the app handle must not be.
     let state = app
@@ -426,7 +462,6 @@ async fn commit_drop<R: Runtime>(app: &AppHandle<R>) {
             let _ = app.emit("config", &config);
         }
     }
-    snap_to(&win, &anchor);
 }
 
 /// Slide the window to its anchor.
@@ -462,9 +497,91 @@ fn snap_to<R: Runtime>(win: &tauri::WebviewWindow<R>, anchor: &MiniAnchor) {
     });
 }
 
+/// What the `navigate` event carries. The view is the only thing the frontend
+/// needed before the Settings return state existed; the return state rides
+/// alongside it because it is decided here, in the one place that can still see
+/// what was on screen before the full window covered it.
+#[derive(Clone, serde::Serialize)]
+struct Navigate {
+    view: &'static str,
+    return_to: SettingsReturn,
+}
+
+/// Tray-menu Settings, for both tray implementations.
+///
+/// The Settings return state is read *before* anything is shown: showing the
+/// full window hides the mini summary, after which nothing distinguishes "the
+/// summary was open" from "nothing was open". A visible mini summary is then
+/// held for the duration of the visit — including an unpinned one, which the
+/// ordinary popup path deliberately dismisses.
+pub fn open_settings_from_tray<R: Runtime>(app: &AppHandle<R>) {
+    let visible = |label| {
+        app.get_webview_window(label)
+            .is_some_and(|w| w.is_visible().unwrap_or(false))
+    };
+    let return_to = SettingsReturn::for_tray_entry(visible("mini"), visible("main"));
+    show_popup_holding_mini(app, None, return_to == SettingsReturn::Mini);
+    use tauri::Emitter;
+    let _ = app.emit(
+        "navigate",
+        Navigate {
+            view: "settings",
+            return_to,
+        },
+    );
+}
+
+/// Leave Settings for its captured return state.
+///
+/// The full window itself needs nothing done to it when the return state is the
+/// usage popup — the frontend has already swapped its own view — so this is
+/// only about the window lifecycle the frontend cannot reach.
+pub fn exit_settings<R: Runtime>(app: &AppHandle<R>, to: SettingsReturn) {
+    match to {
+        SettingsReturn::Popup => {}
+        SettingsReturn::Mini => {
+            // The pinned-mini hold is consumed here rather than left armed: the
+            // summary is being restored now, so a later hide of the full window
+            // must not restore it a second time.
+            if let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() {
+                state
+                    .reopen_mini_after_popup
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            // Hides the full window itself, and reinstates always-on-top from
+            // the pin the summary already had.
+            show_mini(app, None);
+        }
+        SettingsReturn::Hidden => {
+            // Nothing was on screen when Settings opened, so nothing may be on
+            // screen when it leaves. A pinned-mini hold left armed by an
+            // earlier popup would otherwise make `hide_popup` reopen the
+            // summary and contradict the captured state.
+            if let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() {
+                state
+                    .reopen_mini_after_popup
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            hide_popup(app);
+        }
+    }
+}
+
 /// Show the always-on-top popup, positioned near the tray click when we know
 /// it. Dismisses the mini summary first so the two never overlap.
 pub fn show_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<f64>>) {
+    show_popup_holding_mini(app, near, false);
+}
+
+/// `hold_mini` is set only by the tray's Settings entry, where a visible mini
+/// summary is coming back when Settings exits and so must be hidden rather than
+/// dismissed — pin and all. Every other caller passes `false` and keeps the
+/// long-standing behaviour of dismissing an unpinned summary outright.
+fn show_popup_holding_mini<R: Runtime>(
+    app: &AppHandle<R>,
+    near: Option<PhysicalPosition<f64>>,
+    hold_mini: bool,
+) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
@@ -481,14 +598,24 @@ pub fn show_popup<R: Runtime>(app: &AppHandle<R>, near: Option<PhysicalPosition<
                         .load(std::sync::atomic::Ordering::Relaxed))
         })
         .unwrap_or(false);
-    if preserve_pinned_mini {
+    // A Settings visit holds the summary whether or not it is pinned, because
+    // the captured Settings return state is going to bring it back. The
+    // ordinary popup path still only holds a pinned one, and dismisses the
+    // rest. Either way the window is hidden directly rather than through
+    // `hide_mini`, which would drop the pin we are preserving.
+    if preserve_pinned_mini || (hold_mini && mini_visible) {
         if let Some(mini) = app.get_webview_window("mini") {
             let _ = mini.hide();
         }
-        if let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() {
-            state
-                .reopen_mini_after_popup
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+        // Only a pinned summary comes back on an ordinary hide-to-tray. An
+        // unpinned one held for Settings returns solely through
+        // `exit_settings`, so ✕ or a click-away still means "no window".
+        if preserve_pinned_mini {
+            if let Some(state) = app.try_state::<std::sync::Arc<crate::AppState>>() {
+                state
+                    .reopen_mini_after_popup
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
         }
     } else {
         hide_mini(app);
@@ -526,9 +653,12 @@ pub fn show_mini<R: Runtime>(app: &AppHandle<R>, _near: Option<PhysicalPosition<
     // accepting the window manager's top-left default.
     anchor_to(&win, &current_anchor(app));
     let _ = win.set_focus();
-    // The webview survives hiding, so a summary scrolled to fully transparent
-    // would come back invisible — and an invisible window still eats clicks.
-    // `main` gets the same reset from `window-shown` above.
+    // The show notification for the summary's webview, which survives hiding.
+    // Unlike `main`/`window-shown`, this deliberately does **not** reset the
+    // scroll fade: the summary keeps the level it was left at for the life of
+    // the process, so a tray toggle brings it back exactly as it looked. A
+    // fully transparent unpinned summary is recoverable by the same click that
+    // opened it, which is why it is allowed to reach zero at all.
     use tauri::Emitter;
     let _ = app.emit("mini-shown", ());
 }

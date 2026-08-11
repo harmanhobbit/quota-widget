@@ -8,8 +8,9 @@ OpenAI organization spend. It collapses to
 the tray and pops up as a compact always-on-top window.
 
 Built with Tauri 2 (Rust) + Svelte 5. The portable EXE is self-contained —
-Windows 11 ships the WebView2 runtime it renders with. On Linux it's packaged as
-a Nix flake (see [Building](#nixos--nix)).
+Windows 11 ships the WebView2 runtime it renders with. Linux releases ship an
+x86_64 AppImage built on Ubuntu 22.04; a Nix flake remains available to source
+repository collaborators (see [Building](#nixos--nix)).
 
 Platform differences are small but real:
 
@@ -19,6 +20,8 @@ Platform differences are small but real:
 | Tray hover | Native detailed tooltip | Plasma-drawn native SNI tooltip |
 | Secret storage | Credential Manager (DPAPI) | `0600` plaintext file in the config dir |
 | Autostart | `HKCU` run entry | XDG autostart entry |
+| Applications-menu entry | Written by the installer | Owned by the Nix package; opt-in and app-managed for the AppImage |
+| In-app update | Installed bundle only; installer relaunches the app | AppImage only; offers Restart now / Later |
 
 ## How it works
 
@@ -29,8 +32,11 @@ Platform differences are small but real:
   popup.
 - **Left-click** the tray icon to toggle a compact mini summary near the tray.
   It hides when it loses focus unless you pin it with its circle button; the
-  pin lasts only for the current app session. A Settings checkbox controls
-  whether the mini summary includes usage bars.
+  pin lasts only for the current app session. Pinning never moves the summary —
+  it stays exactly where it is and simply stops being dismissed — and it adopts
+  the nearest corner of the screen it's on, so growing to fit new content keeps
+  it against that edge. A Settings checkbox controls whether the mini summary
+  includes usage bars.
 - **Drag the mini summary** by its title bar to move it, including onto another
   screen — unpin it first, since pinning holds its position as well as keeping
   it on top. It snaps to the nearest corner of the screen you drop it on and
@@ -44,14 +50,29 @@ Platform differences are small but real:
   tray tooltip; Plasma draws the StatusNotifierItem tooltip.
 - **Right-click** for Open / Refresh now / Settings / Quit. **Open** shows the
   full usage/settings window; reopening it always lands on the usage list.
+  **Settings** puts you back where you were when you *leave* it — via Save &
+  close or Esc. Opened from the usage list you return to the usage list; opened
+  from the tray while the mini summary was up, the summary comes back (pinned
+  or not); opened from the tray with nothing on screen, you end with nothing on
+  screen. The ← back arrow is different: it is navigation inside the window, so
+  it always shows the usage list and leaves the window open, whatever you came
+  from. Back and Esc discard unsaved edits — Save & close is the only thing
+  that writes — and a save that fails leaves Settings open with its error. ✕
+  always means *hide the widget*, whatever you came from.
 - **Scroll** over either window to fade it: up towards transparent, down back
-  to opaque. The level is temporary and resets whenever the window is shown
-  again, so a faded widget is never left that way. Scrolling the card list or
-  the Settings form still scrolls normally, and the full popup stops at a
-  faint-but-visible floor rather than becoming an invisible thing that eats
-  clicks — as does a *pinned* mini summary, which ignores click-away. An
-  unpinned summary may fade all the way out, since clicking elsewhere
-  dismisses it. A Settings checkbox turns the whole behaviour off.
+  to opaque. The two windows keep that level for different lengths of time. The
+  **full popup** forgets it on every open, so it always comes back opaque. The
+  **mini summary** keeps exactly the level you left it at — through tray
+  toggles, clicking away, its close button, and while the full window is open —
+  for as long as the app is running; restarting the app opens it opaque again.
+  The level is never written to your configuration either way. Scrolling the
+  card list or the Settings form still scrolls normally, and every window
+  stops at the same faint-but-visible 15% floor rather than becoming an
+  invisible thing that eats clicks. A mini summary left at that floor comes
+  back just as faint on the next tray click rather than fully opaque. Unticking
+  the Settings checkbox turns the behaviour off and restores both windows to
+  fully opaque; ticking it again starts from opaque rather than from the level
+  you had before.
 - **Account order** is yours by default: accounts appear in the order you
   arranged them in Settings. Two Settings dropdowns can instead sort them by
   usage (high→low or low→high) or by expiry (soonest or furthest reset), with a
@@ -63,10 +84,23 @@ Platform differences are small but real:
   such number — a credits-only balance, one pinned to "None", or one whose
   fetch just failed — sink to the bottom in your own order rather than being
   ranked on a number they don't have.
+- **Launching starts in the tray**, whether you run it yourself or it starts
+  with your session — no window appears until you ask for one, from the tray
+  icon or by running the app a second time (which opens and focuses the full
+  window). If a tray icon cannot be created at all, the full window opens
+  instead, so the app is never running with no way to reach it.
 - A background poller (default every 60 s) refreshes all enabled providers and
   fires alerts when usage *crosses* a threshold (edge-triggered — you get one
   toast at 80%, not one per poll). Toast, tray color, and auto-popup are each
   independently toggleable, globally and per provider.
+- The **first successful poll of each account is a baseline**, not a crossing.
+  Being already over a threshold when the widget starts is a state, not
+  something that just happened, so it colours the tray icon and appears in the
+  tooltip without opening a window — auto-popup included. A baseline *critical*
+  state still sends a toast (if toasts are on); a baseline warning stays
+  tray-only. Everything after that baseline behaves exactly as before, and an
+  account whose first fetch fails takes its baseline from the first one that
+  works.
 - Where a provider reports exact allowance figures or you set a monthly budget,
   the main window shows remaining and total below the percentage meter. The
   compact summary and tray keep their percentage-only form for quick scanning.
@@ -101,6 +135,12 @@ window (or credits), while a specific window or credit balance keeps that
 compact row focused. Choose None to omit the account from the compact summary.
 The selected value can also contribute to the tray icon's status and gauge;
 this does not change alerts or card status.
+
+Only the Settings fields scroll: **Save & close** sits in a fixed footer at the
+bottom of the window, with the app version beneath it, so the commit action is
+reachable from anywhere in the form. Save is the only thing that writes — if it
+fails, Settings stays open and shows the error in that footer rather than
+closing on a write that never landed.
 
 Secrets (API keys, cookies, OAuth tokens) are stored in the **Windows Credential
 Manager**, not on disk. On Linux they fall back to a `0600` `secrets.json` in the
@@ -239,14 +279,40 @@ and optionally enable **Start on login** (a `HKCU` run entry on Windows, an XDG
 autostart entry on Linux — no admin rights needed either way). Updating =
 replacing the EXE; on Nix, `nix profile upgrade`.
 
-**Published releases are Windows-only.** A Linux build links the host's GTK3 and
-WebKitGTK rather than bundling them, so there is no single binary that runs
-across distributions — hence the flake, which pins them. The in-app update check
-is Windows-only to match: `updates.rs` asks the manifest for `linux-x86_64`,
-which no release publishes, so a Linux build reports no update rather than
-offering one it cannot install. Adding an AppImage or `.deb` to `release.yml`
-is the route if that changes; both are Tauri bundle targets and would build on
-a 1x-metered Linux runner.
+**Linux releases** publish a signed x86_64 AppImage, built on pinned Ubuntu
+22.04 as the compatibility floor. Download the `.AppImage` and its `.sig` from
+the public dist repository, then run `chmod +x QuotaWidget_<version>_amd64.AppImage`
+followed by `./QuotaWidget_<version>_amd64.AppImage`. The public download page
+has the matching `minisign` verification command. The Nix flake is distinct: it
+is a reproducible source build that pins GTK/WebKit, and remains available only
+to collaborators with access to this private repository.
+
+#### AppImage desktop integration
+
+An AppImage is just a file you downloaded, so nothing puts it in your
+applications menu. The first time you run one, the widget **asks** whether to
+add a launcher, and remembers your answer either way — "Not now" is remembered
+as firmly as yes, so it never asks twice. Settings → **Applications menu** has
+explicit **Add** and **Remove** buttons afterwards, so a deferral is never
+final.
+
+It is deliberately small: a `.desktop` file and two icons under your own
+`$XDG_DATA_HOME` (`~/.local/share` by default), nothing system-wide, no
+`appimaged` and no background daemon. The launcher runs
+`env GDK_BACKEND=x11 <your AppImage>`, matching the Nix package's entry — the
+XWayland workaround is what lets the popup position and raise itself (see
+[Known limitations](#known-limitations)).
+
+The launcher points at the AppImage **where it is**, not at a copy. Replacing
+the file in place — which is what the in-app update does — keeps it working.
+*Moving* it does not, so the widget then offers to **repair** the launcher
+rather than silently retargeting it.
+
+Removal only deletes files the app wrote and you have not since edited: a
+launcher or icon you changed is left exactly as it is, and Settings tells you
+where it is so you can delete it yourself. A `.desktop` file at that path that
+the app did not write is never touched at all — Settings says so instead of
+offering buttons that would overwrite it.
 
 ### Releases and update checks
 
@@ -257,11 +323,13 @@ does and the by-hand equivalent.
 
 This repo is private, so releases are published to the public
 [`harmanhobbit/quota-widget-dist`](https://github.com/harmanhobbit/quota-widget-dist)
-repo: pushing a `v*.*.*` tag runs `release.yml`, which builds a signed NSIS
-installer and uploads it, its `.sig`, the portable EXE (renamed
+repo: pushing a `v*.*.*` tag runs `release.yml`, which builds signed Windows
+and Ubuntu-22.04 AppImage artifacts, then uploads the NSIS installer, its
+`.sig`, the portable EXE (renamed
 `QuotaWidget_<version>_x64-portable.exe`, since an asset name is its download
-URL and a bare `quota-widget.exe` reads identically across every release), and
-a `latest.json` manifest. It also republishes `docs/dist-README.md` as that
+URL and a bare `quota-widget.exe` reads identically across every release), the
+AppImage and its `.sig`, and a `latest.json` manifest. It only publishes after
+both platform builds succeed. It also republishes `docs/dist-README.md` as that
 repo's landing page, so the public download instructions cannot drift from what
 ships — edit that file, not the dist repo directly. The tag must match the
 workspace `Cargo.toml` version — CI refuses to publish a mislabelled tree. A `workflow_dispatch` defaults to a **dry run**: it builds and signs, then
@@ -275,12 +343,34 @@ keeps working regardless, since pressing it is itself the consent. Builds from a
 feature branch never check at all — they carry a dev badge and would otherwise
 nag about a "newer" release they are actually ahead of.
 
-On Windows, Settings also offers **Install update**, which downloads the new
-installer through `tauri-plugin-updater`, verifies its minisign signature
-against the `pubkey` in `tauri.conf.json`, and runs it in `passive` mode. The
-app exits partway through, so the UI says so before starting. The plugin cannot
-update a portable EXE in place — in-app updating requires having run the
-installer once — and CI publishes both artifacts regardless.
+Settings offers **Install update** only when the running app is an *installable
+artifact* — a bundle `tauri-plugin-updater` can replace. That is a separate
+fact from whether the release published a download: a portable EXE finds the
+Windows installer in the manifest and still cannot replace itself. Either way
+the download is verified against the minisign `pubkey` in `tauri.conf.json`
+before anything is run or written.
+
+Manifest keys reflect this. Windows publishes one installer, so its entry is
+the bare `windows-x86_64`; Linux has several mutually exclusive package
+formats, so the AppImage is published under the artifact-qualified
+`linux-x86_64-appimage`. A future `.deb` or Flatpak gets its own key rather
+than colliding with the AppImage's, and each build only ever selects the entry
+matching the format it is actually running as.
+
+The two platforms then finish differently, and the UI says which:
+
+- **Windows** downloads the new NSIS installer and runs it in `passive` mode.
+  The app exits partway through and the installer brings it back, so the UI
+  warns that it is about to close and reopen.
+- **Linux** replaces the running AppImage in place. The old process keeps
+  running the old code — nothing relaunches on its own — so Settings offers
+  **Restart now** and **Later** once the install finishes, and never claims an
+  automatic relaunch. *Later* is not a deferral of the install: the new version
+  is already on disk and starts at the next launch.
+
+Everything else — a portable EXE, a Nix or other package-managed install, or a
+platform the release published nothing for — gets the "upgrade the way you
+installed it" guidance rather than an action that would fail.
 
 `updater:default` is granted in `capabilities/default.json` only. It is
 deliberately **not** in `mini.json`: the tray-click summary has no business
@@ -293,6 +383,8 @@ crates/quota-core   pure Rust, no UI deps — fully unit-tested
   model.rs          UsageSnapshot / UsageWindow / Credits / FetchError
   config.rs         config persistence + per-provider overrides
   alerts.rs         edge-triggered alert engine
+  desktop.rs        per-user AppImage launcher/icon integration (plan + apply)
+  settings_return.rs  where a Settings visit goes when it exits
   providers/        one adapter per provider behind a common trait
 src-tauri           the Tauri shell
   tray.rs           runtime-generated status icons, full window + mini summary placement
@@ -300,6 +392,7 @@ src-tauri           the Tauri shell
   oauth.rs          built-in Claude sign-in (PKCE paste-back)
   codex_oauth.rs    built-in Codex sign-in (device code)
   updates.rs        6-hourly check of the public release manifest
+  desktop.rs        IPC around quota-core's AppImage desktop integration
   secrets.rs        Credential Manager (Windows) / 0600 plaintext file (elsewhere)
 src/                Svelte UI
   App.svelte        popup shell (usage list / settings)

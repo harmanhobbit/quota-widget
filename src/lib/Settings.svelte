@@ -30,6 +30,10 @@
   let updateInfo = $state(null);
   let checkingForUpdate = $state(false);
   let installState = $state('');
+  // Set only where a finished install leaves the old version running — Linux,
+  // where an AppImage is replaced in place. Windows never reaches it: those
+  // installers exit and relaunch the app themselves.
+  let installedAwaitingRestart = $state(false);
   let secretInputs = $state({});
   let secretStored = $state({});
   let testResults = $state({});
@@ -64,6 +68,61 @@
   // Connected monitors, for the mini-summary screen picker. Empty until the
   // command answers, and on a single-screen machine the picker is not shown.
   let monitors = $state([]);
+
+  // Desktop integration, for the Linux AppImage only. `null` means this build
+  // has no launcher to manage — a Windows installer and a Nix package each own
+  // their own menu entry — so the whole section stays hidden.
+  let desktop = $state(null);
+  let desktopBusy = $state(false);
+  let desktopMessage = $state('');
+
+  async function refreshDesktop() {
+    try {
+      desktop = await invoke('desktop_integration_status');
+    } catch {
+      // An older shell has no such command; that is "nothing to manage".
+      desktop = null;
+    }
+  }
+
+  async function addDesktopEntry() {
+    desktopBusy = true;
+    desktopMessage = '';
+    try {
+      const report = await invoke('desktop_integration_add');
+      desktopMessage = {
+        created: 'Added to your applications menu.',
+        repaired: 'Launcher repaired — it points at this AppImage again.',
+        already_current: 'Already in your applications menu.',
+        // The service never overwrites a launcher it did not write intact.
+        refused: `A launcher you've edited is already at ${desktop?.desktop_file} — left untouched.`,
+      }[report.action] ?? '';
+    } catch (error) {
+      desktopMessage = `Could not add the launcher: ${error}`;
+    } finally {
+      desktopBusy = false;
+      await refreshDesktop();
+    }
+  }
+
+  async function removeDesktopEntry() {
+    desktopBusy = true;
+    desktopMessage = '';
+    try {
+      const report = await invoke('desktop_integration_remove');
+      // Removal deletes only intact, app-owned files. Anything the user edited
+      // stays, and saying so is the whole point of reporting it.
+      const kept = report.preserved ?? [];
+      desktopMessage = kept.length
+        ? `Removed what was still ours. Left in place because you edited it: ${kept.join(', ')}. Delete it by hand if you no longer want it.`
+        : 'Removed from your applications menu.';
+    } catch (error) {
+      desktopMessage = `Could not remove the launcher: ${error}`;
+    } finally {
+      desktopBusy = false;
+      await refreshDesktop();
+    }
+  }
 
   /// The screen currently chosen, which may name a monitor that is not
   /// connected — an undocked laptop keeps its preference rather than losing it,
@@ -108,6 +167,7 @@
     config.sort_basis ??= 'icon';
     config.check_updates ??= true;
     config.scroll_opacity_invert ??= false;
+    config.desktop_integration_prompted ??= false;
     // Normalize configured accounts only. Do not recreate removed defaults.
     for (const account of Object.values(config.providers)) {
       account.settings ??= {};
@@ -131,6 +191,7 @@
       if (kind === 'codex') codexFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
     }
     onWayland = await invoke('on_wayland');
+    await refreshDesktop();
   }
 
   function setUpdateStatus(status) {
@@ -144,6 +205,7 @@
     // permission, so a top-level import would pull install code into a context
     // that must never be able to run it.
     installState = 'Downloading…';
+    installedAwaitingRestart = false;
     try {
       const { check } = await import('@tauri-apps/plugin-updater');
       const update = await check();
@@ -151,13 +213,39 @@
         installState = 'No update found.';
         return;
       }
-      // The app exits partway through the Windows install, so this message is
-      // the last thing the user sees from us — say so before it happens.
-      installState = 'Installing — the app will close and reopen…';
+      // Two different endings, so say which one is coming before it happens.
+      // The Windows installers exit the app and relaunch it themselves, and
+      // this message is the last thing the user sees from us. Replacing an
+      // AppImage instead rewrites the file underneath a process that keeps
+      // running the old code, so the install simply finishes and returns.
+      installState = updateInfo?.restart_after_install
+        ? 'Installing…'
+        : 'Installing — the app will close and reopen…';
       await update.downloadAndInstall();
+      if (updateInfo?.restart_after_install) {
+        // Reached only where the app is still running the old version. Never
+        // claim it relaunched itself — offer the restart instead.
+        installState = `Version ${updateInfo.latest} installed. Restart to use it.`;
+        installedAwaitingRestart = true;
+      }
     } catch (e) {
       installState = `Update failed: ${e}`;
     }
+  }
+
+  async function restartNow() {
+    try {
+      await invoke('restart_app');
+    } catch (e) {
+      installState = `Restart failed: ${e} — close and reopen the app instead.`;
+    }
+  }
+
+  function restartLater() {
+    // The new version is on disk either way; dismissing only clears the
+    // prompt, so the pane stops nagging about a decision already made.
+    installedAwaitingRestart = false;
+    installState = `Version ${updateInfo?.latest} is installed and starts next time you open the app.`;
   }
 
   async function checkUpdateNow() {
@@ -182,6 +270,12 @@
     // everything else on screen is the user's unsaved editing.
     listen('config', (e) => {
       if (e.payload?.mini_anchor) config.mini_anchor = e.payload.mini_anchor;
+      // Rust-owned in the same way: answering the first-run integration
+      // question writes this flag, and this form would otherwise save its
+      // pre-answer snapshot back over it and make the prompt return.
+      if (e.payload?.desktop_integration_prompted != null) {
+        config.desktop_integration_prompted = e.payload.desktop_integration_prompted;
+      }
     }).then((stop) => (unlistenAnchor = stop));
     listen('codex-oauth', (e) => {
       const flow = codexFor(e.payload.provider);
@@ -487,6 +581,7 @@
 <svelte:window onclick={closeMetricMenus} />
 
 <div class="settings">
+  <div class="settings-form">
     <section>
       <h2>Providers</h2>
       {#if addingAccount}
@@ -843,18 +938,27 @@
           <span class="note">Update available: v{updateInfo.latest}</span>
         {/if}
       </div>
-      {#if updateInfo?.url}
-        <!-- Only offered when the release published something this build can
-             install. Elsewhere the note below explains the real upgrade path. -->
+      {#if updateInfo?.installable}
+        <!-- A release download does not prove this executable can install it:
+             a portable EXE has the download too, but cannot replace itself.
+             Rust decides, from the bundle type it is actually running as. -->
         <div class="row">
           <button class="small" onclick={installUpdate} disabled={!!installState}>Install update</button>
           {#if installState}<span class="note">{installState}</span>{/if}
         </div>
-      {/if}
-      {#if updateInfo && !updateInfo.url}
-        <!-- A release exists but published nothing this build can install —
-             *nix, where releases are Windows-only. Say how to upgrade rather
-             than dangling a version number with no next step. -->
+        {#if installedAwaitingRestart}
+          <!-- Linux only. The new AppImage is on disk but this process is still
+               the old one, so the restart is the user's call — never implied. -->
+          <div class="row">
+            <button class="small" onclick={restartNow}>Restart now</button>
+            <button class="small" onclick={restartLater}>Later</button>
+          </div>
+        {/if}
+      {:else if updateInfo}
+        <!-- A release exists but this build cannot install it: no download was
+             published for its artifact, or nothing replaceable is running — a
+             portable EXE, or a package-managed install such as Nix. Say how to
+             upgrade rather than dangling a failed install action. -->
         <p class="note">Upgrade the way you installed it — on Nix, <code>nix profile upgrade quota-widget</code>.</p>
       {/if}
       <p class="note">Esc, ✕, and the tray icon always hide the widget. This extra click-away dismiss can occasionally fight window dragging.</p>
@@ -868,13 +972,67 @@
       {/if}
     </section>
 
+    <!-- AppImage only: a downloaded file nothing in the system knows about.
+         Every other build already has a menu entry from its installer or
+         package, so `desktop` is null there and the section never appears. -->
+    {#if desktop}
+      <section class="desktop-integration">
+        <h2>Applications menu</h2>
+        {#if desktop.state === 'user_owned'}
+          <!-- Somebody else's launcher, or one of ours that has been edited.
+               Both are the user's file: offer nothing that would overwrite it. -->
+          <p class="note">
+            A launcher at <code>{desktop.desktop_file}</code> isn't one this app
+            wrote — or you've edited it since. It's left exactly as it is. Delete
+            it yourself if you want this app to manage the entry instead.
+          </p>
+        {:else}
+          <div class="row">
+            {#if desktop.state !== 'current'}
+              <button class="small" onclick={addDesktopEntry} disabled={desktopBusy}>
+                {desktop.state === 'stale' ? 'Repair launcher' : 'Add to applications menu'}
+              </button>
+            {/if}
+            {#if desktop.state !== 'absent'}
+              <button class="small" onclick={removeDesktopEntry} disabled={desktopBusy}>Remove from applications menu</button>
+            {/if}
+          </div>
+          {#if desktop.state === 'stale'}
+            <!-- The AppImage moved. Retargeting is never silent: the launcher
+                 may have been pointed somewhere deliberately. -->
+            <p class="note">
+              Your launcher still points at <code>{desktop.target}</code>, which
+              isn't where this AppImage is running from. Repair it to point at
+              <code>{desktop.appimage}</code>.
+            </p>
+          {:else}
+            <p class="note">
+              Writes a launcher and icons under your own home directory only —
+              nothing system-wide. It points at this AppImage where it is now
+              (<code>{desktop.appimage}</code>), so move the file and you'll be
+              offered a repair. Removing only deletes files this app wrote and
+              you haven't changed.
+            </p>
+          {/if}
+        {/if}
+        {#if desktopMessage}<p class="note desktop-message">{desktopMessage}</p>{/if}
+      </section>
+    {/if}
+
+  </div>
+
+  <!-- Outside .settings-form on purpose: the form scrolls, this does not, so
+       the commit action, any save error, and the version stay on screen no
+       matter how far down the form the user is. -->
+  <div class="settings-footer">
     <div class="actions">
       <button class="primary" onclick={save}>Save &amp; close</button>
     </div>
     {#if saveError}
-      <p class="test bad">{saveError}</p>
+      <p class="test bad save-error">{saveError}</p>
     {/if}
     {#if appVersion}
       <p class="version">Quota Widget v{appVersion}</p>
     {/if}
   </div>
+</div>

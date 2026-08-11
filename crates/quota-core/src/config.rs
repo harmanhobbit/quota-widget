@@ -85,6 +85,34 @@ impl Corner {
     }
 }
 
+/// A rectangle in virtual-desktop coordinates — a window's outer bounds, or a
+/// monitor's work area. Plain `f64` because the callers mix `i32` positions
+/// with `u32` sizes and every comparison here is a midpoint test.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl Rect {
+    pub fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// The centre, which is what decides both which monitor a window counts as
+    /// being on and which corner of it is nearest.
+    pub fn centre(&self) -> (f64, f64) {
+        (self.x + self.width / 2.0, self.y + self.height / 2.0)
+    }
+}
+
 /// Where the mini summary sits: a preferred monitor and a corner of its work
 /// area.
 ///
@@ -100,6 +128,41 @@ pub struct MiniAnchor {
     /// behaviour, and what an unnamed monitor falls back to.
     pub monitor: Option<String>,
     pub corner: Corner,
+}
+
+impl MiniAnchor {
+    /// The anchor a window at `window` currently implies: the corner of
+    /// `work_area` nearest its centre, on the monitor it is actually on.
+    ///
+    /// Both the drop of a drag and the moment of pinning ask the same question —
+    /// "which work-area corner does this window sit in?" — so both go through
+    /// here, and neither moves the window to answer it. Pinning in particular
+    /// derives the anchor purely for later content resizes; the window stays
+    /// exactly where the user could already see it.
+    ///
+    /// `monitor_name` is `None` for a monitor the platform did not name, which
+    /// cannot be stored (see ADR 0001): the derived corner is still kept, and
+    /// `previous` keeps its monitor preference so an unnamed screen never
+    /// destroys a deliberate choice.
+    pub fn derive(
+        window: Rect,
+        work_area: Rect,
+        monitor_name: Option<String>,
+        previous: &MiniAnchor,
+    ) -> Self {
+        let (centre_x, centre_y) = window.centre();
+        MiniAnchor {
+            monitor: monitor_name.or_else(|| previous.monitor.clone()),
+            corner: Corner::nearest(
+                centre_x,
+                centre_y,
+                work_area.x,
+                work_area.y,
+                work_area.width,
+                work_area.height,
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -214,6 +277,13 @@ pub struct Config {
     pub scroll_opacity_invert: bool,
     /// Check the public distribution manifest for a newer released build.
     pub check_updates: bool,
+    /// Whether the AppImage desktop-integration question has been put to the
+    /// user. It records that they were *asked*, not what they answered: saying
+    /// "not now" must be remembered as firmly as saying yes, or every launch
+    /// would ask again. Settings keeps the explicit add and remove controls, so
+    /// a deferral is never final. Meaningless off Linux and on non-AppImage
+    /// builds, which never ask.
+    pub desktop_integration_prompted: bool,
     /// Display order for the account list. Defaults to `Manual`, so an existing
     /// config.json that predates this field keeps its hand-arranged order.
     pub sort_order: SortOrder,
@@ -267,6 +337,7 @@ impl Default for Config {
             scroll_opacity: true,
             scroll_opacity_invert: false,
             check_updates: true,
+            desktop_integration_prompted: false,
             sort_order: SortOrder::default(),
             sort_basis: SortBasis::default(),
             mini_anchor: MiniAnchor::default(),
@@ -642,6 +713,85 @@ mod tests {
     }
 
     #[test]
+    fn derived_anchor_names_the_corner_the_window_already_sits_in() {
+        // A secondary monitor whose work area excludes a 48px bottom panel.
+        let area = Rect::new(1920.0, 0.0, 2560.0, 1392.0);
+        let previous = MiniAnchor {
+            monitor: Some("DP-1".into()),
+            corner: Corner::BottomRight,
+        };
+        let derive = |x, y| {
+            MiniAnchor::derive(
+                Rect::new(x, y, 320.0, 200.0),
+                area,
+                Some("DP-2".into()),
+                &previous,
+            )
+        };
+        // Nowhere near a corner — mid-left of the work area — still resolves to
+        // the nearest one, which is what a later resize grows from.
+        assert_eq!(derive(2000.0, 500.0).corner, Corner::TopLeft);
+        assert_eq!(derive(4100.0, 100.0).corner, Corner::TopRight);
+        assert_eq!(derive(2000.0, 1100.0).corner, Corner::BottomLeft);
+        assert_eq!(derive(4100.0, 1100.0).corner, Corner::BottomRight);
+        // The monitor the window is on wins over the stored preference: pinning
+        // must keep the summary on the screen it currently appears on.
+        assert_eq!(derive(2000.0, 500.0).monitor.as_deref(), Some("DP-2"));
+    }
+
+    #[test]
+    fn derived_anchor_keeps_the_monitor_preference_when_the_screen_is_unnamed() {
+        // An unnamed monitor cannot be stored (ADR 0001), so the corner is
+        // adopted and the previous preference survives untouched.
+        let previous = MiniAnchor {
+            monitor: Some("DP-1".into()),
+            corner: Corner::BottomRight,
+        };
+        let derived = MiniAnchor::derive(
+            Rect::new(20.0, 10.0, 320.0, 200.0),
+            Rect::new(0.0, 0.0, 1920.0, 1080.0),
+            None,
+            &previous,
+        );
+        assert_eq!(derived.monitor.as_deref(), Some("DP-1"));
+        assert_eq!(derived.corner, Corner::TopLeft);
+
+        // No preference and no name is still legal: "wherever the window is".
+        let derived = MiniAnchor::derive(
+            Rect::new(20.0, 10.0, 320.0, 200.0),
+            Rect::new(0.0, 0.0, 1920.0, 1080.0),
+            None,
+            &MiniAnchor::default(),
+        );
+        assert_eq!(derived.monitor, None);
+    }
+
+    #[test]
+    fn derived_anchor_respects_the_work_area_not_the_monitor_bounds() {
+        // Under a tall top panel, a summary can sit in the *lower* half of the
+        // monitor and the *upper* half of the work area. Work area is what
+        // placement uses (see AGENTS.md "Positioning respects panels"), so the
+        // derived corner must follow it and anchor to the top.
+        let monitor = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let work_area = Rect::new(0.0, 400.0, 1920.0, 680.0);
+        let window = Rect::new(1500.0, 560.0, 320.0, 120.0);
+        assert_eq!(
+            MiniAnchor::derive(
+                window,
+                work_area,
+                Some("DP-1".into()),
+                &MiniAnchor::default()
+            )
+            .corner,
+            Corner::TopRight
+        );
+        assert_eq!(
+            MiniAnchor::derive(window, monitor, Some("DP-1".into()), &MiniAnchor::default()).corner,
+            Corner::BottomRight
+        );
+    }
+
+    #[test]
     fn missing_or_corrupt_file_yields_defaults() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(Config::load(dir.path()), Config::default());
@@ -676,6 +826,21 @@ mod tests {
         assert!(cfg.scroll_opacity);
         assert!(!cfg.scroll_opacity_invert);
         assert!(cfg.check_updates);
+        // An existing user has not been asked about desktop integration yet, so
+        // a file predating the field must read as "not yet prompted" rather
+        // than silently suppressing the question forever.
+        assert!(!cfg.desktop_integration_prompted);
+    }
+
+    /// The deferral has to survive a save, or "not now" would be forgotten at
+    /// the next launch and the prompt would nag.
+    #[test]
+    fn a_recorded_desktop_integration_prompt_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.desktop_integration_prompted = true;
+        cfg.save(dir.path()).unwrap();
+        assert!(Config::load(dir.path()).desktop_integration_prompted);
     }
 
     /// Every pre-v2 headline setting has to land on the equivalent list, or an
