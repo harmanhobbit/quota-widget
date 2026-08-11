@@ -1,6 +1,6 @@
 //! Tray icon with runtime-generated status colors, menu, and popup placement.
 
-use quota_core::config::{Corner, MiniAnchor};
+use quota_core::config::{Corner, MiniAnchor, Rect};
 use quota_core::model::Status;
 use quota_core::settings_return::SettingsReturn;
 use tauri::image::Image;
@@ -354,40 +354,81 @@ pub fn settle_mini_drag<R: Runtime>(app: &AppHandle<R>, gen: u64) {
     });
 }
 
+/// The anchor the mini summary's current position implies, without moving it.
+///
+/// Where the window already is, is the answer to "which corner is this?" — so
+/// both a drag's drop and the moment of pinning derive their anchor from here
+/// and neither has to relocate the window to find out. `None` when the geometry
+/// or the monitor cannot be read, which is a reason to leave the anchor alone
+/// rather than to guess one.
+fn anchor_here<R: Runtime>(
+    app: &AppHandle<R>,
+    win: &tauri::WebviewWindow<R>,
+) -> Option<MiniAnchor> {
+    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+        return None;
+    };
+    let rect = Rect::new(
+        pos.x as f64,
+        pos.y as f64,
+        size.width as f64,
+        size.height as f64,
+    );
+    let (centre_x, centre_y) = rect.centre();
+    // The monitor under the window's centre, so a summary straddling two
+    // screens belongs to the one it is mostly on.
+    let monitor = win.monitor_from_point(centre_x, centre_y).ok().flatten()?;
+    let area = monitor.work_area();
+    // Work area, not monitor bounds: the corner derived here is the one the
+    // window will later be placed against, and placement avoids panels.
+    Some(MiniAnchor::derive(
+        rect,
+        Rect::new(
+            area.position.x as f64,
+            area.position.y as f64,
+            area.size.width as f64,
+            area.size.height as f64,
+        ),
+        monitor.name().cloned(),
+        &current_anchor(app),
+    ))
+}
+
+/// Adopt the summary's current spot as its anchor without moving it.
+///
+/// This is what pinning does. Pinning must never relocate the summary the user
+/// can already see — that was the whole defect (#72) — so the derived corner is
+/// stored purely so a *later* content resize grows from the right work-area
+/// edge. Spawned because storing takes the async config lock, and the pin
+/// command is a sync IPC call.
+pub fn adopt_position_as_anchor<R: Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(win) = app.get_webview_window("mini") else {
+            return;
+        };
+        let Some(anchor) = anchor_here(&app, &win) else {
+            return;
+        };
+        store_anchor(&app, anchor).await;
+    });
+}
+
 /// Turn the window's current spot into a stored anchor, then move it there.
 async fn commit_drop<R: Runtime>(app: &AppHandle<R>) {
     let Some(win) = app.get_webview_window("mini") else {
         return;
     };
-    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+    let Some(anchor) = anchor_here(app, &win) else {
         return;
     };
-    let centre_x = pos.x as f64 + size.width as f64 / 2.0;
-    let centre_y = pos.y as f64 + size.height as f64 / 2.0;
-    // The monitor under the window's centre, so a summary straddling two
-    // screens lands on the one it is mostly on.
-    let Ok(Some(monitor)) = win.monitor_from_point(centre_x, centre_y) else {
-        return;
-    };
-    let area = monitor.work_area();
-    let corner = Corner::nearest(
-        centre_x,
-        centre_y,
-        area.position.x as f64,
-        area.position.y as f64,
-        area.size.width as f64,
-        area.size.height as f64,
-    );
-    // An unnamed monitor cannot be stored (see ADR 0001), so the corner is
-    // kept and the monitor preference is left as it was.
-    let anchor = MiniAnchor {
-        monitor: monitor
-            .name()
-            .cloned()
-            .or_else(|| current_anchor(app).monitor),
-        corner,
-    };
+    store_anchor(app, anchor.clone()).await;
+    snap_to(&win, &anchor);
+}
 
+/// Persist an anchor everywhere it is read from: the sync-loop mirror, the
+/// config file, and the frontend's copy.
+async fn store_anchor<R: Runtime>(app: &AppHandle<R>, anchor: MiniAnchor) {
     // Cloned out of the borrowed `State` before any await: the guard below is
     // held across one, and a borrow of the app handle must not be.
     let state = app
@@ -421,7 +462,6 @@ async fn commit_drop<R: Runtime>(app: &AppHandle<R>) {
             let _ = app.emit("config", &config);
         }
     }
-    snap_to(&win, &anchor);
 }
 
 /// Slide the window to its anchor.
