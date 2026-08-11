@@ -69,6 +69,34 @@ resolves it to the nearest corner, so what is on screen always matches what is
 stored.
 _Avoid_: Align, dock, reposition
 
+**Distribution artifact**:
+A binary published for download — the AppImage, the installer, the portable
+EXE. It is public whether or not the source is, which is the whole point: the
+source repository stays private and these still ship.
+_Avoid_: Build, release, asset, package
+
+**Installable artifact**:
+A [[distribution artifact]] the running build can replace *itself* with. It is
+decided by the bundle format the process is running as, never by what a release
+published: a portable EXE finds the Windows installer in the manifest and still
+cannot install it. Anything else gets upgrade guidance instead of a button.
+_Avoid_: Updatable build, self-updating build, supported download
+
+**Release signature**:
+The minisign signature over a [[distribution artifact]], carried both beside it
+as a `.sig` file and inline in the manifest. One signature serves two readers —
+a person verifying a download by hand, and the updater verifying before it
+writes — so there is no separate "update signature" to keep in step.
+_Avoid_: Checksum, hash, update signature
+
+**Compatibility floor**:
+The oldest userspace a [[distribution artifact]] is promised to run on —
+Ubuntu 22.04 or equivalent-or-newer, which is why the Linux job pins that
+runner. It is a claim about *linkage against a stock system*, so only running
+the artifact directly on such a system tests it; a runtime that supplies its
+own libraries proves something else.
+_Avoid_: Minimum requirements, baseline, supported distro
+
 **Launcher**:
 The single `.desktop` file that puts the app in the applications menu. For the
 AppImage it is app-managed and opt-in; for the Nix package it belongs to the

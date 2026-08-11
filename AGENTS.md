@@ -112,6 +112,15 @@ watches tags — it produces the same Windows artifacts on demand via
 `gh workflow run build.yml --ref <ref>`, without publishing. Both spend the
 2x-metered Windows budget, so only dispatch when asked.
 
+**The Linux half of a release needs a manual pass.** CI proves the AppImage
+built and was signed; it cannot see the tray, window placement, the launcher it
+writes into a home directory, or an update that rewrites the running
+executable. `docs/linux-release-validation.md` is that checklist — a dry-run
+manifest inspection, then launch, tray, popup, mini-summary placement, opt-in
+desktop integration and one end-to-end signed update on a Kubuntu 22.04 VM, and
+a reduced launch/tray/popup set for every later release. It also records why
+NixOS `appimage-run` is supplemental rather than the compatibility-floor test.
+
 **`release/<version>` branches are for stabilisation only.** If a release needs
 fixes after the version commit but before the tag — or an old line needs a
 backport — cut `release/0.17.0` from the version commit, land only fixes there,
