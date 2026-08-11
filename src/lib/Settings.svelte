@@ -69,6 +69,61 @@
   // command answers, and on a single-screen machine the picker is not shown.
   let monitors = $state([]);
 
+  // Desktop integration, for the Linux AppImage only. `null` means this build
+  // has no launcher to manage — a Windows installer and a Nix package each own
+  // their own menu entry — so the whole section stays hidden.
+  let desktop = $state(null);
+  let desktopBusy = $state(false);
+  let desktopMessage = $state('');
+
+  async function refreshDesktop() {
+    try {
+      desktop = await invoke('desktop_integration_status');
+    } catch {
+      // An older shell has no such command; that is "nothing to manage".
+      desktop = null;
+    }
+  }
+
+  async function addDesktopEntry() {
+    desktopBusy = true;
+    desktopMessage = '';
+    try {
+      const report = await invoke('desktop_integration_add');
+      desktopMessage = {
+        created: 'Added to your applications menu.',
+        repaired: 'Launcher repaired — it points at this AppImage again.',
+        already_current: 'Already in your applications menu.',
+        // The service never overwrites a launcher it did not write intact.
+        refused: `A launcher you've edited is already at ${desktop?.desktop_file} — left untouched.`,
+      }[report.action] ?? '';
+    } catch (error) {
+      desktopMessage = `Could not add the launcher: ${error}`;
+    } finally {
+      desktopBusy = false;
+      await refreshDesktop();
+    }
+  }
+
+  async function removeDesktopEntry() {
+    desktopBusy = true;
+    desktopMessage = '';
+    try {
+      const report = await invoke('desktop_integration_remove');
+      // Removal deletes only intact, app-owned files. Anything the user edited
+      // stays, and saying so is the whole point of reporting it.
+      const kept = report.preserved ?? [];
+      desktopMessage = kept.length
+        ? `Removed what was still ours. Left in place because you edited it: ${kept.join(', ')}. Delete it by hand if you no longer want it.`
+        : 'Removed from your applications menu.';
+    } catch (error) {
+      desktopMessage = `Could not remove the launcher: ${error}`;
+    } finally {
+      desktopBusy = false;
+      await refreshDesktop();
+    }
+  }
+
   /// The screen currently chosen, which may name a monitor that is not
   /// connected — an undocked laptop keeps its preference rather than losing it,
   /// so the picker has to be able to show an absent monitor as the selection.
@@ -112,6 +167,7 @@
     config.sort_basis ??= 'icon';
     config.check_updates ??= true;
     config.scroll_opacity_invert ??= false;
+    config.desktop_integration_prompted ??= false;
     // Normalize configured accounts only. Do not recreate removed defaults.
     for (const account of Object.values(config.providers)) {
       account.settings ??= {};
@@ -135,6 +191,7 @@
       if (kind === 'codex') codexFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
     }
     onWayland = await invoke('on_wayland');
+    await refreshDesktop();
   }
 
   function setUpdateStatus(status) {
@@ -213,6 +270,12 @@
     // everything else on screen is the user's unsaved editing.
     listen('config', (e) => {
       if (e.payload?.mini_anchor) config.mini_anchor = e.payload.mini_anchor;
+      // Rust-owned in the same way: answering the first-run integration
+      // question writes this flag, and this form would otherwise save its
+      // pre-answer snapshot back over it and make the prompt return.
+      if (e.payload?.desktop_integration_prompted != null) {
+        config.desktop_integration_prompted = e.payload.desktop_integration_prompted;
+      }
     }).then((stop) => (unlistenAnchor = stop));
     listen('codex-oauth', (e) => {
       const flow = codexFor(e.payload.provider);
@@ -908,6 +971,53 @@
         </p>
       {/if}
     </section>
+
+    <!-- AppImage only: a downloaded file nothing in the system knows about.
+         Every other build already has a menu entry from its installer or
+         package, so `desktop` is null there and the section never appears. -->
+    {#if desktop}
+      <section class="desktop-integration">
+        <h2>Applications menu</h2>
+        {#if desktop.state === 'user_owned'}
+          <!-- Somebody else's launcher, or one of ours that has been edited.
+               Both are the user's file: offer nothing that would overwrite it. -->
+          <p class="note">
+            A launcher at <code>{desktop.desktop_file}</code> isn't one this app
+            wrote — or you've edited it since. It's left exactly as it is. Delete
+            it yourself if you want this app to manage the entry instead.
+          </p>
+        {:else}
+          <div class="row">
+            {#if desktop.state !== 'current'}
+              <button class="small" onclick={addDesktopEntry} disabled={desktopBusy}>
+                {desktop.state === 'stale' ? 'Repair launcher' : 'Add to applications menu'}
+              </button>
+            {/if}
+            {#if desktop.state !== 'absent'}
+              <button class="small" onclick={removeDesktopEntry} disabled={desktopBusy}>Remove from applications menu</button>
+            {/if}
+          </div>
+          {#if desktop.state === 'stale'}
+            <!-- The AppImage moved. Retargeting is never silent: the launcher
+                 may have been pointed somewhere deliberately. -->
+            <p class="note">
+              Your launcher still points at <code>{desktop.target}</code>, which
+              isn't where this AppImage is running from. Repair it to point at
+              <code>{desktop.appimage}</code>.
+            </p>
+          {:else}
+            <p class="note">
+              Writes a launcher and icons under your own home directory only —
+              nothing system-wide. It points at this AppImage where it is now
+              (<code>{desktop.appimage}</code>), so move the file and you'll be
+              offered a repair. Removing only deletes files this app wrote and
+              you haven't changed.
+            </p>
+          {/if}
+        {/if}
+        {#if desktopMessage}<p class="note desktop-message">{desktopMessage}</p>{/if}
+      </section>
+    {/if}
 
   </div>
 

@@ -1,4 +1,5 @@
 mod codex_oauth;
+mod desktop;
 mod oauth;
 mod poller;
 mod secrets;
@@ -504,6 +505,10 @@ pub fn run() {
             list_monitors,
             updates::update_status,
             updates::check_update_now,
+            desktop::desktop_integration_status,
+            desktop::desktop_integration_add,
+            desktop::desktop_integration_remove,
+            desktop::mark_desktop_integration_prompted,
             updates::restart_app,
             quit,
         ])

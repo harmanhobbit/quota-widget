@@ -37,6 +37,7 @@ const CONFIG = {
   scroll_opacity_invert: false,
   sort_order: 'manual',
   sort_basis: 'icon',
+  desktop_integration_prompted: false,
   thresholds: { warn_pct: 80, critical_pct: 95 },
   alerts: { toast: true, tray_color: true, auto_popup: false },
   providers: {
@@ -190,6 +191,94 @@ const CASES = [
       wheel(100);
       flushSync();
       if (opacity() !== '0.92') throw new Error(`inverted scroll down did not fade: ${opacity()}`);
+    },
+  },
+  // First-run desktop integration (AppImage only). A non-AppImage build gets
+  // null from the status command and must never see the question.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: ({ target }) => {
+      if (target.querySelector('.integration-prompt')) {
+        throw new Error('a build with no launcher to manage still asked about one');
+      }
+    },
+  },
+  // An AppImage with no launcher yet asks before writing anything, and taking
+  // the offer reaches the add command — consent first, files after.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    desktop: { state: 'absent', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    // Asserted here rather than through `expect`, which runs after verify has
+    // deliberately dismissed the prompt.
+    verify: async ({ target, flushSync }) => {
+      const button = (text) => [...target.querySelectorAll('.integration-prompt button')]
+        .find((b) => b.textContent.trim() === text);
+      const prompt = target.querySelector('.integration-prompt');
+      if (!/applications menu/.test(prompt?.textContent ?? '')) {
+        throw new Error(`the prompt did not say what it would do: ${prompt?.textContent}`);
+      }
+      if (!button('Not now') || !button('Add it')) {
+        throw new Error('the prompt did not offer both answers');
+      }
+      if (globalThis.__SMOKE_DESKTOP_CALLS__.length) {
+        throw new Error('the prompt wrote something before it was answered');
+      }
+      button('Add it').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!globalThis.__SMOKE_DESKTOP_CALLS__.includes('add')) {
+        throw new Error('accepting did not reach desktop_integration_add');
+      }
+      // The deferral is recorded either way, or the next launch asks again.
+      if (!globalThis.__SMOKE_DESKTOP_CALLS__.includes('prompted')) {
+        throw new Error('answering did not record that the question was put');
+      }
+      if (target.querySelector('.integration-prompt')) throw new Error('the prompt stayed up after being answered');
+    },
+  },
+  // Declining writes nothing but is still remembered, so it cannot nag.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    desktop: { state: 'absent', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    verify: async ({ target, flushSync }) => {
+      [...target.querySelectorAll('.integration-prompt button')]
+        .find((b) => b.textContent.trim() === 'Not now').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (globalThis.__SMOKE_DESKTOP_CALLS__.includes('add')) {
+        throw new Error('declining still added the launcher');
+      }
+      if (!globalThis.__SMOKE_DESKTOP_CALLS__.includes('prompted')) {
+        throw new Error('a deferral was not remembered');
+      }
+      if (target.querySelector('.integration-prompt')) throw new Error('declining left the prompt up');
+    },
+  },
+  // Already asked once: never again, whatever the launcher state is now.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, desktop_integration_prompted: true },
+    desktop: { state: 'absent', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    verify: ({ target }) => {
+      if (target.querySelector('.integration-prompt')) {
+        throw new Error('a remembered deferral did not suppress the prompt');
+      }
+    },
+  },
+  // A moved AppImage is a Settings decision, not an opening question: repair
+  // changes an existing user file, so it is never proposed unprompted.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    desktop: { state: 'stale', target: '/home/u/old/q.AppImage', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    verify: ({ target }) => {
+      if (target.querySelector('.integration-prompt')) {
+        throw new Error('a moved AppImage was offered a first-run prompt rather than a Settings repair');
+      }
     },
   },
   // Claude shows both selected headlines as separate rows; Codex's only
@@ -846,6 +935,115 @@ const CASES = [
       if (install) throw new Error('offered Install to a portable executable');
     },
   },
+  // Desktop integration in Settings. Absent from every build that has no
+  // launcher to manage — the Windows installer and the Nix package own theirs.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    verify: ({ target }) => {
+      if (target.querySelector('.desktop-integration')) {
+        throw new Error('offered launcher controls to a build with no launcher to manage');
+      }
+    },
+  },
+  // An AppImage with no launcher offers to add one, and only that.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    desktop: { state: 'absent', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    expect: ['Applications menu', 'Add to applications menu'],
+    verify: async ({ target, flushSync }) => {
+      const button = (text) => [...target.querySelectorAll('.desktop-integration button')]
+        .find((b) => b.textContent.trim() === text);
+      if (button('Remove from applications menu')) {
+        throw new Error('offered to remove a launcher that does not exist');
+      }
+      button('Add to applications menu').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!globalThis.__SMOKE_DESKTOP_CALLS__.includes('add')) {
+        throw new Error('Add did not reach desktop_integration_add');
+      }
+    },
+  },
+  // An installed launcher offers removal, and removal that keeps a file the
+  // user edited has to say so rather than claiming a clean removal.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    desktop: { state: 'current', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    desktopRemove: { removed: ['/home/u/.local/share/applications/quota-widget.desktop'], preserved: ['/home/u/.local/share/icons/hicolor/32x32/apps/quota-widget.png'] },
+    expect: ['Remove from applications menu'],
+    verify: async ({ target, flushSync }) => {
+      const button = (text) => [...target.querySelectorAll('.desktop-integration button')]
+        .find((b) => b.textContent.trim() === text);
+      if (button('Add to applications menu')) throw new Error('offered to add a launcher that is already current');
+      button('Remove from applications menu').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!globalThis.__SMOKE_DESKTOP_CALLS__.includes('remove')) {
+        throw new Error('Remove did not reach desktop_integration_remove');
+      }
+      const message = target.querySelector('.desktop-message')?.textContent ?? '';
+      if (!message.includes('quota-widget.png') || !/by hand/.test(message)) {
+        throw new Error(`removal did not explain the manual cleanup: ${message}`);
+      }
+    },
+  },
+  // A moved AppImage offers repair, names both paths, and does not retarget
+  // until the button is pressed.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    desktop: { state: 'stale', target: '/home/u/old/q.AppImage', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    desktopAdd: { action: 'repaired', written: [], preserved: [] },
+    expect: ['Repair launcher', '/home/u/old/q.AppImage', '/home/u/Downloads/q.AppImage'],
+    verify: async ({ target, flushSync }) => {
+      const button = (text) => [...target.querySelectorAll('.desktop-integration button')]
+        .find((b) => b.textContent.trim() === text);
+      if (globalThis.__SMOKE_DESKTOP_CALLS__.length) {
+        throw new Error('a moved AppImage was retargeted just by opening Settings');
+      }
+      button('Repair launcher').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!globalThis.__SMOKE_DESKTOP_CALLS__.includes('add')) throw new Error('Repair did not reach the add command');
+      if (!/repaired/i.test(target.querySelector('.desktop-message')?.textContent ?? '')) {
+        throw new Error('repair did not report what it did');
+      }
+    },
+  },
+  // The deferral is Rust's to own. Settings edits a snapshot taken at mount,
+  // so a config that predates the field must save a real boolean rather than
+  // undefined — otherwise saving Settings would make the prompt return.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => {
+      const old = structuredClone(CONFIG);
+      delete old.desktop_integration_prompted;
+      return { initialConfig: $.proxy(old), snapshots: structuredClone(SNAPSHOTS), onclose() {} };
+    },
+    verify: async ({ target }) => {
+      target.querySelector('.primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (globalThis.__SMOKE_LAST_CONFIG__?.desktop_integration_prompted !== false) {
+        throw new Error(`saved deferral flag was ${globalThis.__SMOKE_LAST_CONFIG__?.desktop_integration_prompted}`);
+      }
+    },
+  },
+  // A launcher the user owns is never offered an action that would overwrite
+  // or delete it — only an explanation of where it is.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    desktop: { state: 'user_owned', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    expect: ['Applications menu', '/home/u/.local/share/applications/quota-widget.desktop'],
+    verify: ({ target }) => {
+      if (target.querySelectorAll('.desktop-integration button').length) {
+        throw new Error('offered an action over a launcher the user owns');
+      }
+    },
+  },
   {
     file: 'src/lib/ProviderCard.svelte',
     props: () => ({ snap: structuredClone(SNAPSHOTS[0]) }),
@@ -898,6 +1096,18 @@ export async function invoke(cmd, args) {
     case 'exit_settings': (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push(\`exit_settings:\${args.to}\`); return null;
     case 'hide_window': (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push('hide_window'); return null;
     case 'update_status': case 'check_update_now': return globalThis.__SMOKE_UPDATE__ ?? null;
+    // Desktop integration. A non-AppImage build answers null, which is what
+    // keeps the section and the first-run prompt out of every other build.
+    case 'desktop_integration_status': return globalThis.__SMOKE_DESKTOP__ ?? null;
+    case 'desktop_integration_add':
+      if (globalThis.__SMOKE_DESKTOP_ERROR__) throw new Error(globalThis.__SMOKE_DESKTOP_ERROR__);
+      globalThis.__SMOKE_DESKTOP_CALLS__.push('add');
+      return globalThis.__SMOKE_DESKTOP_ADD__ ?? { action: 'created', written: [], preserved: [] };
+    case 'desktop_integration_remove':
+      globalThis.__SMOKE_DESKTOP_CALLS__.push('remove');
+      return globalThis.__SMOKE_DESKTOP_REMOVE__ ?? { removed: [], preserved: [] };
+    case 'mark_desktop_integration_prompted':
+      globalThis.__SMOKE_DESKTOP_CALLS__.push('prompted'); return null;
     case 'restart_app': globalThis.__SMOKE_RESTARTED__ = true; return null;
     default: return null;
   }
@@ -1025,6 +1235,11 @@ for (const c of CASES) {
     globalThis.__SMOKE_UPDATE__ = c.update ?? null;
     globalThis.__SMOKE_SAVE_ERROR__ = c.saveError ?? '';
     globalThis.__SMOKE_INSTALLED__ = false;
+    globalThis.__SMOKE_DESKTOP__ = c.desktop ?? null;
+    globalThis.__SMOKE_DESKTOP_ADD__ = c.desktopAdd ?? null;
+    globalThis.__SMOKE_DESKTOP_REMOVE__ = c.desktopRemove ?? null;
+    globalThis.__SMOKE_DESKTOP_ERROR__ = c.desktopError ?? '';
+    globalThis.__SMOKE_DESKTOP_CALLS__ = [];
     globalThis.__SMOKE_RESTARTED__ = false;
     globalThis.__SMOKE_INSTALLING_TEXT__ = '';
     globalThis.__SMOKE_SHELL_CALLS__ = [];
@@ -1058,6 +1273,7 @@ for (const c of CASES) {
   globalThis.__SMOKE_CONFIG__ = undefined;
   globalThis.__SMOKE_UPDATE__ = null;
   globalThis.__SMOKE_SAVE_ERROR__ = '';
+  globalThis.__SMOKE_DESKTOP__ = null;
   target.remove();
 }
 
