@@ -84,10 +84,23 @@ Platform differences are small but real:
   such number — a credits-only balance, one pinned to "None", or one whose
   fetch just failed — sink to the bottom in your own order rather than being
   ranked on a number they don't have.
+- **Launching starts in the tray**, whether you run it yourself or it starts
+  with your session — no window appears until you ask for one, from the tray
+  icon or by running the app a second time (which opens and focuses the full
+  window). If a tray icon cannot be created at all, the full window opens
+  instead, so the app is never running with no way to reach it.
 - A background poller (default every 60 s) refreshes all enabled providers and
   fires alerts when usage *crosses* a threshold (edge-triggered — you get one
   toast at 80%, not one per poll). Toast, tray color, and auto-popup are each
   independently toggleable, globally and per provider.
+- The **first successful poll of each account is a baseline**, not a crossing.
+  Being already over a threshold when the widget starts is a state, not
+  something that just happened, so it colours the tray icon and appears in the
+  tooltip without opening a window — auto-popup included. A baseline *critical*
+  state still sends a toast (if toasts are on); a baseline warning stays
+  tray-only. Everything after that baseline behaves exactly as before, and an
+  account whose first fetch fails takes its baseline from the first one that
+  works.
 - Where a provider reports exact allowance figures or you set a monthly budget,
   the main window shows remaining and total below the percentage meter. The
   compact summary and tray keep their percentage-only form for quick scanning.
