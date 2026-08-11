@@ -208,8 +208,15 @@ jobs:
 
       # Schema is fixed in docs/plan-updates-and-providers.md, "The latest.json
       # contract". It is tauri-plugin-updater's own format because that plugin
-      # consumes this exact file in the next minor. `version` is bare SemVer:
-      # the tag keeps its v, the manifest does not.
+      # consumes this exact file. `version` is bare SemVer: the tag keeps its
+      # v, the manifest does not.
+      #
+      # The Linux key is artifact-qualified — `linux-x86_64-appimage`, which is
+      # the `{os}-{arch}-{installer}` form the plugin looks for first. Linux has
+      # several mutually exclusive package formats, so a bare `linux-x86_64`
+      # would mean a future .deb entry either collides with the AppImage's or
+      # silently replaces it, and an AppImage build could be handed a .deb it
+      # cannot install. Windows publishes one installer, so its bare key stays.
       - name: Generate latest.json
         id: assets
         shell: bash
@@ -242,7 +249,7 @@ jobs:
             '{version: $version, notes: $notes, pub_date: $pub_date,
               platforms: {
                 "windows-x86_64": {signature: $windows_signature, url: $windows_url},
-                "linux-x86_64": {signature: $linux_signature, url: $linux_url}
+                "linux-x86_64-appimage": {signature: $linux_signature, url: $linux_url}
               }}' \
             > latest.json
           cat latest.json

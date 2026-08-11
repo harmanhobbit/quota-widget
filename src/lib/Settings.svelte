@@ -30,6 +30,10 @@
   let updateInfo = $state(null);
   let checkingForUpdate = $state(false);
   let installState = $state('');
+  // Set only where a finished install leaves the old version running — Linux,
+  // where an AppImage is replaced in place. Windows never reaches it: those
+  // installers exit and relaunch the app themselves.
+  let installedAwaitingRestart = $state(false);
   let secretInputs = $state({});
   let secretStored = $state({});
   let testResults = $state({});
@@ -201,6 +205,7 @@
     // permission, so a top-level import would pull install code into a context
     // that must never be able to run it.
     installState = 'Downloading…';
+    installedAwaitingRestart = false;
     try {
       const { check } = await import('@tauri-apps/plugin-updater');
       const update = await check();
@@ -208,13 +213,39 @@
         installState = 'No update found.';
         return;
       }
-      // The app exits partway through the Windows install, so this message is
-      // the last thing the user sees from us — say so before it happens.
-      installState = 'Installing — the app will close and reopen…';
+      // Two different endings, so say which one is coming before it happens.
+      // The Windows installers exit the app and relaunch it themselves, and
+      // this message is the last thing the user sees from us. Replacing an
+      // AppImage instead rewrites the file underneath a process that keeps
+      // running the old code, so the install simply finishes and returns.
+      installState = updateInfo?.restart_after_install
+        ? 'Installing…'
+        : 'Installing — the app will close and reopen…';
       await update.downloadAndInstall();
+      if (updateInfo?.restart_after_install) {
+        // Reached only where the app is still running the old version. Never
+        // claim it relaunched itself — offer the restart instead.
+        installState = `Version ${updateInfo.latest} installed. Restart to use it.`;
+        installedAwaitingRestart = true;
+      }
     } catch (e) {
       installState = `Update failed: ${e}`;
     }
+  }
+
+  async function restartNow() {
+    try {
+      await invoke('restart_app');
+    } catch (e) {
+      installState = `Restart failed: ${e} — close and reopen the app instead.`;
+    }
+  }
+
+  function restartLater() {
+    // The new version is on disk either way; dismissing only clears the
+    // prompt, so the pane stops nagging about a decision already made.
+    installedAwaitingRestart = false;
+    installState = `Version ${updateInfo?.latest} is installed and starts next time you open the app.`;
   }
 
   async function checkUpdateNow() {
@@ -907,18 +938,27 @@
           <span class="note">Update available: v{updateInfo.latest}</span>
         {/if}
       </div>
-      {#if updateInfo?.url && updateInfo.installable}
+      {#if updateInfo?.installable}
         <!-- A release download does not prove this executable can install it:
-             a portable EXE has the download too, but cannot replace itself. -->
+             a portable EXE has the download too, but cannot replace itself.
+             Rust decides, from the bundle type it is actually running as. -->
         <div class="row">
           <button class="small" onclick={installUpdate} disabled={!!installState}>Install update</button>
           {#if installState}<span class="note">{installState}</span>{/if}
         </div>
-      {/if}
-      {#if updateInfo && (!updateInfo.url || !updateInfo.installable)}
-        <!-- A release exists but this build cannot install it: either no
-             download was published for its platform, or it is a portable EXE.
-             Say how to upgrade rather than dangling a failed install action. -->
+        {#if installedAwaitingRestart}
+          <!-- Linux only. The new AppImage is on disk but this process is still
+               the old one, so the restart is the user's call — never implied. -->
+          <div class="row">
+            <button class="small" onclick={restartNow}>Restart now</button>
+            <button class="small" onclick={restartLater}>Later</button>
+          </div>
+        {/if}
+      {:else if updateInfo}
+        <!-- A release exists but this build cannot install it: no download was
+             published for its artifact, or nothing replaceable is running — a
+             portable EXE, or a package-managed install such as Nix. Say how to
+             upgrade rather than dangling a failed install action. -->
         <p class="note">Upgrade the way you installed it — on Nix, <code>nix profile upgrade quota-widget</code>.</p>
       {/if}
       <p class="note">Esc, ✕, and the tray icon always hide the widget. This extra click-away dismiss can occasionally fight window dragging.</p>

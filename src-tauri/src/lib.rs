@@ -509,6 +509,7 @@ pub fn run() {
             desktop::desktop_integration_add,
             desktop::desktop_integration_remove,
             desktop::mark_desktop_integration_prompted,
+            updates::restart_app,
             quit,
         ])
         .setup(move |app| {
