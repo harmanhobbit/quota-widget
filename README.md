@@ -20,6 +20,7 @@ Platform differences are small but real:
 | Tray hover | Native detailed tooltip | Plasma-drawn native SNI tooltip |
 | Secret storage | Credential Manager (DPAPI) | `0600` plaintext file in the config dir |
 | Autostart | `HKCU` run entry | XDG autostart entry |
+| In-app update | Installed bundle only; installer relaunches the app | AppImage only; offers Restart now / Later |
 
 ## How it works
 
@@ -298,13 +299,34 @@ keeps working regardless, since pressing it is itself the consent. Builds from a
 feature branch never check at all — they carry a dev badge and would otherwise
 nag about a "newer" release they are actually ahead of.
 
-On Windows, Settings offers **Install update** only when the running app was
-installed by an updatable bundle. It downloads the new installer through
-`tauri-plugin-updater`, verifies its minisign signature against the `pubkey` in
-`tauri.conf.json`, and runs it in `passive` mode. The app exits partway through,
-so the UI says so before starting. A portable EXE cannot update itself in place:
-it shows the normal upgrade guidance instead, and CI publishes both artifacts
-regardless.
+Settings offers **Install update** only when the running app is an *installable
+artifact* — a bundle `tauri-plugin-updater` can replace. That is a separate
+fact from whether the release published a download: a portable EXE finds the
+Windows installer in the manifest and still cannot replace itself. Either way
+the download is verified against the minisign `pubkey` in `tauri.conf.json`
+before anything is run or written.
+
+Manifest keys reflect this. Windows publishes one installer, so its entry is
+the bare `windows-x86_64`; Linux has several mutually exclusive package
+formats, so the AppImage is published under the artifact-qualified
+`linux-x86_64-appimage`. A future `.deb` or Flatpak gets its own key rather
+than colliding with the AppImage's, and each build only ever selects the entry
+matching the format it is actually running as.
+
+The two platforms then finish differently, and the UI says which:
+
+- **Windows** downloads the new NSIS installer and runs it in `passive` mode.
+  The app exits partway through and the installer brings it back, so the UI
+  warns that it is about to close and reopen.
+- **Linux** replaces the running AppImage in place. The old process keeps
+  running the old code — nothing relaunches on its own — so Settings offers
+  **Restart now** and **Later** once the install finishes, and never claims an
+  automatic relaunch. *Later* is not a deferral of the install: the new version
+  is already on disk and starts at the next launch.
+
+Everything else — a portable EXE, a Nix or other package-managed install, or a
+platform the release published nothing for — gets the "upgrade the way you
+installed it" guidance rather than an action that would fail.
 
 `updater:default` is granted in `capabilities/default.json` only. It is
 deliberately **not** in `mini.json`: the tray-click summary has no business

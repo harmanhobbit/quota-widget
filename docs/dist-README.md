@@ -104,11 +104,22 @@ and shows an unobtrusive "Update available" line in Settings with a **Check
 now** button. Uncheck **Check for updates** in Settings to turn the automatic
 checks off; **Check now** keeps working either way.
 
-On Windows an **Install update** button appears only for an installed bundle:
-the app downloads the new installer, verifies its signature, and runs it. The
-app closes and reopens partway through, which is expected. A portable EXE cannot
-replace itself, so it instead shows the normal upgrade guidance; update it by
-downloading the new one.
+An **Install update** button appears when the app is running as something it
+can replace. The download's signature is always verified before anything is
+run or written.
+
+- **Windows, installed via the installer**: the app downloads the new
+  installer and runs it. The app closes and reopens partway through, which is
+  expected.
+- **Linux, running the AppImage**: the app downloads the new AppImage and
+  replaces the one you launched. Nothing restarts on its own, so it then offers
+  **Restart now** and **Later**. Choosing Later does not undo anything — the
+  new version is already in place and starts the next time you open the app.
+
+A portable EXE cannot replace itself while running, so it shows the normal
+upgrade guidance instead; update it by downloading the new one. The same is
+true of a package-managed install such as Nix — upgrade it with your package
+manager (`nix profile upgrade quota-widget`).
 
 Where a release publishes nothing for your platform, the app still tells you a
 newer version exists but offers no install button, since it has nothing it could
