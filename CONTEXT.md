@@ -45,8 +45,15 @@ The corner of a monitor's work area that a window is pinned to, and the
 monitor it is pinned on. It is a corner rather than a position because the
 summary resizes to its content: an edge to grow from is what stops the window
 jumping when an account appears. Work area rather than monitor bounds, because
-the latter puts the window underneath a panel.
+the latter puts the window underneath a panel. Pinning an unanchored summary
+selects its nearest anchor for later resizing without first moving the summary.
 _Avoid_: Position, placement, location
+
+**Pinning**:
+The transition that makes the mini summary follow an anchor. Every transition
+from unpinned to pinned adopts the mini summary's current visible placement, so
+pinning is not itself a visible move.
+_Avoid_: Reposition, reset placement
 
 **Preferred monitor**:
 The screen the user chose for a window, stored by monitor name. It is a
@@ -91,3 +98,37 @@ _Avoid_: Checksum, release key
 A per-user launcher and icon registration that makes a standalone AppImage
 discoverable from the desktop environment's application menu.
 _Avoid_: System installation, AppImage daemon
+
+**Mini-summary fade level**:
+The mini summary's current visual opacity for this running app process. It
+survives hiding and reopening the summary, but begins fully opaque on a fresh start.
+_Avoid_: Saved opacity, fade preference
+
+**Settings return state**:
+The visible UI state to restore when Settings exits: the usage popup, the mini
+summary, or neither window. It is captured when Settings opens and lasts only
+for that visit; it is not a user preference or saved configuration.
+_Avoid_: Previous page, navigation history, saved window state
+
+**Tray-first launch**:
+Starting the application without presenting its main window; the tray icon is
+the initial point of access. A transient taskbar icon while the process starts
+is not presentation of the main window.
+_Avoid_: Background launch, hidden launch
+
+**Explicit activation**:
+A deliberate request to interact with an already-running application, such as
+launching it a second time. It may present the main window despite a tray-first
+launch policy.
+_Avoid_: Startup, automatic activation
+
+**Alert baseline**:
+The first quota state observed in one running application process. It records
+current alert levels without treating them as new threshold crossings.
+_Avoid_: Startup alert, initial transition
+
+**Startup alert policy**:
+The presentation allowed for alert levels already present at the alert
+baseline: warnings remain tray-only, while critical states may notify but do
+not present the main window.
+_Avoid_: Initial notification setting, launch warning
