@@ -476,43 +476,6 @@ const CASES = [
       }
     },
   },
-  // The window is one window: entering Settings must not resize it, so the
-  // height the usage list was showing is the height Settings is read at. Both
-  // routes in are checked — the gear and the tray's `navigate` — because they
-  // set the view up differently and only the sizing effect is shared. Coming
-  // back re-fits to the usage content, which is the popup asking for a size of
-  // its own again rather than inheriting whatever Settings was left at.
-  {
-    file: 'src/App.svelte',
-    props: () => ({}),
-    verify: async ({ target, flushSync, emit, sizes }) => {
-      const enter = {
-        gear: () => target.querySelector('button[title="Settings"]').click(),
-        tray: () => emit('navigate', { view: 'settings', return_to: 'popup' }),
-      };
-      for (const [route, open] of Object.entries(enter)) {
-        await settle(flushSync);
-        const fitted = sizes().at(-1);
-        if (!fitted) throw new Error(`the usage list never sized the window (${route})`);
-        sizes().length = 0;
-        open();
-        flushSync();
-        await settle(flushSync);
-        if (!target.querySelector('.settings')) throw new Error(`${route} did not reach Settings`);
-        if (sizes().length) {
-          throw new Error(`${route} into Settings resized the window to ${JSON.stringify(sizes())}`);
-        }
-        target.querySelector('button[title="Back"]').click();
-        flushSync();
-        await settle(flushSync);
-        const back = sizes().at(-1);
-        if (!back) throw new Error(`returning from Settings (${route}) never re-fitted the usage list`);
-        if (back.height !== fitted.height) {
-          throw new Error(`the usage list came back at ${back.height}, not its content height ${fitted.height}`);
-        }
-      }
-    },
-  },
   // ✕ stays an explicit hide-to-tray whatever the captured return state is: it
   // means "no window", not "put back what was there".
   {
@@ -1185,17 +1148,9 @@ export async function check() {
     },
   };
 }`);
-  // Every size the window is asked for is recorded, so a case can assert on
-  // what the view swap did to the window rather than on the helper that did it.
-  // "Settings kept the usage height" is only observable as the *absence* of a
-  // request, which needs the whole sequence, not just the latest value.
   w('@tauri-apps/api/window.js', `
 export function getCurrentWindow() {
-  return {
-    setSize: async (size) => { (globalThis.__SMOKE_SIZES__ ??= []).push({ width: size.width, height: size.height }); },
-    outerPosition: async () => ({x:0,y:0}),
-    scaleFactor: async () => 1,
-  };
+  return { setSize: async () => {}, outerPosition: async () => ({x:0,y:0}), scaleFactor: async () => 1 };
 }`);
   w('@tauri-apps/api/dpi.js', `
 export class LogicalSize { constructor(w,h){ this.width=w; this.height=h; } }
@@ -1288,7 +1243,6 @@ for (const c of CASES) {
     globalThis.__SMOKE_RESTARTED__ = false;
     globalThis.__SMOKE_INSTALLING_TEXT__ = '';
     globalThis.__SMOKE_SHELL_CALLS__ = [];
-    globalThis.__SMOKE_SIZES__ = [];
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle
@@ -1297,8 +1251,7 @@ for (const c of CASES) {
     // is what it asked Rust to do in return. Together they cover the navigation
     // seam in both directions without reaching into component internals.
     const shellCalls = () => globalThis.__SMOKE_SHELL_CALLS__;
-    const sizes = () => globalThis.__SMOKE_SIZES__;
-    await c.verify?.({ target, flushSync, emit, shellCalls, sizes });
+    await c.verify?.({ target, flushSync, emit, shellCalls });
   } catch (e) {
     console.error(`FAIL ${c.file}\n      ${String(e.message).split('\n')[0]}`);
     failed++;

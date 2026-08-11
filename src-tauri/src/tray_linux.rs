@@ -84,7 +84,6 @@ fn handle() -> &'static Mutex<Option<ksni::Handle<QuotaTray>>> {
 }
 
 pub fn create_tray(app: AppHandle, _state: Arc<AppState>) {
-    let fallback = app.clone();
     tauri::async_runtime::spawn(async move {
         match (QuotaTray {
             app,
@@ -96,14 +95,7 @@ pub fn create_tray(app: AppHandle, _state: Arc<AppState>) {
         .await
         {
             Ok(h) => *handle().lock().unwrap() = Some(h),
-            Err(e) => {
-                // Launch is tray-first, which only works if there is a tray.
-                // A desktop with no StatusNotifierItem host would otherwise
-                // leave a running process with no way to reach it, so the main
-                // window becomes the point of access instead.
-                eprintln!("failed to start Linux tray: {e}; showing the main window instead");
-                tray::show_popup(&fallback, None);
-            }
+            Err(e) => eprintln!("failed to start Linux tray: {e}"),
         }
     });
 }

@@ -548,66 +548,25 @@ its own when the *wording* must differ, which it does not yet.
 
 Neither is a minor. Fold them into a patch if they are wanted at all.
 
-### Linux distribution — decided, not yet implemented
+### Linux distribution — open, unplanned
 
 Not in the original plan, and the largest remaining gap. The app is described
 as supporting Windows 11 and Linux, but **releases are Windows-only** and the
 Nix flake — the supported Linux route — lives in the private source repo, so a
 Linux user reading the public dist page is pointed at something they cannot
-reach. The READMEs say this plainly until the work below ships.
+reach. The READMEs now say this plainly rather than implying parity.
 
-**Decision (Ian, 2026-08-09):** publish one public `x86_64` AppImage while
-keeping the source repo private. This is one Linux-distribution minor, not a
-second feature beside it. The Nix flake remains the reproducible/developer
-route and may continue to expose more architectures, but only `x86_64` is a
-published-binary promise.
+Closing it means an AppImage or `.deb` job in `release.yml` (a 1x-metered Linux
+runner, unlike the 2x Windows one) plus a `linux-x86_64` entry in `latest.json`,
+at which point Linux detection becomes real and the `/nix/store/` refinement
+above becomes worth doing. A single "portable" Linux binary is not an option:
+the build links the host's GTK3 and WebKitGTK, which is precisely what the
+flake pins.
 
-The Linux build runs in a pinned Ubuntu 22.04 environment, establishing the
-AppImage compatibility floor as Ubuntu 22.04 or an equivalent-or-newer
-userspace. Do not use `ubuntu-latest`: advancing a CI label must not silently
-narrow the release's compatibility promise. Linux is a separate 1x-metered job
-from the 2x Windows build; a publishing step gathers both signed artifact sets
-only after they succeed.
-
-- `.github/workflows/release.yml` — build an AppImage on the pinned Linux
-  runner with the same `TAURI_SIGNING_PRIVATE_KEY`; find the AppImage and its
-  `.sig`, upload them alongside the Windows assets, and generate a
-  `linux-x86_64-appimage` entry in `latest.json`. This artifact-qualified key
-  is Tauri updater's native contract and leaves a future `.deb` a separate
-  entry; update `quota_core::update` and `src-tauri/src/updates.rs` to use it
-  for AppImage detection.
-- `src-tauri/src/updates.rs` — expose the updater's `bundle_type()` in
-  `update_status` as `installable`. The existing portable-EXE defect uses the
-  same flag: a release download is not enough when the running build cannot
-  replace itself. An AppImage is installable; a Nix build is not.
-- `src/lib/Settings.svelte` — offer **Install update** only for an installable
-  artifact. Keep the existing Nix/package-manager guidance otherwise. For an
-  AppImage, successful replacement offers **Restart now** and **Later**;
-  Linux does not exit and relaunch automatically as Windows does.
-- `src-tauri` and Settings — add self-managed, per-user desktop integration
-  for AppImages. On first AppImage launch, ask before writing a launcher and
-  icons under the user's XDG data directory; Settings keeps explicit add and
-  remove actions. The launcher points directly at the selected AppImage, so
-  in-place updates preserve its path without creating an app-owned duplicate.
-  If a manually launched AppImage moved, offer to repair the launcher rather
-  than silently retargeting it. Remove only unmodified files carrying the
-  app's ownership marker; preserve user-modified entries and explain manual
-  cleanup.
-- `docs/dist-README.md` and `README.md` — replace the Windows-only claims with
-  the Ubuntu-22.04-or-newer AppImage path, `chmod +x` launch instructions,
-  desktop-integration explanation, Nix distinction, update/restart behavior,
-  and concise manual minisign verification for the AppImage. The public
-  download page continues to be generated from `docs/dist-README.md`.
-
-**Verification.** Run the existing core tests, frontend build and smoke mount,
-then use the release workflow's dry run to inspect the signed AppImage,
-signature, and combined manifest. Before the first public Linux release,
-manually validate in a Kubuntu 22.04 VM: direct AppImage launch, tray,
-popup/mini placement under Plasma, opt-in desktop integration, and one
-end-to-end in-app update. Later Linux releases still require launch, tray, and
-popup validation there. NixOS with `appimage-run` is useful supplemental
-coverage, but not the compatibility-floor test: an ordinary AppImage does not
-run natively there.
+Alternatively, opening the source repo makes the flake reachable and closes
+most of this without a new artifact. Ian's stated position is that the source
+stays closed while the project is still being built, with opening it a
+long-term intention.
 
 ### One provider per minor
 
