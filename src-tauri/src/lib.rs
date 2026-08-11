@@ -513,10 +513,20 @@ pub fn run() {
             quit,
         ])
         .setup(move |app| {
+            // Launch is tray-first: both windows are configured `visible: false`
+            // and stay that way, so a manual or autostart launch lands in the
+            // tray with no window presented. The one exception is a tray that
+            // cannot be created — see below.
             #[cfg(target_os = "linux")]
             tray_linux::create_tray(app.handle().clone(), state.clone());
             #[cfg(not(target_os = "linux"))]
-            tray::create_tray(app.handle())?;
+            // Not `?`: failing setup would take the whole app down. A widget
+            // with no tray icon is unreachable, so the main window becomes the
+            // point of access rather than the process becoming invisible.
+            if let Err(e) = tray::create_tray(app.handle()) {
+                eprintln!("failed to create tray: {e}; showing the main window instead");
+                tray::show_popup(app.handle(), None);
+            }
             poller::spawn(app.handle().clone(), state.clone());
             updates::spawn(app.handle().clone(), state.clone());
             Ok(())
