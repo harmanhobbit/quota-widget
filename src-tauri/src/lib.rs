@@ -327,6 +327,20 @@ fn hide_window(window: tauri::Window) {
     tray::hide_popup(window.app_handle());
 }
 
+/// Leave Settings for the return state captured when it opened.
+///
+/// The frontend owns the popup case entirely (it just swaps its own view) and
+/// calls this for the two outcomes that need the window lifecycle: restoring
+/// the mini summary, or leaving nothing visible. Guarded on the label because
+/// only the full window hosts Settings.
+#[tauri::command]
+fn exit_settings(window: tauri::Window, to: quota_core::settings_return::SettingsReturn) {
+    if window.label() != "main" {
+        return;
+    }
+    tray::exit_settings(window.app_handle(), to);
+}
+
 #[tauri::command]
 fn set_mini_pinned(
     state: tauri::State<'_, Arc<AppState>>,
@@ -483,6 +497,7 @@ pub fn run() {
             codex_oauth_start,
             on_wayland,
             hide_window,
+            exit_settings,
             set_mini_pinned,
             set_mini_height,
             note_drag,

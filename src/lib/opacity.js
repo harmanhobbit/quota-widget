@@ -1,6 +1,9 @@
 // Each webview has its own module instance, so this level is intentionally
-// local to one window. The preference is persisted in Config; the temporary
-// fade level is reset whenever the window is shown again.
+// local to one window, and lives only as long as the process — the *preference*
+// is persisted in Config, the level never is. What resets it differs per
+// window: the full popup clears it on every show, while the mini summary keeps
+// it across hide/show for the life of the app and only starts at 1 when its
+// webview is created. Turning the preference off resets both.
 const STEP = 0.08;
 let level = 1;
 
