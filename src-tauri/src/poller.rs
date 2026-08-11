@@ -3,7 +3,7 @@
 
 use crate::{tray, AppState};
 use futures_util::future::join_all;
-use quota_core::alerts::AlertLevel;
+use quota_core::alerts::{self, AlertLevel};
 use quota_core::model::{Status, UsageSnapshot};
 use quota_core::providers::providers_for;
 use std::sync::Arc;
@@ -103,16 +103,20 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
     #[cfg(not(target_os = "linux"))]
     tray::set_status(app, worst, worst_pct / 100.0, &tooltip);
 
-    // Alerts (edge-triggered in the engine; dispatch per toggles).
+    // Alerts (edge-triggered in the engine; dispatch per the presentation
+    // policy, which folds the per-account toggles together with the tray-first
+    // launch rule — a state the first poll merely *found* must never throw the
+    // main window at a user who has not asked for it).
     let mut engine = state.alert_engine.lock().await;
     for s in &fresh {
         let toggles = cfg.effective_alerts(&s.provider_id);
         for event in engine.evaluate(s, &cfg) {
+            let how = alerts::presentation(&event, &toggles);
             let title = match event.level {
                 AlertLevel::Critical => format!("{} — critical", event.provider_name),
                 _ => format!("{} — warning", event.provider_name),
             };
-            if toggles.toast {
+            if how.notify {
                 let _ = app
                     .notification()
                     .builder()
@@ -120,7 +124,7 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
                     .body(&event.message)
                     .show();
             }
-            if toggles.auto_popup {
+            if how.open_window {
                 tray::show_popup(app, None);
             }
         }

@@ -221,7 +221,12 @@
 
   // Belt and braces with the attribute above: this only ever runs for a real
   // drag, so a pinned summary never arms the anchor-on-drop machinery.
-  function startDrag() {
+  function startDrag(event) {
+    // The header's controls are not drag handles, and a press on one is not a
+    // drag: the press bubbles here, and arming the drag flow from the pin
+    // button would let the anchoring move that follows the pin be mistaken for
+    // a drop and snap the summary somewhere the user never dragged it (#72).
+    if (event.target.closest('button')) return;
     if (!pinned) invoke('note_mini_drag');
   }
 </script>

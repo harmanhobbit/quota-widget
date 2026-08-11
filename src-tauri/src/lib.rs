@@ -341,6 +341,15 @@ fn exit_settings(window: tauri::Window, to: quota_core::settings_return::Setting
     tray::exit_settings(window.app_handle(), to);
 }
 
+/// Pin or unpin the mini summary.
+///
+/// Pinning is purely behavioural — always-on-top and exemption from click-away
+/// dismissal — and deliberately does **not** move the window. Moving it to the
+/// stored anchor was issue #72: on a freshly launched widget the summary you can
+/// see and the corner the config names are different places, so pressing pin
+/// made the summary jump out from under the pointer. Instead the summary's
+/// current spot is adopted *as* the anchor, which only affects where later
+/// content-driven resizes grow from.
 #[tauri::command]
 fn set_mini_pinned(
     state: tauri::State<'_, Arc<AppState>>,
@@ -355,8 +364,7 @@ fn set_mini_pinned(
         .store(pinned, std::sync::atomic::Ordering::Relaxed);
     let _ = window.set_always_on_top(pinned);
     if pinned {
-        let anchor = state.mini_anchor.lock().unwrap().clone();
-        tray::anchor_to(&window, &anchor);
+        tray::adopt_position_as_anchor(window.app_handle());
     }
 }
 
@@ -513,10 +521,20 @@ pub fn run() {
             quit,
         ])
         .setup(move |app| {
+            // Launch is tray-first: both windows are configured `visible: false`
+            // and stay that way, so a manual or autostart launch lands in the
+            // tray with no window presented. The one exception is a tray that
+            // cannot be created — see below.
             #[cfg(target_os = "linux")]
             tray_linux::create_tray(app.handle().clone(), state.clone());
             #[cfg(not(target_os = "linux"))]
-            tray::create_tray(app.handle())?;
+            // Not `?`: failing setup would take the whole app down. A widget
+            // with no tray icon is unreachable, so the main window becomes the
+            // point of access rather than the process becoming invisible.
+            if let Err(e) = tray::create_tray(app.handle()) {
+                eprintln!("failed to create tray: {e}; showing the main window instead");
+                tray::show_popup(app.handle(), None);
+            }
             poller::spawn(app.handle().clone(), state.clone());
             updates::spawn(app.handle().clone(), state.clone());
             Ok(())
