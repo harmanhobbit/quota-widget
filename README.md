@@ -32,8 +32,11 @@ Platform differences are small but real:
   popup.
 - **Left-click** the tray icon to toggle a compact mini summary near the tray.
   It hides when it loses focus unless you pin it with its circle button; the
-  pin lasts only for the current app session. A Settings checkbox controls
-  whether the mini summary includes usage bars.
+  pin lasts only for the current app session. Pinning never moves the summary —
+  it stays exactly where it is and simply stops being dismissed — and it adopts
+  the nearest corner of the screen it's on, so growing to fit new content keeps
+  it against that edge. A Settings checkbox controls whether the mini summary
+  includes usage bars.
 - **Drag the mini summary** by its title bar to move it, including onto another
   screen — unpin it first, since pinning holds its position as well as keeping
   it on top. It snaps to the nearest corner of the screen you drop it on and

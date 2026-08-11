@@ -341,6 +341,15 @@ fn exit_settings(window: tauri::Window, to: quota_core::settings_return::Setting
     tray::exit_settings(window.app_handle(), to);
 }
 
+/// Pin or unpin the mini summary.
+///
+/// Pinning is purely behavioural — always-on-top and exemption from click-away
+/// dismissal — and deliberately does **not** move the window. Moving it to the
+/// stored anchor was issue #72: on a freshly launched widget the summary you can
+/// see and the corner the config names are different places, so pressing pin
+/// made the summary jump out from under the pointer. Instead the summary's
+/// current spot is adopted *as* the anchor, which only affects where later
+/// content-driven resizes grow from.
 #[tauri::command]
 fn set_mini_pinned(
     state: tauri::State<'_, Arc<AppState>>,
@@ -355,8 +364,7 @@ fn set_mini_pinned(
         .store(pinned, std::sync::atomic::Ordering::Relaxed);
     let _ = window.set_always_on_top(pinned);
     if pinned {
-        let anchor = state.mini_anchor.lock().unwrap().clone();
-        tray::anchor_to(&window, &anchor);
+        tray::adopt_position_as_anchor(window.app_handle());
     }
 }
 
