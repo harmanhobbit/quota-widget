@@ -48,6 +48,11 @@ rustPlatform.buildRustPackage rec {
 
   cargoLock.lockFile = ../Cargo.lock;
 
+  # Rust 1.97's LLVM can overflow rustc's default worker-thread stack while
+  # doing this app's fat-LTO link. Keep LTO's smaller binary rather than
+  # weakening the release profile; rustc recommends this larger stack.
+  RUST_MIN_STACK = "16777216";
+
   # Only the two lockfile-ish files decide the npm closure, so scoping this
   # separately keeps the fixed-output hash stable when app source changes.
   npmDeps = fetchNpmDeps {
