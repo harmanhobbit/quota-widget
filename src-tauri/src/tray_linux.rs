@@ -5,7 +5,7 @@ use crate::{tray, AppState};
 use ksni::TrayMethods;
 use quota_core::model::Status;
 use std::sync::{Arc, Mutex, OnceLock};
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri::{AppHandle, Manager, PhysicalPosition};
 
 struct QuotaTray {
     app: AppHandle,
@@ -64,10 +64,7 @@ impl ksni::Tray for QuotaTray {
             .into(),
             StandardItem {
                 label: "Settings".into(),
-                activate: Box::new(|t: &mut QuotaTray| {
-                    tray::show_popup(&t.app, None);
-                    let _ = t.app.emit("navigate", "settings");
-                }),
+                activate: Box::new(|t: &mut QuotaTray| tray::open_settings_from_tray(&t.app)),
                 ..Default::default()
             }
             .into(),
