@@ -6,8 +6,8 @@
 //! response is a list, one entry per currency — accounts are normally
 //! single-currency, but the shape permits several.
 
-use super::simple_credits::CreditsSpec;
 use super::as_f64;
+use super::simple_credits::CreditsSpec;
 use crate::model::Credits;
 use serde_json::Value;
 

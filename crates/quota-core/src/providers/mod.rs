@@ -2,17 +2,17 @@ pub mod anthropic_admin;
 pub mod claude;
 pub mod codex;
 pub mod deepseek;
-pub mod venice;
-pub mod onehop;
 pub mod elevenlabs;
 pub mod firecrawl;
 pub mod fireworks;
 pub mod hermes;
 pub mod moonshot;
+pub mod onehop;
 pub mod openai_admin;
 pub mod openrouter;
 pub mod simple_credits;
 pub mod spend;
+pub mod venice;
 
 use crate::config::Config;
 use crate::model::{FetchError, UsageSnapshot};
@@ -36,8 +36,12 @@ pub struct ProviderCtx {
     pub config: Config,
     /// Called when an adapter rotates a stored credential (e.g. an OAuth
     /// refresh) so the host can persist it. Key is the secret name.
-    pub on_secret_update: Option<std::sync::Arc<dyn Fn(&str, &str) + Send + Sync>>,
+    pub on_secret_update: Option<SecretUpdateHook>,
 }
+
+/// Host callback invoked as `(secret_name, value)` when an adapter rotates a
+/// stored credential.
+pub type SecretUpdateHook = std::sync::Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 impl ProviderCtx {
     pub fn new(

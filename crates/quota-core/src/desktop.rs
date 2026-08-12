@@ -619,7 +619,10 @@ mod tests {
         assert_eq!(absent["appimage"], service.appimage().display().to_string());
 
         service.install(ICONS).unwrap();
-        assert_eq!(serde_json::to_value(service.status()).unwrap()["state"], "current");
+        assert_eq!(
+            serde_json::to_value(service.status()).unwrap()["state"],
+            "current"
+        );
 
         let moved = DesktopIntegration::new(service.data_dir.clone(), "/elsewhere/q.AppImage");
         let stale = serde_json::to_value(moved.status()).unwrap();

@@ -66,7 +66,9 @@ impl Provider for Venice {
             .secrets
             .get(&self.key)
             .filter(|k| !k.is_empty())
-            .ok_or_else(|| FetchError::NotConfigured("paste a Venice API key in Settings".into()))?;
+            .ok_or_else(|| {
+                FetchError::NotConfigured("paste a Venice API key in Settings".into())
+            })?;
         let url = ctx
             .config
             .provider_setting(&self.key, "rate_limits_url")
@@ -217,7 +219,10 @@ mod tests {
         assert_eq!(c.unit, "USD");
         assert_eq!(c.label, None);
         // DIEM appears as an informational row, never as a second headline.
-        let diem = windows.iter().find(|w| w.metric_id == "balance_diem").unwrap();
+        let diem = windows
+            .iter()
+            .find(|w| w.metric_id == "balance_diem")
+            .unwrap();
         assert!(diem.informational);
         assert!(diem.label.contains("100.02"));
     }
@@ -248,7 +253,10 @@ mod tests {
         let (_, windows) = parse(&body, "USD").unwrap();
         let access = windows.iter().find(|w| w.metric_id == "access").unwrap();
         assert!(access.informational);
-        assert!(access.resets_at.is_some(), "nextEpochBegins should carry over");
+        assert!(
+            access.resets_at.is_some(),
+            "nextEpochBegins should carry over"
+        );
     }
 
     /// Zero is a real balance — an exhausted wallet — and must not read as

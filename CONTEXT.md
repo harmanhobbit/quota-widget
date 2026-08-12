@@ -71,8 +71,9 @@ _Avoid_: Align, dock, reposition
 
 **Distribution artifact**:
 A binary published for download — the AppImage, the installer, the portable
-EXE. It is public whether or not the source is, which is the whole point: the
-source repository stays private and these still ship.
+EXE. It is built and signed in CI and published to the dist repository, and is
+a different thing from the source: the source being readable is not a
+distribution channel, and a source build is never one of these.
 _Avoid_: Build, release, asset, package
 
 **Installable artifact**:

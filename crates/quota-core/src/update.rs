@@ -267,10 +267,7 @@ mod tests {
     /// entry Settings reports is the entry the plugin will download.
     #[test]
     fn qualified_keys_are_tried_before_the_bare_platform() {
-        assert_eq!(
-            appimage().keys(),
-            ["linux-x86_64-appimage", "linux-x86_64"]
-        );
+        assert_eq!(appimage().keys(), ["linux-x86_64-appimage", "linux-x86_64"]);
         // Nothing installable means there is no qualified key to try at all.
         assert_eq!(unpackaged_linux().keys(), ["linux-x86_64"]);
     }
@@ -301,7 +298,10 @@ mod tests {
     fn selects_the_artifact_qualified_appimage_entry() {
         let info = UpdateInfo::from_latest_json("0.9.0", MANIFEST, &appimage()).unwrap();
         assert!(info.available);
-        assert_eq!(info.url.as_deref(), Some("https://example.test/app.AppImage"));
+        assert_eq!(
+            info.url.as_deref(),
+            Some("https://example.test/app.AppImage")
+        );
         assert!(info.installable);
         // Replacing an AppImage leaves the old one running, so the user has to
         // restart before the new version is what is on screen.
@@ -330,7 +330,10 @@ mod tests {
 
         let deb = UpdateTarget::new("linux-x86_64", Some(Artifact::Deb));
         let from_deb = UpdateInfo::from_latest_json("0.9.0", &with_deb, &deb).unwrap();
-        assert_eq!(from_deb.url.as_deref(), Some("https://example.test/app.deb"));
+        assert_eq!(
+            from_deb.url.as_deref(),
+            Some("https://example.test/app.deb")
+        );
     }
 
     /// A build with no AppImage entry to select still learns a newer version

@@ -826,8 +826,10 @@ mod tests {
     #[test]
     fn round_trip_and_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        let mut cfg = Config::default();
-        cfg.poll_interval_secs = 120;
+        let mut cfg = Config {
+            poll_interval_secs: 120,
+            ..Default::default()
+        };
         cfg.providers.get_mut("openrouter").unwrap().enabled = true;
         cfg.save(dir.path()).unwrap();
 
@@ -855,10 +857,12 @@ mod tests {
     #[test]
     fn mini_anchor_round_trips() {
         let dir = tempfile::tempdir().unwrap();
-        let mut cfg = Config::default();
-        cfg.mini_anchor = MiniAnchor {
-            monitor: Some("DP-1".into()),
-            corner: Corner::TopLeft,
+        let cfg = Config {
+            mini_anchor: MiniAnchor {
+                monitor: Some("DP-1".into()),
+                corner: Corner::TopLeft,
+            },
+            ..Default::default()
         };
         cfg.save(dir.path()).unwrap();
         assert_eq!(load(dir.path()).mini_anchor, cfg.mini_anchor);
@@ -1185,8 +1189,10 @@ mod tests {
     #[test]
     fn a_recorded_desktop_integration_prompt_round_trips() {
         let dir = tempfile::tempdir().unwrap();
-        let mut cfg = Config::default();
-        cfg.desktop_integration_prompted = true;
+        let cfg = Config {
+            desktop_integration_prompted: true,
+            ..Default::default()
+        };
         cfg.save(dir.path()).unwrap();
         assert!(load(dir.path()).desktop_integration_prompted);
     }
@@ -1504,8 +1510,10 @@ mod tests {
         /// the user's hand-arranged order.
         #[test]
         fn ties_keep_config_order() {
-            let mut cfg = Config::default();
-            cfg.sort_order = SortOrder::UsageDesc;
+            let cfg = Config {
+                sort_order: SortOrder::UsageDesc,
+                ..Default::default()
+            };
             let mut snapshots = vec![
                 snap("claude", vec![window("w", 42.0, Some(9))]),
                 snap("codex", vec![window("w", 42.0, Some(9))]),
@@ -1567,8 +1575,10 @@ mod tests {
         /// orders, even though it has a perfectly good percentage.
         #[test]
         fn a_window_without_a_reset_time_sinks_under_expiry_orders() {
-            let mut cfg = Config::default();
-            cfg.sort_order = SortOrder::ExpirySoonest;
+            let mut cfg = Config {
+                sort_order: SortOrder::ExpirySoonest,
+                ..Default::default()
+            };
             let mut snapshots = vec![
                 snap("claude", vec![window("w", 90.0, None)]),
                 snap("codex", vec![window("w", 10.0, Some(12))]),
@@ -1589,8 +1599,10 @@ mod tests {
         /// rank an account by data we already know is wrong.
         #[test]
         fn errored_snapshots_sink_rather_than_sorting_on_stale_numbers() {
-            let mut cfg = Config::default();
-            cfg.sort_order = SortOrder::UsageDesc;
+            let cfg = Config {
+                sort_order: SortOrder::UsageDesc,
+                ..Default::default()
+            };
             let mut stale = snap("claude", vec![window("w", 99.0, Some(9))]);
             stale.error = Some(FetchError::Network("boom".into()));
             let mut snapshots = vec![stale, snap("codex", vec![window("w", 10.0, Some(12))])];
@@ -1602,9 +1614,11 @@ mod tests {
         /// the worst-case number either.
         #[test]
         fn worst_case_ignores_informational_windows() {
-            let mut cfg = Config::default();
-            cfg.sort_order = SortOrder::UsageDesc;
-            cfg.sort_basis = SortBasis::WorstCase;
+            let cfg = Config {
+                sort_order: SortOrder::UsageDesc,
+                sort_basis: SortBasis::WorstCase,
+                ..Default::default()
+            };
             let mut loud = window("trickle", 100.0, Some(9));
             loud.informational = true;
             let mut snapshots = vec![
@@ -1619,8 +1633,10 @@ mod tests {
         /// — `total_cmp` orders it after every real number.
         #[test]
         fn a_nan_percentage_is_ordered_rather_than_panicking() {
-            let mut cfg = Config::default();
-            cfg.sort_order = SortOrder::UsageDesc;
+            let cfg = Config {
+                sort_order: SortOrder::UsageDesc,
+                ..Default::default()
+            };
             let mut snapshots = vec![
                 snap("claude", vec![window("w", f64::NAN, Some(9))]),
                 snap("codex", vec![window("w", 50.0, Some(12))]),
@@ -1646,9 +1662,11 @@ mod tests {
         /// The settings selects round-trip through JSON as snake_case strings.
         #[test]
         fn the_new_fields_round_trip_as_snake_case() {
-            let mut cfg = Config::default();
-            cfg.sort_order = SortOrder::ExpirySoonest;
-            cfg.sort_basis = SortBasis::WorstCase;
+            let cfg = Config {
+                sort_order: SortOrder::ExpirySoonest,
+                sort_basis: SortBasis::WorstCase,
+                ..Default::default()
+            };
             let text = serde_json::to_string(&cfg).unwrap();
             assert!(text.contains(r#""sort_order":"expiry_soonest""#), "{text}");
             assert!(text.contains(r#""sort_basis":"worst_case""#), "{text}");

@@ -6,9 +6,10 @@ Linux that watches your AI provider allowances in one place: Claude's rolling
 OpenRouter, ElevenLabs, Firecrawl, DeepSeek, Moonshot and Venice balances,
 and Fireworks, Anthropic and OpenAI organization spend.
 
-This repository holds **published binaries only** — the source lives elsewhere
-and is private. Nothing here is built from code you can read, so install it only
-if you trust its author.
+This repository holds **published binaries only**. The source lives in
+[`harmanhobbit/quota-widget`](https://github.com/harmanhobbit/quota-widget), is
+public, and is licensed Apache-2.0; every asset here is built and signed by that
+repository's release workflow.
 
 ## Download
 
@@ -39,10 +40,11 @@ chmod +x QuotaWidget_<version>_amd64.AppImage
 ./QuotaWidget_<version>_amd64.AppImage
 ```
 
-The AppImage is the public direct-download route. The Nix flake remains a
-separate, reproducible packaging route for people with access to the private
-source repository; it pins the GTK/WebKit runtime rather than downloading this
-release asset. On Nix, keep upgrading with `nix profile upgrade`.
+The AppImage is the public direct-download route. The Nix flake in the source
+repository is a separate, reproducible packaging route: it pins the GTK/WebKit
+runtime and builds from source rather than downloading this release asset, so it
+takes no part in in-app updates. On Nix, keep upgrading with
+`nix profile upgrade`.
 
 ## How far each provider has been tested
 

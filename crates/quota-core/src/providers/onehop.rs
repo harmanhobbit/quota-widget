@@ -18,8 +18,8 @@
 //! { "balance": 0, "is_active": true, "currency": "USD" }
 //! ```
 
-use super::simple_credits::CreditsSpec;
 use super::as_f64;
+use super::simple_credits::CreditsSpec;
 use crate::model::Credits;
 use serde_json::Value;
 

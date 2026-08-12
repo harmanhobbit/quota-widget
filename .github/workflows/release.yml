@@ -1,8 +1,12 @@
 name: Release
 
-# Publishes to the PUBLIC dist repo, harmanhobbit/quota-widget-dist. The source
-# repo stays private, so nothing here may echo source, and every upload is
-# explicit rather than a glob over the workspace.
+# Publishes to the dist repo, harmanhobbit/quota-widget-dist, which carries
+# downloads only. Every upload is explicit rather than a glob over the
+# workspace, so a stray build product can never become a published asset.
+#
+# Signing and dist-repo credentials come from CI secrets and nothing here may
+# echo them: the source repo is public, so a leaked value would be a leak to
+# everyone.
 #
 # Deliberately separate from build.yml: that workflow's Windows job is metered
 # at 2x and already gated to tags/dispatch for *artifacts*. This one is the only
@@ -53,7 +57,14 @@ jobs:
         with:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      # Clippy is scoped to quota-core for the same reason the tests are: the
+      # src-tauri crate needs the GTK/WebKit system libraries, which this cheap
+      # runner deliberately does not install. -D warnings, no crate-wide allows.
+      - run: cargo clippy -p quota-core --all-targets -- -D warnings
       - run: cargo test -p quota-core
       - run: npm run check-versions
 

@@ -1,5 +1,10 @@
 # Publish Linux distribution artifacts while keeping the source private
 
+> **Partly superseded by [ADR-0003](0003-public-source-under-apache-2-0.md).**
+> The source repository is now public under Apache-2.0, so this ADR's
+> private-source premise — the first paragraph below — no longer holds. Every
+> distribution decision that follows it still stands unchanged.
+
 Quota Widget supports Linux but its Nix flake is available only to source-repository
 collaborators. We will publish Linux distribution artifacts from the private source
 repository to the public distribution repository, without opening the source.
