@@ -244,16 +244,31 @@ values. Adapters are instantiated one per config entry and hold their own key,
 so settings are read by that key rather than a literal, e.g.
 `provider_setting(key, "auth_mode")` (`claude.rs:47`).
 
-### Config has no versioning and fails silently
+### A config that cannot be read is kept, not replaced
 
-`Config::load` (`config.rs:157`) does `serde_json::from_str(&text).unwrap_or_default()`
-(`config.rs:160`) — **any parse error silently discards the entire config**, and
-there's a test asserting that behaviour
-(`missing_or_corrupt_file_yields_defaults`, `config.rs:194`). `save()`
-(`config.rs:165`) writes to `config.json.tmp` and renames, so a torn write can't
-corrupt an existing config. Forward-compat rests entirely on `#[serde(default)]`.
-Adding fields is safe; renaming or re-keying anything is not, without a migration
-step that does not currently exist.
+`Config::load` returns a `ConfigLoad`, not a `Config`, and that is deliberate:
+it distinguishes **no file** (first run, established defaults, nothing to
+report) from **a file we cannot use** (defaults *plus* a `ConfigRecovery`).
+Only `io::ErrorKind::NotFound` counts as the first case — a permission denial or
+a directory in its place means a config is there and we simply cannot see it.
+
+While a recovery is outstanding the file is left untouched and `save()` refuses
+with `InvalidData`, checked against the disk each time rather than a flag from
+startup. Replacing it is the separate, explicit `save_after_recovery()`, which
+*renames* the original to `config.json.unreadable[.N]` and never deletes it.
+That asymmetry is the point: the accounts in that file are the user's only copy,
+and the keyring secrets are named after its provider keys, which cannot be
+enumerated back (see below).
+
+The shell logs the recovery at startup, carries it in `AppState.config_recovery`,
+returns it on `get_snapshots`, and offers the one command allowed to displace
+the file (`recover_config`). Anything new that writes config goes through
+`save()` — do not reach for `save_after_recovery()` to make a write "just work".
+
+`save()` still writes `config.json.tmp` and renames, so a torn write can't
+corrupt an existing config. Forward-compat rests on `#[serde(default)]` plus the
+`version` field's migration (`migrate_mini_summary`). Adding fields is safe;
+renaming or re-keying anything needs a migration step there.
 
 ### Secret keys are derived from config, never enumerated
 

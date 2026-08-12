@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Display order for the account list. `Manual` is the user's config order,
 /// which is what every build before this one did.
@@ -346,6 +346,75 @@ impl Default for Config {
     }
 }
 
+/// Why an existing `config.json` could not be turned into a `Config`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryKind {
+    /// The bytes were readable but are not a config — truncated, hand-edited
+    /// into invalid JSON, or written by something else entirely.
+    Malformed,
+    /// The file is there but the process cannot read it: permissions, a
+    /// directory in its place, an I/O error on the underlying storage.
+    Unreadable,
+}
+
+/// A configuration that exists on disk and could not be loaded.
+///
+/// This is deliberately *not* a repair. The accounts, thresholds and provider
+/// settings in that file are the user's only copy of work that took real effort
+/// to enter, and the secret keys in the keyring are derived from its provider
+/// keys (see AGENTS.md, "Secret keys are derived from config") — so a config we
+/// cannot parse still names secrets we cannot enumerate. The file is therefore
+/// left exactly where it is, running on defaults, until the user decides what
+/// happens to it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigRecovery {
+    pub kind: RecoveryKind,
+    /// The untouched original, still at its normal path.
+    pub path: PathBuf,
+    /// The parse or I/O error, verbatim, because it is usually the fastest
+    /// route to fixing the file by hand (`line 12 column 3`).
+    pub detail: String,
+}
+
+impl ConfigRecovery {
+    /// One line, suitable for the application log and for a status banner.
+    pub fn message(&self) -> String {
+        let what = match self.kind {
+            RecoveryKind::Malformed => "could not be parsed",
+            RecoveryKind::Unreadable => "could not be read",
+        };
+        format!(
+            "{} {what} ({}). Running on defaults; the original has been kept and \
+             saving is blocked until it is recovered or replaced.",
+            self.path.display(),
+            self.detail
+        )
+    }
+}
+
+/// The result of a load: always a usable `Config`, plus whatever had to be set
+/// aside to produce it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigLoad {
+    pub config: Config,
+    /// `None` for both a valid file and no file at all — a first run is not a
+    /// failure and must not ask the user to recover anything.
+    pub recovery: Option<ConfigRecovery>,
+}
+
+/// What `save` refuses to do, and why. `io::Error` rather than a bespoke type
+/// so the existing `Result<(), io::Error>` call sites are unchanged.
+fn refuse_overwrite(recovery: &ConfigRecovery) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "refusing to overwrite the existing configuration: {}",
+            recovery.message()
+        ),
+    )
+}
+
 impl Config {
     pub fn effective_thresholds(&self, provider_id: &str) -> Thresholds {
         self.providers
@@ -541,17 +610,89 @@ impl Config {
         self.providers.get(provider_id)?.settings.get(key).cloned()
     }
 
-    pub fn load(dir: &Path) -> Self {
+    /// Reads `config.json`, always yielding a usable config.
+    ///
+    /// Three outcomes, and the difference between them matters: no file is a
+    /// first run and starts on the established defaults; a valid file loads and
+    /// migrates as it always has; a file that exists but cannot be read or
+    /// parsed runs on defaults *and* reports a [`ConfigRecovery`], because
+    /// quietly treating it as a first run is how a working setup gets replaced
+    /// by an empty one at the next save.
+    pub fn load(dir: &Path) -> ConfigLoad {
         let path = dir.join("config.json");
-        let mut cfg: Self = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
-            Err(_) => Self::default(),
+        let (mut cfg, recovery) = match std::fs::read_to_string(&path) {
+            Ok(text) => match serde_json::from_str::<Self>(&text) {
+                Ok(cfg) => (cfg, None),
+                Err(e) => (
+                    Self::default(),
+                    Some(ConfigRecovery {
+                        kind: RecoveryKind::Malformed,
+                        path,
+                        detail: e.to_string(),
+                    }),
+                ),
+            },
+            // Only "no such file" is a first run. Everything else — a
+            // permission denial, a directory in its place, a failing disk —
+            // means a config is there and we simply cannot see it.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Self::default(), None),
+            Err(e) => (
+                Self::default(),
+                Some(ConfigRecovery {
+                    kind: RecoveryKind::Unreadable,
+                    path,
+                    detail: e.to_string(),
+                }),
+            ),
         };
         cfg.migrate_mini_summary();
-        cfg
+        ConfigLoad {
+            config: cfg,
+            recovery,
+        }
     }
 
+    /// The recovery state of whatever is on disk right now, independent of what
+    /// is in memory. `save` consults this rather than trusting a flag carried
+    /// from startup, so a file that became unreadable while the app was running
+    /// is caught too.
+    pub fn recovery_state(dir: &Path) -> Option<ConfigRecovery> {
+        Self::load(dir).recovery
+    }
+
+    /// Writes the config, unless doing so would destroy an existing one we
+    /// could not read.
+    ///
+    /// The ordinary save path must never be the thing that discards a user's
+    /// accounts: with an unreadable `config.json` present this fails with
+    /// `InvalidData` and writes nothing. Replacing it is a separate, explicit
+    /// act — [`Config::save_after_recovery`].
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
+        if let Some(recovery) = Self::recovery_state(dir) {
+            return Err(refuse_overwrite(&recovery));
+        }
+        self.write(dir)
+    }
+
+    /// The explicit recovery action: move the unreadable original aside, then
+    /// save. Returns where the original was kept, so the caller can tell the
+    /// user where to find it — nothing is ever deleted here.
+    ///
+    /// A no-op recovery (nothing wrong on disk) is not an error; it just saves,
+    /// which keeps the command idempotent if the file was fixed by hand in the
+    /// meantime.
+    pub fn save_after_recovery(&self, dir: &Path) -> std::io::Result<Option<PathBuf>> {
+        let Some(recovery) = Self::recovery_state(dir) else {
+            self.write(dir)?;
+            return Ok(None);
+        };
+        let kept = free_backup_path(dir);
+        std::fs::rename(&recovery.path, &kept)?;
+        self.write(dir)?;
+        Ok(Some(kept))
+    }
+
+    fn write(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
         let mut out = self.clone();
         out.migrate_mini_summary();
@@ -572,6 +713,24 @@ impl Config {
         std::fs::write(&tmp, text)?;
         std::fs::rename(tmp, path)
     }
+}
+
+/// Where an unreadable config is kept when the user replaces it. Numbered
+/// rather than overwritten, because a second failure must not destroy the copy
+/// taken after the first one — the whole point of keeping it is that it is the
+/// only surviving record of the accounts.
+fn free_backup_path(dir: &Path) -> PathBuf {
+    let first = dir.join("config.json.unreadable");
+    if !first.exists() {
+        return first;
+    }
+    for n in 2u32.. {
+        let candidate = dir.join(format!("config.json.unreadable.{n}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("u32 exhausted while naming a backup")
 }
 
 /// One selected headline's contribution to the tray. A window no longer in the
@@ -658,6 +817,12 @@ fn max_pct(a: Option<f64>, b: Option<f64>) -> Option<f64> {
 mod tests {
     use super::*;
 
+    /// The config a load produced, for the majority of tests that are about
+    /// what was read rather than about recovery.
+    fn load(dir: &Path) -> Config {
+        Config::load(dir).config
+    }
+
     #[test]
     fn round_trip_and_defaults() {
         let dir = tempfile::tempdir().unwrap();
@@ -666,7 +831,7 @@ mod tests {
         cfg.providers.get_mut("openrouter").unwrap().enabled = true;
         cfg.save(dir.path()).unwrap();
 
-        let loaded = Config::load(dir.path());
+        let loaded = load(dir.path());
         assert_eq!(loaded, cfg);
         assert!(loaded.providers["openrouter"].enabled);
         assert_eq!(loaded.effective_thresholds("claude").warn_pct, 80.0);
@@ -682,7 +847,7 @@ mod tests {
             r#"{"version":2,"poll_interval_secs":60}"#,
         )
         .unwrap();
-        let loaded = Config::load(dir.path());
+        let loaded = load(dir.path());
         assert_eq!(loaded.mini_anchor.corner, Corner::BottomRight);
         assert_eq!(loaded.mini_anchor.monitor, None);
     }
@@ -696,7 +861,7 @@ mod tests {
             corner: Corner::TopLeft,
         };
         cfg.save(dir.path()).unwrap();
-        assert_eq!(Config::load(dir.path()).mini_anchor, cfg.mini_anchor);
+        assert_eq!(load(dir.path()).mini_anchor, cfg.mini_anchor);
     }
 
     #[test]
@@ -791,12 +956,195 @@ mod tests {
         );
     }
 
-    #[test]
-    fn missing_or_corrupt_file_yields_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(Config::load(dir.path()), Config::default());
-        std::fs::write(dir.path().join("config.json"), "{not json").unwrap();
-        assert_eq!(Config::load(dir.path()), Config::default());
+    /// The three load outcomes, which the rest of the recovery behaviour hangs
+    /// off. A first run is not a failure; a file we cannot use is not a first
+    /// run.
+    mod recovery {
+        use super::*;
+
+        /// A config with something in it worth losing, so a test that silently
+        /// discards it is distinguishable from one that keeps it.
+        fn a_configured_file() -> String {
+            let mut cfg = Config::default();
+            cfg.poll_interval_secs = 300;
+            cfg.providers
+                .insert("claude#2".into(), ProviderConfig::default());
+            serde_json::to_string_pretty(&cfg).unwrap()
+        }
+
+        #[test]
+        fn a_missing_file_is_a_first_run_on_defaults() {
+            let dir = tempfile::tempdir().unwrap();
+            let loaded = Config::load(dir.path());
+            assert_eq!(loaded.config, Config::default());
+            // Nothing to recover: an empty config dir must not put the app into
+            // a recovery state it can never leave.
+            assert_eq!(loaded.recovery, None);
+            // And an ordinary save is allowed, which is what makes first run
+            // work at all.
+            loaded.config.save(dir.path()).unwrap();
+            assert_eq!(load(dir.path()), Config::default());
+        }
+
+        #[test]
+        fn a_valid_file_reports_no_recovery() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("config.json"), a_configured_file()).unwrap();
+            let loaded = Config::load(dir.path());
+            assert_eq!(loaded.recovery, None);
+            assert_eq!(loaded.config.poll_interval_secs, 300);
+            assert!(loaded.config.providers.contains_key("claude#2"));
+        }
+
+        #[test]
+        fn a_malformed_file_runs_on_defaults_and_is_kept() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::write(&path, "{not json").unwrap();
+
+            let loaded = Config::load(dir.path());
+            assert_eq!(loaded.config, Config::default());
+            let recovery = loaded.recovery.expect("malformed file reports recovery");
+            assert_eq!(recovery.kind, RecoveryKind::Malformed);
+            assert_eq!(recovery.path, path);
+            // The bytes are untouched — this is the user's only copy.
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+            // The message names the file and says what happened.
+            assert!(recovery.message().contains("config.json"), "{recovery:?}");
+            assert!(
+                recovery.message().contains("could not be parsed"),
+                "{recovery:?}"
+            );
+        }
+
+        /// A file that is there but cannot be read is not a missing file. A
+        /// directory in its place reproduces that for any user, where a
+        /// permission bit would not (root reads everything).
+        #[test]
+        fn an_unreadable_file_runs_on_defaults_and_is_kept() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::create_dir(&path).unwrap();
+
+            let loaded = Config::load(dir.path());
+            assert_eq!(loaded.config, Config::default());
+            let recovery = loaded.recovery.expect("unreadable file reports recovery");
+            assert_eq!(recovery.kind, RecoveryKind::Unreadable);
+            assert!(path.exists());
+            assert!(
+                recovery.message().contains("could not be read"),
+                "{recovery:?}"
+            );
+        }
+
+        /// Denied permissions are the case users actually hit. Skipped when the
+        /// tests run as root, where the mode is not enforced.
+        #[cfg(unix)]
+        #[test]
+        fn a_permission_denied_file_reports_unreadable_rather_than_missing() {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            std::fs::write(&path, a_configured_file()).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            if std::fs::read_to_string(&path).is_ok() {
+                return; // running as root: the mode proves nothing
+            }
+            let recovery = Config::load(dir.path())
+                .recovery
+                .expect("permission denial reports recovery");
+            assert_eq!(recovery.kind, RecoveryKind::Unreadable);
+        }
+
+        /// The core of the issue: the ordinary save path is what would replace
+        /// the accounts, and it must refuse.
+        #[test]
+        fn an_ordinary_save_refuses_to_replace_an_unreadable_config() {
+            // Hand-edited into invalid JSON, and truncated to nothing — the
+            // shape a half-written or zero-length file actually has.
+            for broken in ["{not json", "", r#"{"poll_interval_secs":"#] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("config.json");
+                std::fs::write(&path, broken).unwrap();
+
+                let err = Config::default()
+                    .save(dir.path())
+                    .expect_err("save must refuse");
+                assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+                // Nothing written, nothing renamed: the original is still there
+                // byte for byte, and no temp file was left behind.
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+                assert!(!dir.path().join("config.json.tmp").exists());
+            }
+        }
+
+        /// The explicit action: the original is moved aside, not deleted, and
+        /// the new config takes its place.
+        #[test]
+        fn recovery_keeps_the_original_and_lets_the_next_save_through() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("config.json"), "{not json").unwrap();
+
+            let mut cfg = Config::default();
+            cfg.poll_interval_secs = 90;
+            let kept = cfg
+                .save_after_recovery(dir.path())
+                .unwrap()
+                .expect("the original is kept somewhere");
+            assert_eq!(std::fs::read_to_string(&kept).unwrap(), "{not json");
+
+            let loaded = Config::load(dir.path());
+            assert_eq!(loaded.recovery, None);
+            assert_eq!(loaded.config.poll_interval_secs, 90);
+            // And ordinary saving works again from here.
+            loaded.config.save(dir.path()).unwrap();
+        }
+
+        /// A second failure must not overwrite the copy taken after the first.
+        #[test]
+        fn a_second_recovery_keeps_the_earlier_copy() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("config.json"), "first").unwrap();
+            let first = Config::default()
+                .save_after_recovery(dir.path())
+                .unwrap()
+                .unwrap();
+            std::fs::write(dir.path().join("config.json"), "second").unwrap();
+            let second = Config::default()
+                .save_after_recovery(dir.path())
+                .unwrap()
+                .unwrap();
+
+            assert_ne!(first, second);
+            assert_eq!(std::fs::read_to_string(&first).unwrap(), "first");
+            assert_eq!(std::fs::read_to_string(&second).unwrap(), "second");
+        }
+
+        /// Recovering when there is nothing wrong is an ordinary save, so the
+        /// command is safe to repeat and never invents a backup file.
+        #[test]
+        fn recovery_with_nothing_wrong_is_just_a_save() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut cfg = Config::default();
+            cfg.poll_interval_secs = 45;
+            assert_eq!(cfg.save_after_recovery(dir.path()).unwrap(), None);
+            assert_eq!(load(dir.path()).poll_interval_secs, 45);
+            assert!(!dir.path().join("config.json.unreadable").exists());
+        }
+
+        /// Recovery must not become a way to lose a *valid* config: with a
+        /// readable file present there is nothing to move aside, so the save
+        /// goes through the ordinary path and leaves no copy behind.
+        #[test]
+        fn recovery_never_moves_a_valid_config_aside() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("config.json"), a_configured_file()).unwrap();
+            assert_eq!(
+                Config::default().save_after_recovery(dir.path()).unwrap(),
+                None
+            );
+            assert!(!dir.path().join("config.json.unreadable").exists());
+        }
     }
 
     #[test]
@@ -818,7 +1166,7 @@ mod tests {
             r#"{"providers":{"claude":{"enabled":true}}}"#,
         )
         .unwrap();
-        let cfg = Config::load(dir.path());
+        let cfg = load(dir.path());
         // Load migrates an unversioned file forward.
         assert_eq!(cfg.version, 2);
         assert_eq!(cfg.providers["claude"].kind, None);
@@ -840,7 +1188,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.desktop_integration_prompted = true;
         cfg.save(dir.path()).unwrap();
-        assert!(Config::load(dir.path()).desktop_integration_prompted);
+        assert!(load(dir.path()).desktop_integration_prompted);
     }
 
     /// Every pre-v2 headline setting has to land on the equivalent list, or an
@@ -879,7 +1227,7 @@ mod tests {
                 ),
             )
             .unwrap();
-            let cfg = Config::load(dir.path());
+            let cfg = load(dir.path());
             let claude = &cfg.providers["claude"];
             assert_eq!(
                 claude.mini_summary_metrics, want_metrics,
@@ -905,7 +1253,7 @@ mod tests {
         cfg.providers["claude"].tray_metric = Some("window:weekly".into());
         cfg.save(dir.path()).unwrap();
 
-        let loaded = Config::load(dir.path());
+        let loaded = load(dir.path());
         assert_eq!(
             loaded.providers["claude"].mini_summary_metrics,
             Some(vec!["window:five_hour".into(), "window:weekly".into()])
@@ -932,7 +1280,7 @@ mod tests {
         cfg.providers["claude"].mini_summary_metrics = Some(vec!["window:five_hour".into()]);
         cfg.save(dir.path()).unwrap();
 
-        let loaded = Config::load(dir.path());
+        let loaded = load(dir.path());
         assert_eq!(
             loaded.providers.keys().collect::<Vec<_>>(),
             vec![

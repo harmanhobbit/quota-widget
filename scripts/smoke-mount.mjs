@@ -193,6 +193,73 @@ const CASES = [
       if (opacity() !== '0.92') throw new Error(`inverted scroll down did not fade: ${opacity()}`);
     },
   },
+  // An unreadable config.json: the settings on screen are defaults, not the
+  // user's, and the popup has to say so — a silent fallback is what reads as
+  // data already lost.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    configRecovery: {
+      kind: 'malformed',
+      path: '/home/u/.config/quota-widget/config.json',
+      detail: 'expected value at line 1 column 2',
+    },
+    recoveryKept: '/home/u/.config/quota-widget/config.json.unreadable',
+    verify: async ({ target, flushSync }) => {
+      const banner = target.querySelector('.config-recovery');
+      if (!banner) throw new Error('an unreadable config was not reported to the user');
+      // It must name the file being kept and say the app is on defaults.
+      if (!banner.textContent.includes('/home/u/.config/quota-widget/config.json')) {
+        throw new Error(`the banner did not name the kept file: ${banner.textContent}`);
+      }
+      if (!/defaults/.test(banner.textContent)) {
+        throw new Error(`the banner did not say the settings are defaults: ${banner.textContent}`);
+      }
+      if (globalThis.__SMOKE_SHELL_CALLS__.includes('recover_config')) {
+        throw new Error('the config was replaced before the user asked for it');
+      }
+      banner.querySelector('button').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!globalThis.__SMOKE_SHELL_CALLS__.includes('recover_config')) {
+        throw new Error('the recovery button did not reach recover_config');
+      }
+      if (target.querySelector('.config-recovery')) {
+        throw new Error('the banner stayed up after a successful recovery');
+      }
+      // Where the original went is the only way back to those accounts.
+      if (!target.textContent.includes('config.json.unreadable')) {
+        throw new Error(`recovery did not say where the original was kept: ${target.textContent}`);
+      }
+    },
+  },
+  // A failed recovery changed nothing, so the banner it describes must stay.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    configRecovery: { kind: 'unreadable', path: '/home/u/.config/quota-widget/config.json', detail: 'Permission denied (os error 13)' },
+    recoverError: 'Permission denied (os error 13)',
+    verify: async ({ target, flushSync }) => {
+      target.querySelector('.config-recovery button').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const banner = target.querySelector('.config-recovery');
+      if (!banner) throw new Error('a failed recovery dismissed the warning anyway');
+      if (!banner.textContent.includes('Permission denied')) {
+        throw new Error(`the failure was not shown: ${banner.textContent}`);
+      }
+    },
+  },
+  // The ordinary case: nothing wrong on disk, no banner, nothing to recover.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: ({ target }) => {
+      if (target.querySelector('.config-recovery')) {
+        throw new Error('a readable config still showed a recovery warning');
+      }
+    },
+  },
   // First-run desktop integration (AppImage only). A non-AppImage build gets
   // null from the status command and must never see the question.
   {
@@ -1123,13 +1190,20 @@ function stubTauri() {
   w('@tauri-apps/api/core.js', `
 export async function invoke(cmd, args) {
   switch (cmd) {
-    case 'get_snapshots': if (globalThis.__SMOKE_SNAPSHOTS_ERROR__) throw new Error('IPC unavailable'); return globalThis.__SMOKE_CONFIG__ ?? ${JSON.stringify({ snapshots: SNAPSHOTS, config: CONFIG })};
+    case 'get_snapshots': if (globalThis.__SMOKE_SNAPSHOTS_ERROR__) throw new Error('IPC unavailable'); return { ...(globalThis.__SMOKE_CONFIG__ ?? ${JSON.stringify({ snapshots: SNAPSHOTS, config: CONFIG })}), config_recovery: globalThis.__SMOKE_RECOVERY__ ?? null };
     case 'app_version': return '0.0.0-test';
     case 'has_secret': return false;
     case 'on_wayland': return true;
     case 'set_config':
       if (globalThis.__SMOKE_SAVE_ERROR__) throw new Error(globalThis.__SMOKE_SAVE_ERROR__);
       globalThis.__SMOKE_LAST_CONFIG__ = args.config; return null;
+    // The only command allowed to displace an unreadable config, so a case
+    // that never clicks the button must never see it called.
+    case 'recover_config':
+      if (globalThis.__SMOKE_RECOVER_ERROR__) throw new Error(globalThis.__SMOKE_RECOVER_ERROR__);
+      (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push('recover_config');
+      globalThis.__SMOKE_LAST_CONFIG__ = args.config;
+      return globalThis.__SMOKE_RECOVERY_KEPT__ ?? null;
     case 'exit_settings': (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push(\`exit_settings:\${args.to}\`); return null;
     case 'hide_window': (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push('hide_window'); return null;
     case 'update_status': case 'check_update_now': return globalThis.__SMOKE_UPDATE__ ?? null;
@@ -1285,6 +1359,9 @@ for (const c of CASES) {
     globalThis.__SMOKE_DESKTOP_REMOVE__ = c.desktopRemove ?? null;
     globalThis.__SMOKE_DESKTOP_ERROR__ = c.desktopError ?? '';
     globalThis.__SMOKE_DESKTOP_CALLS__ = [];
+    globalThis.__SMOKE_RECOVERY__ = c.configRecovery ?? null;
+    globalThis.__SMOKE_RECOVERY_KEPT__ = c.recoveryKept ?? null;
+    globalThis.__SMOKE_RECOVER_ERROR__ = c.recoverError ?? '';
     globalThis.__SMOKE_RESTARTED__ = false;
     globalThis.__SMOKE_INSTALLING_TEXT__ = '';
     globalThis.__SMOKE_SHELL_CALLS__ = [];

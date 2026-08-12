@@ -9,7 +9,7 @@ mod tray_linux;
 mod updates;
 
 use quota_core::alerts::AlertEngine;
-use quota_core::config::Config;
+use quota_core::config::{Config, ConfigRecovery};
 use quota_core::model::UsageSnapshot;
 use quota_core::providers::{providers_for, ProviderCtx};
 use std::collections::HashMap;
@@ -59,6 +59,12 @@ pub struct AppState {
     /// Last known upstream release, or `None` when no check has succeeded, the
     /// build is a dev branch, or the newest release is not newer than this one.
     pub update: RwLock<Option<quota_core::update::UpdateInfo>>,
+    /// Set when startup found a `config.json` it could not read or parse. The
+    /// app is running on defaults with that file still on disk, and every
+    /// ordinary save refuses until the user resolves it — this is what puts the
+    /// banner on screen so they can. A plain `Mutex` because the tray and the
+    /// window event loop are sync.
+    pub config_recovery: std::sync::Mutex<Option<ConfigRecovery>>,
 }
 
 /// The frontend's first request needs both pieces of startup state. Keeping
@@ -68,6 +74,11 @@ pub struct AppState {
 struct InitialState {
     snapshots: Vec<UsageSnapshot>,
     config: Config,
+    /// Present only while an unreadable `config.json` is being kept for
+    /// recovery. The settings on screen are defaults, not the user's, and
+    /// saving them is blocked — so the popup says so rather than letting the
+    /// difference go unnoticed.
+    config_recovery: Option<ConfigRecovery>,
 }
 
 impl AppState {
@@ -119,6 +130,7 @@ async fn get_snapshots(state: tauri::State<'_, Arc<AppState>>) -> Result<Initial
     Ok(InitialState {
         snapshots: out,
         config: cfg.clone(),
+        config_recovery: state.config_recovery.lock().unwrap().clone(),
     })
 }
 
@@ -135,7 +147,40 @@ async fn set_config(
     state: tauri::State<'_, Arc<AppState>>,
     config: Config,
 ) -> Result<(), String> {
+    // Refuses while an unreadable config.json is being kept, so an ordinary
+    // Save from Settings can never be what discards the user's accounts. The
+    // error travels back to the frontend, which offers the recovery below.
     config.save(&state.config_dir).map_err(|e| e.to_string())?;
+    apply_config(app, state, config).await
+}
+
+/// The explicit recovery action: replace the kept-aside original with what is
+/// on screen. Only this command may discard an unreadable config, and even then
+/// the file is moved rather than deleted — the reply names where it went so the
+/// user can go and get their accounts back out of it.
+#[tauri::command]
+async fn recover_config(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    config: Config,
+) -> Result<Option<String>, String> {
+    let kept = config
+        .save_after_recovery(&state.config_dir)
+        .map_err(|e| e.to_string())?;
+    *state.config_recovery.lock().unwrap() = None;
+    apply_config(app, state, config).await?;
+    Ok(kept.map(|path| path.display().to_string()))
+}
+
+/// Everything a successful config write implies, once the bytes are on disk:
+/// the in-memory mirrors, the visible summary's placement, the broadcast, and
+/// autostart. Shared by the ordinary save and the recovery, which differ only
+/// in how they are allowed to touch the file.
+async fn apply_config(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    config: Config,
+) -> Result<(), String> {
     state
         .hide_on_blur
         .store(config.hide_on_blur, std::sync::atomic::Ordering::Relaxed);
@@ -457,8 +502,16 @@ fn quit(app: tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let config_dir = config_dir();
-    let config = Config::load(&config_dir);
+    let loaded = Config::load(&config_dir);
+    let config = loaded.config;
+    // The one thing that must be said out loud even if no window is ever
+    // opened: the app is running on defaults while a config it could not read
+    // sits untouched on disk.
+    if let Some(recovery) = &loaded.recovery {
+        eprintln!("config: {}", recovery.message());
+    }
     let state = Arc::new(AppState {
+        config_recovery: std::sync::Mutex::new(loaded.recovery),
         config_dir,
         hide_on_blur: std::sync::atomic::AtomicBool::new(config.hide_on_blur),
         mini_pinned: std::sync::atomic::AtomicBool::new(false),
@@ -495,6 +548,7 @@ pub fn run() {
             get_snapshots,
             app_version,
             set_config,
+            recover_config,
             set_secret,
             has_secret,
             clear_secret,

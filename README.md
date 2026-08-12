@@ -147,6 +147,16 @@ Manager**, not on disk. On Linux they fall back to a `0600` `secrets.json` in th
 config dir. Config lives at `%APPDATA%\quota-widget\config.json`
 (`~/.config/quota-widget/config.json` on Linux).
 
+**If that config file cannot be read**, the widget starts on defaults and says
+so in a banner across the top of the popup, naming the file. Your file is left
+exactly as it is, and every save — from Settings, from moving the mini summary,
+from anywhere — refuses while it is in that state, so nothing overwrites it
+behind your back. You then have two ways out: fix or restore the file by hand
+and reopen the widget, or press **Replace with these settings** in the banner,
+which moves your unreadable file to `config.json.unreadable` in the same folder
+(nothing is deleted) and starts saving normally again. A first run, where there
+is no config file at all, is not this case: it simply starts with the defaults.
+
 **What that protects against, and what it doesn't.** The two platforms are not
 equivalent, so it is worth being precise:
 
