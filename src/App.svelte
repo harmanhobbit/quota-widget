@@ -32,6 +32,29 @@
   let integrationPrompt = $state(null);
   let integrationResult = $state('');
 
+  // Set when Rust found a config.json it could not read or parse. The file is
+  // still on disk untouched and every ordinary save refuses, so this banner is
+  // both the notice that the settings on screen are defaults and the only way
+  // to get out of that state deliberately.
+  let configRecovery = $state(null);
+  let recoveryError = $state('');
+  let recoveryResult = $state('');
+
+  async function replaceBrokenConfig() {
+    recoveryError = '';
+    try {
+      const kept = await invoke('recover_config', { config: $state.snapshot(appConfig) });
+      configRecovery = null;
+      recoveryResult = kept
+        ? `Settings replaced. Your unreadable file was kept at ${kept}.`
+        : 'Settings replaced.';
+    } catch (error) {
+      // The banner stays: nothing was replaced, so the state it describes is
+      // still true.
+      recoveryError = String(error.message ?? error);
+    }
+  }
+
   async function maybeAskAboutIntegration() {
     // Only a running AppImage answers with a status, and only an unclaimed
     // launcher is worth asking about — a repair is a Settings decision, not a
@@ -91,6 +114,7 @@
     invoke('get_snapshots').then((initial) => {
       snapshots = initial.snapshots;
       appConfig = initial.config;
+      configRecovery = initial.config_recovery ?? null;
       void maybeAskAboutIntegration();
     });
     const unlisten = [];
@@ -190,6 +214,29 @@
     {/if}
     <button class="icon" title="Hide to tray" onclick={() => invoke('hide_window')}>✕</button>
   </header>
+
+  <!-- The saved settings could not be read. This says so wherever the user
+       looks first, because the alternative — a widget that quietly comes up
+       with nobody's accounts configured — reads as data loss that already
+       happened. Nothing here deletes anything: replacing keeps the original. -->
+  {#if configRecovery}
+    <div class="config-recovery" role="alert">
+      <p>
+        <strong>Your saved settings could not be
+        {configRecovery.kind === 'unreadable' ? 'read' : 'understood'}.</strong>
+        They have been left untouched at <code>{configRecovery.path}</code> and the widget is
+        running on defaults. Saving is blocked until you replace them, so nothing overwrites the
+        original.
+      </p>
+      <p class="recovery-detail">{configRecovery.detail}</p>
+      {#if recoveryError}<p class="recovery-detail">Could not replace: {recoveryError}</p>{/if}
+      <div class="recovery-actions">
+        <button onclick={replaceBrokenConfig}>Replace with these settings</button>
+      </div>
+    </div>
+  {:else if recoveryResult}
+    <p class="integration-result">{recoveryResult}</p>
+  {/if}
 
   <!-- Consent before anything is written outside the config dir. It sits above
        the cards rather than in a modal so it can be ignored: it disappears on
