@@ -149,11 +149,22 @@ predating the rule:
 ## Build and test
 
 ```sh
-cargo test -p quota-core   # 34 tests, all pure Rust — this is your main feedback loop
+cargo test -p quota-core   # pure Rust — this is your main feedback loop
+cargo fmt --all            # formatting is a CI gate; --check is what CI runs
+cargo clippy -p quota-core --all-targets -- -D warnings   # also a CI gate
 npm run build              # vite build of the Svelte frontend
 npm run check-versions     # version consistency across the four files
 npm i -D jsdom --no-save && npm run smoke-mount   # does the UI actually render?
 ```
+
+**Formatting and Clippy are enforced, and `-D warnings` means no warnings.**
+Fix the code rather than reaching for a suppression: a crate-wide `#![allow(…)]`
+or a blanket `-A clippy::…` in CI turns the gate off for everything, including
+the next lint it would have caught. A single, commented `#[allow]` on one item
+is the only acceptable form, and only where the lint is genuinely wrong.
+Clippy runs over `quota-core` in CI for the same reason the tests do — the cheap
+Linux runner has no GTK/WebKit libraries, so `src-tauri` cannot even compile
+there. Check that crate under `nix develop` locally when you touch it.
 
 **Building `src-tauri` needs the dev shell.** On a bare checkout the GTK/WebKit
 `-sys` crates fail in their build scripts at `pkg-config --libs gdk-3.0`, so the
@@ -345,8 +356,9 @@ Outstanding:
    proven end to end, in-place install included.)
 2. **Linux distribution** — the open question, and never part of the plan. The
    app claims Windows and Linux support but publishes Windows-only releases,
-   and the Nix flake lives in the private repo. See the plan's "Linux
-   distribution" section.
+   and the Nix flake was reachable only to source collaborators. Both are
+   addressed by the signed AppImage and the now-public source (ADR-0003). See
+   the plan's "Linux distribution" section.
 
 The **Nix-aware update prompt** was superseded, not skipped: Settings branches
 on whether a release published an installable artifact for the running build,

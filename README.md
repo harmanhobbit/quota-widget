@@ -9,8 +9,13 @@ the tray and pops up as a compact always-on-top window.
 
 Built with Tauri 2 (Rust) + Svelte 5. The portable EXE is self-contained —
 Windows 11 ships the WebView2 runtime it renders with. Linux releases ship an
-x86_64 AppImage built on Ubuntu 22.04; a Nix flake remains available to source
-repository collaborators (see [Building](#nixos--nix)).
+x86_64 AppImage built on Ubuntu 22.04; a Nix flake is also in the tree as the
+reproducible source-build route (see [Building](#nixos--nix)).
+
+The source is public and licensed **Apache-2.0** — the complete text is in
+[`LICENSE`](LICENSE). Installable builds are a separate thing from the source:
+they are signed in CI and published to the dist repository described under
+[Releases and update checks](#releases-and-update-checks).
 
 Platform differences are small but real:
 
@@ -199,8 +204,13 @@ against that vendor's own dashboard.
 
 ### CI
 
-Push to GitHub — `.github/workflows/build.yml` runs the core test suite on Linux
-for every branch. Windows packaging is **dispatch-only** (`gh workflow run
+Push to GitHub — `.github/workflows/build.yml` runs the Linux quality gates on
+every branch: `cargo fmt --all -- --check`, `cargo clippy -p quota-core
+--all-targets -- -D warnings`, the core test suite, and `npm run
+check-versions`. Clippy is scoped to `quota-core` for the same reason the tests
+are: `src-tauri` needs the GTK/WebKit system libraries, which that cheap runner
+does not install. `release.yml` runs the identical gate before it builds
+anything. Windows packaging is **dispatch-only** (`gh workflow run
 build.yml --ref <branch>`), because that runner bills at a **2x** minute
 multiplier against the account's monthly Actions quota. A dispatch produces two
 artifacts:
@@ -284,8 +294,9 @@ replacing the EXE; on Nix, `nix profile upgrade`.
 the public dist repository, then run `chmod +x QuotaWidget_<version>_amd64.AppImage`
 followed by `./QuotaWidget_<version>_amd64.AppImage`. The public download page
 has the matching `minisign` verification command. The Nix flake is distinct: it
-is a reproducible source build that pins GTK/WebKit, and remains available only
-to collaborators with access to this private repository.
+is a reproducible source build that pins GTK/WebKit rather than a published,
+signed binary, so it does not participate in in-app updates — upgrade it the
+way you upgrade anything else in Nix.
 
 That floor is checked by launching the AppImage directly on a Kubuntu 22.04 VM
 with nothing extra installed. Running it on NixOS through `appimage-run` is
@@ -327,9 +338,10 @@ handles the bump, `Cargo.lock`, commit, annotated tag, and push — confirming
 before anything leaves the machine. See "Releases" in `AGENTS.md` for what it
 does and the by-hand equivalent.
 
-This repo is private, so releases are published to the public
-[`harmanhobbit/quota-widget-dist`](https://github.com/harmanhobbit/quota-widget-dist)
-repo: pushing a `v*.*.*` tag runs `release.yml`, which builds signed Windows
+Installable artifacts live in their own public repository,
+[`harmanhobbit/quota-widget-dist`](https://github.com/harmanhobbit/quota-widget-dist),
+so downloads stay separate from the source tree: pushing a `v*.*.*` tag runs
+`release.yml`, which builds signed Windows
 and Ubuntu-22.04 AppImage artifacts, then uploads the NSIS installer, its
 `.sig`, the portable EXE (renamed
 `QuotaWidget_<version>_x64-portable.exe`, since an asset name is its download
@@ -338,7 +350,10 @@ AppImage and its `.sig`, and a `latest.json` manifest. It only publishes after
 both platform builds succeed. It also republishes `docs/dist-README.md` as that
 repo's landing page, so the public download instructions cannot drift from what
 ships — edit that file, not the dist repo directly. The tag must match the
-workspace `Cargo.toml` version — CI refuses to publish a mislabelled tree. A `workflow_dispatch` defaults to a **dry run**: it builds and signs, then
+workspace `Cargo.toml` version — CI refuses to publish a mislabelled tree.
+Signing and publishing credentials (`TAURI_SIGNING_PRIVATE_KEY`, its password,
+and `DIST_REPO_TOKEN`) are read from CI secrets only; no key material is in
+this repository. A `workflow_dispatch` defaults to a **dry run**: it builds and signs, then
 attaches the manifest and installer as workflow artifacts instead of publishing,
 which is the safe way to exercise the signing key end to end.
 
@@ -453,3 +468,15 @@ scripts/            icon generation, version-drift guard
 
   Worth knowing before you switch: XWayland can look blurry under fractional
   scaling. X11 and Windows are unaffected.
+
+## License
+
+Apache License 2.0. The complete license text is in [`LICENSE`](LICENSE) at the
+repository root, and the same grant is declared in the workspace `Cargo.toml`
+(`license = "Apache-2.0"`), `package.json`, and `nix/package.nix`
+(`lib.licenses.asl20`) — those must stay in step with `LICENSE`.
+
+The source being public changes nothing about how builds are distributed:
+released binaries are still built and signed in CI and published to the dist
+repository, and release credentials remain CI secrets that never enter the tree
+(see [ADR-0003](docs/adr/0003-public-source-under-apache-2-0.md)).

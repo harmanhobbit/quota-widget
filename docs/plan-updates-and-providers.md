@@ -52,7 +52,7 @@ distribution, which the plan never scheduled.
 
 | Question | Decision |
 |---|---|
-| Repo visibility | **Stays private.** A separate *public* repo carries the manifest and release binaries. |
+| Repo visibility | **Was private** when this plan was written; the source is now public under Apache-2.0 (ADR-0003). The separate *public* dist repo still carries the manifest and release binaries — that half is unchanged. |
 | Windows install | **Switch to the NSIS installer** for in-app updating; CI keeps emitting the portable EXE too. |
 | New providers | **Hand-written built-in adapters**, not a generic config-driven one. |
 
@@ -383,7 +383,9 @@ the signature cryptographically against the committed pubkey. Two things remain
 unproven until the first real tag: `DIST_REPO_TOKEN`'s write scope, and
 end-to-end detection against a manifest that actually exists.
 
-Private source, public distribution — per Ian's decision.
+Separate source and distribution repositories — per Ian's decision. The source
+repo was private at the time; it is now public under Apache-2.0 (ADR-0003), and
+releases still go to the dist repo.
 
 **Ian-only manual steps (I must not do these) — reported done by Ian, 2026-08-05:**
 create the public repo `harmanhobbit/quota-widget-dist`; run
@@ -552,12 +554,12 @@ Neither is a minor. Fold them into a patch if they are wanted at all.
 
 Not in the original plan, and the largest remaining gap. The app is described
 as supporting Windows 11 and Linux, but **releases are Windows-only** and the
-Nix flake — the supported Linux route — lives in the private source repo, so a
-Linux user reading the public dist page is pointed at something they cannot
-reach. The READMEs say this plainly until the work below ships.
+Nix flake — the supported Linux route — lived in the then-private source repo,
+so a Linux user reading the public dist page was pointed at something they could
+not reach. The READMEs said this plainly until the work below shipped.
 
-**Decision (Ian, 2026-08-09):** publish one public `x86_64` AppImage while
-keeping the source repo private. This is one Linux-distribution minor, not a
+**Decision (Ian, 2026-08-09):** publish one public `x86_64` AppImage. (Written
+while the source repo was private; opening it changed none of this — ADR-0003.) This is one Linux-distribution minor, not a
 second feature beside it. The Nix flake remains the reproducible/developer
 route and may continue to expose more architectures, but only `x86_64` is a
 published-binary promise.

@@ -116,7 +116,12 @@ fn total_spend_usd(body: &Value) -> f64 {
         .filter_map(Value::as_array)
         .flatten()
         .filter_map(|item| item.get("amount"))
-        .filter_map(|amount| amount.get("value").and_then(as_f64).or_else(|| as_f64(amount)))
+        .filter_map(|amount| {
+            amount
+                .get("value")
+                .and_then(as_f64)
+                .or_else(|| as_f64(amount))
+        })
         .sum()
 }
 

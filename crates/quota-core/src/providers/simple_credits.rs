@@ -82,7 +82,11 @@ impl Provider for SimpleCredits {
                     "API key rejected — re-check it in Settings".into(),
                 ))
             }
-            s => return Err(FetchError::Network(format!("HTTP {s} from balance endpoint"))),
+            s => {
+                return Err(FetchError::Network(format!(
+                    "HTTP {s} from balance endpoint"
+                )))
+            }
         }
         let body: Value = resp.json().await.map_err(network_err)?;
         let credits = (self.spec.parse)(&body)

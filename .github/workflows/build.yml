@@ -31,7 +31,14 @@ jobs:
         with:
           node-version: 22
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      # Clippy is scoped to quota-core for the same reason the tests are: the
+      # src-tauri crate needs the GTK/WebKit system libraries, which this cheap
+      # runner deliberately does not install. -D warnings, no crate-wide allows.
+      - run: cargo clippy -p quota-core --all-targets -- -D warnings
       - run: cargo test -p quota-core
       # Catches a hardcoded version creeping back in (nix/package.nix once
       # sat a whole release behind); needs no npm install.
@@ -94,5 +101,5 @@ jobs:
           name: quota-widget-installer-${{ steps.artifact-name.outputs.suffix }}
           path: target/release/bundle/nsis/*.exe
       # No release-publishing step here on purpose. release.yml is the single
-      # source of published assets, and it publishes to the public dist repo;
-      # a second draft release on this private repo would compete with it.
+      # source of published assets, and it publishes to the dist repo; a second
+      # draft release on the source repo would compete with it.

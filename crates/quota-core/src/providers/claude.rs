@@ -2,12 +2,12 @@
 //! own `/usage` command uses. These are unofficial endpoints and may change.
 //!
 //! Auth sources, controlled by the `auth_mode` provider setting:
-//! - `"cli"`   — only the Claude Code credential file (`~/.claude/.credentials.json`)
+//! - `"cli"` — only the Claude Code credential file (`~/.claude/.credentials.json`)
 //! - `"oauth"` — only the widget's own sign-in (tokens stored under the
-//!               `claude_oauth` secret by the host app's PKCE flow)
+//!   `claude_oauth` secret by the host app's PKCE flow)
 //! - `"auto"` (default) — a fresh CLI token wins; otherwise the widget's own
-//!               stored login; otherwise a last-resort refresh with the CLI's
-//!               refresh token.
+//!   stored login; otherwise a last-resort refresh with the CLI's refresh
+//!   token.
 //!
 //! Anthropic rotates refresh tokens on use, so whenever *we* perform a refresh
 //! the rotated pair is persisted to our own `claude_oauth` secret — never back

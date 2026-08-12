@@ -126,7 +126,7 @@ rustPlatform.buildRustPackage rec {
   meta = {
     description = "System-tray widget showing AI provider usage and credits";
     homepage = "https://github.com/harmanhobbit/quota-widget";
-    license = lib.licenses.mit;
+    license = lib.licenses.asl20;
     mainProgram = "quota-widget";
     platforms = lib.platforms.linux;
   };
