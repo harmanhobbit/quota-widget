@@ -69,6 +69,17 @@ decision, made once, after work is merged — see "Releases" below.
 **If you touch `package.json` dependencies**, the `npmDeps.hash` in
 `nix/package.nix` must be regenerated or the Nix build breaks.
 
+**`package.json` has an `allowScripts` field**, npm 11's least-privilege
+lifecycle-script policy. It lists `esbuild` only: its install script is what
+puts the platform binary in `node_modules/esbuild/bin/`, and the Nix build
+asserts that binary runs before vite starts. Darwin-only optional packages
+(`fsevents`) stay unlisted — they are not installed on Linux, and approving
+them would widen the policy for nothing. A new dependency with an install
+script shows up as a `npm warn ... not yet covered by allowScripts` line in
+the Nix build; review it rather than blanket-approving. See the comment above
+`npmConfigHookCompat` in `nix/package.nix` for the related npm-config
+deprecation workaround and the condition for deleting it.
+
 ---
 
 ## Releases
