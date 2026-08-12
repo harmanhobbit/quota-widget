@@ -161,9 +161,13 @@ equivalent, so it is worth being precise:
   your home directory can read it. Roughly the same exposure as a `.env` file,
   with two small advantages: it is `0600` rather than the usual `644`, and it
   lives in `~/.config` rather than a project directory where `git add -A` or a
-  Docker build context might sweep it up. The `chmod` is best-effort — on a
-  filesystem without POSIX permissions (an exFAT mount, some network shares)
-  the file is still written, so avoid pointing the config dir at one.
+  Docker build context might sweep it up. The mode is set by the `open` call
+  that creates the file, so no byte of a key is ever on disk world-readable,
+  and on a filesystem that ignores POSIX permissions (an exFAT mount, some
+  network shares) the save is **refused with an error** rather than quietly
+  leaving your keys readable. Updates are written to a temp file in the same
+  directory and renamed over the store, so an interrupted save leaves either
+  the old store or the new one, never half a file.
 
 `keyring` supports the Secret Service API, so GNOME Keyring / KWallet storage
 on Linux is a small change if that exposure ever stops being acceptable. It has
@@ -400,6 +404,7 @@ crates/quota-core   pure Rust, no UI deps — fully unit-tested
   alerts.rs         edge-triggered alert engine
   desktop.rs        per-user AppImage launcher/icon integration (plan + apply)
   settings_return.rs  where a Settings visit goes when it exits
+  secret_store.rs   secret key naming + the owner-only, atomic plaintext store
   providers/        one adapter per provider behind a common trait
 src-tauri           the Tauri shell
   tray.rs           runtime-generated status icons, full window + mini summary placement
@@ -408,7 +413,7 @@ src-tauri           the Tauri shell
   codex_oauth.rs    built-in Codex sign-in (device code)
   updates.rs        6-hourly check of the public release manifest
   desktop.rs        IPC around quota-core's AppImage desktop integration
-  secrets.rs        Credential Manager (Windows) / 0600 plaintext file (elsewhere)
+  secrets.rs        Credential Manager (Windows) / quota-core's file store (elsewhere)
 src/                Svelte UI
   App.svelte        popup shell (usage list / settings)
   lib/              ProviderCard, Settings, MiniSummary
