@@ -12,6 +12,9 @@
     "release": "bash scripts/bump-version.sh",
     "smoke-mount": "node --conditions=browser scripts/smoke-mount.mjs"
   },
+  "allowScripts": {
+    "esbuild": true
+  },
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",
     "@tauri-apps/plugin-updater": "^2.10.1"

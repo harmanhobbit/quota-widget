@@ -17,6 +17,48 @@
 , tailscale
 }:
 
+let
+  # nixpkgs' npmConfigHook still hands npm three config names npm dropped:
+  # `nodedir`, `platform` and `arch`. npm 11 warns "Unknown env config ...
+  # This will stop working in the next major version of npm" for each, once
+  # per npm invocation (so twice per build: `npm ci`/`npm rebuild` inside the
+  # hook, then `npm run build`), and npm 12 will make them errors — which
+  # would break `nix build` for everyone installing from this flake.
+  #
+  # As of this nixpkgs pin the hook on nixpkgs master still exports the old
+  # names, so there is no newer revision to move to; carry the translation
+  # here instead, using the mechanisms npm and node-gyp document today:
+  #
+  #   npm_config_nodedir  -> npm_package_config_node_gyp_nodedir
+  #        node-gyp's own env namespace, added for precisely this deprecation
+  #        (nodejs/node-gyp#3156) and read in preference to npm_config_* by
+  #        the node-gyp bundled with this nixpkgs' nodejs.
+  #   npm_config_arch     -> npm_config_cpu + npm_package_config_node_gyp_arch
+  #        the old key served two consumers: npm selects platform-specific
+  #        optional deps by `cpu`, node-gyp derives `target_arch` from `arch`.
+  #        Both keep their value, so native addons still build for the target.
+  #   npm_config_platform -> npm_config_os
+  #        npm's supported name for optional-dependency OS selection.
+  #
+  # `npm_config_node_gyp` is a live npm config and is left alone.
+  #
+  # Remove this whole override once the nixpkgs pin carries a hook that no
+  # longer exports the deprecated names — `--replace-fail` turns that day into
+  # a loud build failure rather than a silent no-op.
+  npmConfigHookCompat = npmHooks.npmConfigHook.overrideAttrs (old: {
+    buildCommand = old.buildCommand + ''
+      substituteInPlace $out/nix-support/setup-hook \
+        --replace-fail 'export npm_config_nodedir=' \
+                       'export npm_package_config_node_gyp_nodedir=' \
+        --replace-fail 'export npm_config_arch=' \
+                       'export npm_config_cpu=' \
+        --replace-fail 'export npm_config_platform=' \
+                       'export npm_package_config_node_gyp_arch="$npm_config_cpu"
+    export npm_config_os='
+    '';
+  });
+in
+
 rustPlatform.buildRustPackage rec {
   pname = "quota-widget";
   # Single source of truth: the workspace Cargo.toml. tauri.conf.json and
@@ -69,7 +111,7 @@ rustPlatform.buildRustPackage rec {
 
   nativeBuildInputs = [
     nodejs
-    npmHooks.npmConfigHook
+    npmConfigHookCompat
     pkg-config
     wrapGAppsHook3
   ];
@@ -83,6 +125,14 @@ rustPlatform.buildRustPackage rec {
 
   # Vite must run before cargo: tauri-build embeds ../dist at compile time.
   preBuild = ''
+    # The npm hook's `npm rebuild` runs esbuild's install script (the only
+    # lifecycle script in the Linux dependency tree — see package.json's
+    # `allowScripts`), which is what puts the platform binary in place. A
+    # rebuild that quietly no-ops would leave vite to fail much later with a
+    # confusing esbuild error, so assert the binary is here first.
+    node_modules/.bin/esbuild --version > /dev/null \
+      || { echo "ERROR: esbuild's platform binary is unusable after npm rebuild"; exit 1; }
+
     npm run build
   '';
 
