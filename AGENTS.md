@@ -259,15 +259,40 @@ step that does not currently exist.
 
 The Windows keyring backend has **no enumeration API**, so the set of secret
 keys must be derived from `Config.providers` keys rather than discovered from
-the store. `load_all` (`secrets.rs:118`) does exactly that: it walks the config
-and, for `claude`/`codex` accounts, additionally derives `oauth_key(key)`.
-Validation is a predicate, `valid_key` (`secrets.rs:12`) — there is no hardcoded
-provider allow-list, and adding one would break multi-account, whose keys are
-user-generated (`claude#2`).
+the store. `secret_keys` (`secret_store.rs:41`) does exactly that: it walks the
+config and, for `claude`/`codex` accounts, additionally derives
+`oauth_key(key)`; `load_all` (`secrets.rs`) reads that list through whichever
+backend the platform has. Validation is a predicate, `valid_key`
+(`secret_store.rs:24`) — there is no hardcoded provider allow-list, and adding
+one would break multi-account, whose keys are user-generated (`claude#2`).
+
+Naming lives in `quota-core` so both backends agree on it and so the rules are
+covered by `cargo test -p quota-core`, which needs no GTK/WebKit dev shell.
 
 This is why account *keys* are immutable and separate from editable *labels*:
 renaming an account must only ever write `label`, because the key is
 load-bearing for secret names that cannot be enumerated to fix up afterwards.
+
+### The Linux secret file must be private from its first byte
+
+`quota_core::secret_store` writes plaintext keys and tokens, so three things in
+`write_map` are load-bearing and must not be "simplified" back:
+
+1. The temp file is created by `create_private` with `OpenOptions::mode(0o600)`.
+   A `fs::write` + `set_permissions` pair would publish the secret for the
+   window between the two calls.
+2. `verify_private` reads the mode back off the open handle *before* any secret
+   byte is written, and returns `Err` if group/other bits survived — a
+   filesystem without POSIX permissions ignores the requested mode, and a
+   swallowed warning would leave the UI claiming a key was saved safely.
+3. The write goes to a temp file in the same directory and is `sync_all`'d
+   before being renamed over `secrets.json`, so an interrupted save can never
+   leave a partial JSON store. `read_map` likewise **errors** on an
+   unparseable store instead of overwriting it, which would silently drop every
+   other account's secret.
+
+Failures propagate to `set_secret`'s `Result` and into Settings' footer error;
+nothing marks a secret as stored on a write that did not land.
 
 ### Codex has no token refresh
 

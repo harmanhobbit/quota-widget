@@ -2,24 +2,17 @@
 //!
 //! On Windows the Credential Manager is used (via the `keyring` crate), so the
 //! portable EXE leaves no plaintext secrets on disk. Elsewhere (Linux dev
-//! runs) secrets fall back to a 0600 JSON file in the config dir.
+//! runs) secrets fall back to an owner-only, atomically replaced JSON file in
+//! the config dir — `quota_core::secret_store`, which is where the permission
+//! and atomicity rules and their tests live.
 
 use quota_core::config::Config;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Keep keyring names predictable and reject accidental arbitrary entries.
-pub fn valid_key(key: &str) -> bool {
-    !key.is_empty()
-        && key.len() <= 128
-        && key
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'#' | b'_' | b'-'))
-}
-
-pub fn oauth_key(account: &str) -> String {
-    format!("{account}_oauth")
-}
+/// Entry naming is shared with the file store, so the two backends agree on
+/// which names a configuration implies.
+pub use quota_core::secret_store::{oauth_key, valid_key};
 
 /// Windows Credential Manager caps one blob at CRED_MAX_CREDENTIAL_BLOB_SIZE
 /// (2560 bytes, counted as UTF-16 — so 1280 code units). A Codex OAuth secret
@@ -136,59 +129,7 @@ mod backend {
 }
 
 #[cfg(not(windows))]
-mod backend {
-    use std::path::Path;
-
-    fn path(dir: &Path) -> std::path::PathBuf {
-        dir.join("secrets.json")
-    }
-
-    fn read(dir: &Path) -> serde_json::Map<String, serde_json::Value> {
-        std::fs::read_to_string(path(dir))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
-    }
-
-    fn write(dir: &Path, map: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        let p = path(dir);
-        std::fs::write(&p, serde_json::to_string_pretty(map).unwrap())
-            .map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            // This file is plaintext, so the mode is the only thing protecting
-            // it. Filesystems without POSIX permissions (an exFAT mount, some
-            // network shares) silently leave it world-readable, which the user
-            // cannot see from the UI — so say so rather than swallowing it.
-            if let Err(e) = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)) {
-                eprintln!(
-                    "warning: could not restrict permissions on {} ({e}) — it contains \
-                     API keys in plaintext and may be readable by other users",
-                    p.display()
-                );
-            }
-        }
-        Ok(())
-    }
-
-    pub fn get(dir: &Path, provider: &str) -> Option<String> {
-        read(dir).get(provider)?.as_str().map(String::from)
-    }
-
-    pub fn set(dir: &Path, provider: &str, value: &str) -> Result<(), String> {
-        let mut map = read(dir);
-        map.insert(provider.into(), value.into());
-        write(dir, &map)
-    }
-
-    pub fn clear(dir: &Path, provider: &str) -> Result<(), String> {
-        let mut map = read(dir);
-        map.remove(provider);
-        write(dir, &map)
-    }
-}
+use quota_core::secret_store as backend;
 
 pub fn get(dir: &Path, provider: &str) -> Option<String> {
     if !valid_key(provider) {
@@ -215,17 +156,8 @@ pub fn clear(dir: &Path, provider: &str) -> Result<(), String> {
 }
 
 pub fn load_all(dir: &Path, config: &Config) -> HashMap<String, String> {
-    config
-        .providers
-        .iter()
-        .flat_map(|(key, p)| {
-            let kind = p.kind.as_deref().unwrap_or(key);
-            let mut keys = vec![key.clone()];
-            if matches!(kind, "claude" | "codex") {
-                keys.push(oauth_key(key));
-            }
-            keys
-        })
+    quota_core::secret_store::secret_keys(config)
+        .into_iter()
         .filter_map(|key| get(dir, &key).map(|v| (key, v)))
         .collect()
 }
