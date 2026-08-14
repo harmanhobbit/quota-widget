@@ -43,7 +43,7 @@ checkout.
       malformed/unreadable/permission-denied files run on defaults and are kept;
       an ordinary save refuses to replace an unreadable config; recovery keeps
       the original aside.)
-- [x] `cargo fmt --all -- --check`, strict workspace Clippy, `cargo test -p
+- [x] `cargo fmt --all -- --check`, strict `quota-core` Clippy, `cargo test -p
       quota-core`, `npm run check-versions`, `npm run build`, and `npm run
       smoke-mount` pass on the merged tree.
 
