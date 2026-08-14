@@ -106,7 +106,7 @@ rustPlatform.buildRustPackage rec {
     # Regenerate whenever package.json/package-lock.json change:
     #   nix build .#quota-widget   (the error prints the correct `got:` hash)
     # or: prefetch-npm-deps package-lock.json
-    hash = "sha256-mQSeiMdQIz0LKryDcj6BjCqKmA81WFlbvasqls0iFMY=";
+    hash = "sha256-WjgtQimQ27NH5sXzmorpbavy1ua3M6cAQmtta4oN8Qk=";
   };
 
   nativeBuildInputs = [

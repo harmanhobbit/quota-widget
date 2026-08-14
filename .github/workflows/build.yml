@@ -44,14 +44,37 @@ jobs:
       # sat a whole release behind); needs no npm install.
       - run: npm run check-versions
 
+  frontend:
+    name: Frontend build + smoke-mount (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm ci
+      # `vite build` only compiles the Svelte components; it cannot see a
+      # component that throws while rendering. That gap has shipped
+      # user-visible breakage twice, so build alone is not the gate.
+      - run: npm run build
+      # smoke-mount mounts every top-level component under jsdom with the Tauri
+      # IPC stubbed and fails if one throws or renders nothing — the Svelte 5
+      # runtime failures the compiler and `vite build` both miss. jsdom is
+      # deliberately NOT a package.json dependency: adding one forces an
+      # npmDeps.hash regen in nix/package.nix. `--no-save` installs it for this
+      # ephemeral runner without touching package.json or the committed
+      # lockfile. The `--conditions=browser` flag lives in the npm script.
+      - run: npm i -D jsdom --no-save
+      - run: npm run smoke-mount
+
   build-windows:
     name: Portable EXE (Windows)
-    needs: [test]
+    needs: [test, frontend]
     # Packaging here is dispatch-only. Ordinary branch and main pushes never
     # reach the Windows runner, which bills at a 2x multiplier against a
     # hand-budgeted quota. Tag builds belong to release.yml, which signs and
     # publishes; this job exists to hand-test a branch on Windows.
-    if: github.event_name == 'workflow_dispatch' && needs.test.result == 'success'
+    if: github.event_name == 'workflow_dispatch' && needs.test.result == 'success' && needs.frontend.result == 'success'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
