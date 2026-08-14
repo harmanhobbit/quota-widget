@@ -30,10 +30,12 @@ choose when to merge.
 
 **Branch from the latest `main`, and keep branches short-lived.** Fetch first
 and branch from `origin/main`, not from whatever the working tree happens to be
-sitting on. Do not routinely stack one feature branch on another: a branch that
-depends on unmerged work makes both harder to review and produces version
-conflicts at merge time (see "Version conflicts between branches"). If work
-genuinely cannot proceed without an unmerged branch, say so and ask.
+sitting on. When updating a local `main`, use `git pull --ff-only --prune
+origin main` so stale remote-tracking branches are cleaned up at the same time.
+Do not routinely stack one feature branch on another: a branch that depends on
+unmerged work makes both harder to review and produces version conflicts at
+merge time (see "Version conflicts between branches"). If work genuinely
+cannot proceed without an unmerged branch, say so and ask.
 
 **Branch-build badges are CI-driven.** `QUOTA_WIDGET_BRANCH` is the sole source
 of the visible branch badge. Never hardcode or strip it: local, `main` and
@@ -51,6 +53,13 @@ applicable checks are complete, push the branch so the finished change is
 available for review. Never push `main`. A branch push runs the Linux test job
 (1x minutes, ~30s), which is the point: the branch is known-green before anyone
 merges it. Windows packaging does not run on branches.
+
+**A goal is not complete until GitHub verifies the pushed change.** After
+creating the PR, use `gh` to inspect the live PR and its checks (for example,
+`gh pr view <number> --json number,state,headRefName,baseRefName,url` and
+`gh pr checks <number> --watch`). Confirm that the PR is open, targets `main`,
+points at the pushed branch, and that the required GitHub tests pass. Do not
+declare completion from local test output or a successful `git push` alone.
 
 **Do not add a git remote, change remotes, or touch credentials.** There is a
 repo-local credential helper reading `~/.gh_token`, deliberately configured with
