@@ -969,8 +969,10 @@ mod tests {
         /// A config with something in it worth losing, so a test that silently
         /// discards it is distinguishable from one that keeps it.
         fn a_configured_file() -> String {
-            let mut cfg = Config::default();
-            cfg.poll_interval_secs = 300;
+            let mut cfg = Config {
+                poll_interval_secs: 300,
+                ..Default::default()
+            };
             cfg.providers
                 .insert("claude#2".into(), ProviderConfig::default());
             serde_json::to_string_pretty(&cfg).unwrap()
@@ -1089,8 +1091,10 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("config.json"), "{not json").unwrap();
 
-            let mut cfg = Config::default();
-            cfg.poll_interval_secs = 90;
+            let cfg = Config {
+                poll_interval_secs: 90,
+                ..Default::default()
+            };
             let kept = cfg
                 .save_after_recovery(dir.path())
                 .unwrap()
@@ -1129,8 +1133,10 @@ mod tests {
         #[test]
         fn recovery_with_nothing_wrong_is_just_a_save() {
             let dir = tempfile::tempdir().unwrap();
-            let mut cfg = Config::default();
-            cfg.poll_interval_secs = 45;
+            let cfg = Config {
+                poll_interval_secs: 45,
+                ..Default::default()
+            };
             assert_eq!(cfg.save_after_recovery(dir.path()).unwrap(), None);
             assert_eq!(load(dir.path()).poll_interval_secs, 45);
             assert!(!dir.path().join("config.json.unreadable").exists());
