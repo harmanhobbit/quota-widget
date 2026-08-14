@@ -197,6 +197,7 @@ async fn run_ssh(
     cmd.stdin(std::process::Stdio::null());
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — no console flash
+
     // Spawning can transiently fail with ETXTBSY ("text file busy") when the
     // program was written moments ago and another thread's `fork` still holds a
     // write handle to it across its own `execve` — a race the kernel resolves in
@@ -208,7 +209,9 @@ async fn run_ssh(
         match tokio::time::timeout(REFRESH_TIMEOUT, cmd.output()).await {
             Err(_) => return Err(FetchError::Network(format!("ssh {host}: timed out"))),
             Ok(Ok(out)) => break out,
-            Ok(Err(e)) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && busy_retries < 25 => {
+            Ok(Err(e))
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy && busy_retries < 25 =>
+            {
                 busy_retries += 1;
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 continue;
