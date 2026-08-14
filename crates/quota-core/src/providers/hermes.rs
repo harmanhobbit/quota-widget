@@ -197,14 +197,29 @@ async fn run_ssh(
     cmd.stdin(std::process::Stdio::null());
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — no console flash
-    let out = tokio::time::timeout(REFRESH_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| FetchError::Network(format!("ssh {host}: timed out")))?
-        .map_err(|e| {
-            FetchError::Network(format!(
-                "could not run `{program}`: {e} — is the selected SSH client installed?"
-            ))
-        })?;
+    // Spawning can transiently fail with ETXTBSY ("text file busy") when the
+    // program was written moments ago and another thread's `fork` still holds a
+    // write handle to it across its own `execve` — a race the kernel resolves in
+    // microseconds. A short bounded retry clears it. Real ssh/tailscale binaries
+    // are never freshly written, so this only ever fires for generated programs
+    // such as the test stubs.
+    let mut busy_retries = 0u32;
+    let out = loop {
+        match tokio::time::timeout(REFRESH_TIMEOUT, cmd.output()).await {
+            Err(_) => return Err(FetchError::Network(format!("ssh {host}: timed out"))),
+            Ok(Ok(out)) => break out,
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && busy_retries < 25 => {
+                busy_retries += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                continue;
+            }
+            Ok(Err(e)) => {
+                return Err(FetchError::Network(format!(
+                    "could not run `{program}`: {e} — is the selected SSH client installed?"
+                )));
+            }
+        }
+    };
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(FetchError::Network(format!(
