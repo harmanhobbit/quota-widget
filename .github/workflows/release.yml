@@ -68,13 +68,35 @@ jobs:
       - run: cargo test -p quota-core
       - run: npm run check-versions
 
+  # A broken frontend must not reach a signed, published build. Same cheap
+  # Linux check build.yml runs, repeated here because a release can be reached
+  # by dispatch without build.yml ever having run on this ref.
+  frontend:
+    name: Frontend build + smoke-mount (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm ci
+      # `vite build` only compiles the components; smoke-mount catches the
+      # Svelte 5 runtime throws it misses. jsdom is deliberately not a
+      # package.json dependency (an npmDeps.hash regen in nix/package.nix);
+      # `--no-save` keeps this ephemeral install out of package.json and the
+      # committed lockfile. `--conditions=browser` lives in the npm script.
+      - run: npm run build
+      - run: npm i -D jsdom --no-save
+      - run: npm run smoke-mount
+
   build-windows:
     name: Signed Windows artifacts
-    needs: [verify-tag, test]
+    needs: [verify-tag, test, frontend]
     # verify-tag is skipped on a dispatch, so accept skipped — but never accept
     # a failure. Mirrors build.yml's build-windows gate.
     if: |
       !cancelled() && needs.test.result == 'success'
+      && needs.frontend.result == 'success'
       && needs.verify-tag.result != 'failure'
     runs-on: windows-latest
     steps:
@@ -136,11 +158,12 @@ jobs:
 
   build-linux:
     name: Signed AppImage (Ubuntu 22.04)
-    needs: [verify-tag, test]
+    needs: [verify-tag, test, frontend]
     # Keep the oldest supported glibc baseline explicit. Newer runners can
     # quietly raise it, producing an AppImage that no longer starts on 22.04.
     if: |
       !cancelled() && needs.test.result == 'success'
+      && needs.frontend.result == 'success'
       && needs.verify-tag.result != 'failure'
     runs-on: ubuntu-22.04
     steps:
@@ -202,11 +225,12 @@ jobs:
 
   publish:
     name: Publish to dist repo
-    needs: [verify-tag, test, build-windows, build-linux]
+    needs: [verify-tag, test, frontend, build-windows, build-linux]
     # Publication is deliberately a separate, cheap Linux job. It cannot begin
     # until both platform-specific builds have produced signed artifacts.
     if: |
       !cancelled() && needs.test.result == 'success'
+      && needs.frontend.result == 'success'
       && needs.verify-tag.result != 'failure'
       && needs.build-windows.result == 'success'
       && needs.build-linux.result == 'success'
