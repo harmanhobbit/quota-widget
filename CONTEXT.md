@@ -129,26 +129,6 @@ One configured sign-in to a provider, with its own name, secrets and settings.
 A provider may have several, and each is ordered and displayed independently.
 _Avoid_: Provider (the vendor), profile, connection
 
-**Distribution artifact**:
-A release file published for people to install on one platform, independent of
-whether the source repository is public.
-_Avoid_: Build, package (unless a platform-specific format is meant), source release
-
-**Installable artifact**:
-A distribution artifact the running build can replace through the in-app updater.
-An AppImage is installable in place; a Nix build is not.
-_Avoid_: Available download, update (which may only be detectable)
-
-**Compatibility floor**:
-The oldest operating-system environment a distribution artifact is promised to
-run on; newer environments are compatible by implication.
-_Avoid_: Build runner, latest Linux
-
-**Release signature**:
-The minisign signature over a distribution artifact, used by both the updater
-and a person verifying a download.
-_Avoid_: Checksum, release key
-
 **Desktop integration**:
 A per-user launcher and icon registration that makes a standalone AppImage
 discoverable from the desktop environment's application menu.
@@ -158,12 +138,6 @@ _Avoid_: System installation, AppImage daemon
 The mini summary's current visual opacity for this running app process. It
 survives hiding and reopening the summary, but begins fully opaque on a fresh start.
 _Avoid_: Saved opacity, fade preference
-
-**Settings return state**:
-The visible UI state to restore when Settings exits: the usage popup, the mini
-summary, or neither window. It is captured when Settings opens and lasts only
-for that visit; it is not a user preference or saved configuration.
-_Avoid_: Previous page, navigation history, saved window state
 
 **Tray-first launch**:
 Starting the application without presenting its main window; the tray icon is
@@ -187,6 +161,7 @@ The presentation allowed for alert levels already present at the alert
 baseline: warnings remain tray-only, while critical states may notify but do
 not present the main window.
 _Avoid_: Initial notification setting, launch warning
+
 **Settings return state**:
 Where a Settings visit goes when it exits — the usage popup, the mini summary,
 or no window at all. It is *transient*: captured when Settings opens and gone

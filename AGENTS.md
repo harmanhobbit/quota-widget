@@ -398,27 +398,25 @@ under-panel bug.
 
 ---
 
-## Current task
+## Project status
 
-**`docs/plan-updates-and-providers.md` is essentially complete.** Read it for
-why things are the way they are, not as a to-do list. The finesse patches, the
-branch dev badge, Tailscale transport, scroll-to-fade opacity, every provider
-adapter, and update detection (0.17.0) are all shipped. Do not reimplement them.
+**`docs/plan-updates-and-providers.md` is complete.** Read it for why things are
+the way they are, not as a to-do list. The finesse patches, the branch dev
+badge, Tailscale transport, scroll-to-fade opacity, every provider adapter, and
+update detection (0.17.0) are all shipped. Do not reimplement them.
 
-Outstanding:
+The two items that section once tracked as outstanding have since shipped too:
 
-1. **Portable-EXE install button** — a known defect, patch-sized. The button is
-   gated on whether the release published a download, not on whether this build
-   can install one, so a portable EXE offers a button that cannot work. Expose
-   `tauri_plugin_updater`'s `bundle_type()` through `update_status` as an
-   `installable` flag and fall through to the existing "upgrade the way you
-   installed it" note. (Native Windows update itself shipped as 0.19.0 and is
-   proven end to end, in-place install included.)
-2. **Linux distribution** — the open question, and never part of the plan. The
-   app claims Windows and Linux support but publishes Windows-only releases,
-   and the Nix flake was reachable only to source collaborators. Both are
-   addressed by the signed AppImage and the now-public source (ADR-0003). See
-   the plan's "Linux distribution" section.
+1. **Portable-EXE install button** — fixed. `update_status` now carries an
+   `installable` flag (`quota_core::update::UpdateInfo::installable`, derived
+   from the updater's `bundle_type()`), and Settings offers **Install update**
+   only when the running build can actually replace itself; a portable EXE falls
+   through to the "upgrade the way you installed it" note. (Native Windows update
+   itself shipped as 0.19.0 and is proven end to end, in-place install included.)
+2. **Linux distribution** — shipped. `release.yml` builds and publishes a signed
+   `x86_64` AppImage on pinned Ubuntu 22.04, with per-user desktop integration
+   and in-place AppImage updates, and the source is public under Apache-2.0
+   (ADR-0003). See the plan's "Linux distribution" section for the rationale.
 
 The **Nix-aware update prompt** was superseded, not skipped: Settings branches
 on whether a release published an installable artifact for the running build,
