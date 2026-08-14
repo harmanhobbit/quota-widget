@@ -43,8 +43,9 @@ third link, the Nix prompt, was superseded rather than built (see its section).
 The providers were independent of everything, including each other, and are all
 shipped.
 
-**This ordering is now history.** Every item below is done except Linux
-distribution, which the plan never scheduled.
+**This ordering is now history, and so is the plan.** Every item below is done —
+including the Linux distribution work the plan never scheduled, which was added
+and shipped later (see its section).
 
 ---
 
@@ -477,14 +478,15 @@ dry runs.
 The `npmDeps.hash` regen that adding `@tauri-apps/plugin-updater` forced was
 done by Ian on 2026-08-05 and is no longer outstanding.
 
-**Known defect:** the Install button is gated on whether the *release* published
-a download, not on whether *this build* can install one. A portable EXE
-therefore offers a button that cannot work — `tauri-plugin-updater`'s
-`bundle_type()` returns `None` for it, so the install fails rather than doing
-anything harmful, but the UI should not have offered it. The fix is to expose
-that through `update_status` as an `installable` flag and fall through to the
-same "upgrade the way you installed it" note the no-download case uses. Patch,
-not a minor.
+**Known defect — since fixed** (folded into the Linux-distribution work below,
+which needed the same `installable` flag): the Install button was gated on
+whether the *release* published a download, not on whether *this build* can
+install one. A portable EXE therefore offered a button that could not work —
+`tauri-plugin-updater`'s `bundle_type()` returns `None` for it, so the install
+failed rather than doing anything harmful, but the UI should not have offered it.
+The fix exposed that through `update_status` as an `installable` flag and falls
+through to the same "upgrade the way you installed it" note the no-download case
+uses. Patch, not a minor.
 
 - `src-tauri/Cargo.toml` — add `tauri-plugin-updater`, registered in
   `lib.rs`'s builder chain alongside the existing plugins
@@ -550,13 +552,17 @@ its own when the *wording* must differ, which it does not yet.
 
 Neither is a minor. Fold them into a patch if they are wanted at all.
 
-### Linux distribution — decided, not yet implemented
+### Linux distribution — decided, and since shipped
 
-Not in the original plan, and the largest remaining gap. The app is described
-as supporting Windows 11 and Linux, but **releases are Windows-only** and the
-Nix flake — the supported Linux route — lived in the then-private source repo,
-so a Linux user reading the public dist page was pointed at something they could
-not reach. The READMEs said this plainly until the work below shipped.
+Not in the original plan, and once the largest remaining gap; it has since been
+built and shipped exactly as described below. The app is described as supporting
+Windows 11 and Linux, but at the time **releases were Windows-only** and the Nix
+flake — the supported Linux route — lived in the then-private source repo, so a
+Linux user reading the public dist page was pointed at something they could not
+reach. The READMEs said this plainly until the work below shipped: `release.yml`
+now builds and publishes the signed AppImage, per-user desktop integration and
+in-place AppImage updates are in the tree, and the source is public (ADR-0003).
+What follows is the record of what was built.
 
 **Decision (Ian, 2026-08-09):** publish one public `x86_64` AppImage. (Written
 while the source repo was private; opening it changed none of this — ADR-0003.) This is one Linux-distribution minor, not a
@@ -720,12 +726,13 @@ cents-denominated `amount` as dollars. **The lesson worth keeping: assign
 providers explicitly and confirm before either agent starts**, since a
 duplicated adapter costs more to reconcile than to write.
 
-All provider adapters are now shipped, and as of 2026-08-05 so is effectively
-everything else. Update detection shipped as 0.17.0; the Windows installer is
-built and awaiting a merge; the Nix prompt was superseded by a better cut of
-the same problem. **Nothing in this plan is now blocked on anything else in
-it.** What is left is the Linux distribution question above, which the plan
-never covered, plus two small follow-ups noted in the superseded section.
+All provider adapters are now shipped, and as of 2026-08-05 so was effectively
+everything else. Update detection shipped as 0.17.0; the Windows installer
+shipped as 0.19.0; the Nix prompt was superseded by a better cut of the same
+problem. **Nothing in this plan was blocked on anything else in it.** The Linux
+distribution question above — which the plan never covered — has since shipped
+too. All that remains are the small, optional follow-ups noted in the superseded
+section ("What is genuinely still open"); none is required work.
 
 The patch series is strictly sequential, so ownership there is just *who does
 the work*. Real parallelism is available across features: Codex can take the
@@ -736,8 +743,8 @@ rather than parallel (see its Owner note).
 When two features are in flight at once, whoever lands first takes the next
 minor and the other rebases onto it. Do not reserve a number in advance.
 
-Also worth doing during this work: `AGENTS.md`'s "Current task" section still
-points at `docs/plan-tray-accounts.md`, which is finished. Repoint it here.
+(Done: `AGENTS.md`'s project-status section now points here, and records
+`docs/plan-tray-accounts.md` as the previous, completed plan.)
 
 ---
 

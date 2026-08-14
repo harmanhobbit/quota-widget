@@ -1,9 +1,10 @@
 //! Upstream update detection.
 //!
-//! The source repo is private, so the manifest and binaries live in the public
-//! `quota-widget-dist` repo. This module only *detects* a newer release and
-//! reports it; the updater plugin installs releases only for bundle types it
-//! can safely replace.
+//! Release manifests and binaries live in the separate public
+//! `quota-widget-dist` repo, keeping downloads apart from the (now public,
+//! Apache-2.0) source tree — see ADR-0003. This module only *detects* a newer
+//! release and reports it; the updater plugin installs releases only for bundle
+//! types it can safely replace.
 //!
 //! Version comparison, manifest parsing, and artifact selection deliberately
 //! live in `quota-core` (`quota_core::update`) because that is the crate with
