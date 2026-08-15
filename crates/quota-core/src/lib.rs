@@ -1,6 +1,7 @@
 pub mod alerts;
 pub mod config;
 pub mod desktop;
+pub mod linux_launch;
 pub mod model;
 pub mod providers;
 pub mod secret_store;
