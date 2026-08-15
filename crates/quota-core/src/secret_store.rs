@@ -45,7 +45,7 @@ pub fn secret_keys(config: &Config) -> Vec<String> {
         .flat_map(|(key, p)| {
             let kind = p.kind.as_deref().unwrap_or(key);
             let mut keys = vec![key.clone()];
-            if matches!(kind, "claude" | "codex") {
+            if matches!(kind, "claude" | "codex" | "grok") {
                 keys.push(oauth_key(key));
             }
             keys
@@ -434,6 +434,7 @@ mod tests {
         assert!(keys.contains(&"claude".to_string()));
         assert!(keys.contains(&"claude_oauth".to_string()));
         assert!(keys.contains(&"codex_oauth".to_string()));
+        assert!(keys.contains(&"grok_oauth".to_string()));
         assert!(keys.contains(&"claude_work".to_string()));
         assert!(keys.contains(&"claude_work_oauth".to_string()));
         // Pasted-key providers get no OAuth entry.
