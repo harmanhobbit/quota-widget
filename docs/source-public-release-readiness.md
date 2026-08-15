@@ -24,8 +24,9 @@ bare Linux checkout.
       `Cargo.toml` `license = "Apache-2.0"`, `package.json` `"license":
       "Apache-2.0"`.)
 - [x] README and ADR-0002 say that source is public, while retaining ADR-0002's
-      decisions about a signed public distribution repository, the Ubuntu 22.04
-      AppImage compatibility floor, per-user desktop integration, and
+      decisions about a signed public distribution repository, the AppImage
+      compatibility floor (since dropped — ADR-0004), per-user desktop
+      integration, and
       artifact-qualified updates. (README states the source is public under
       Apache-2.0; ADR-0002 carries a "partly superseded by ADR-0003" note over
       unchanged distribution decisions; ADR-0003 records the public-source

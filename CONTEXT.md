@@ -90,13 +90,15 @@ a person verifying a download by hand, and the updater verifying before it
 writes — so there is no separate "update signature" to keep in step.
 _Avoid_: Checksum, hash, update signature
 
-**Compatibility floor**:
-The oldest userspace a [[distribution artifact]] is promised to run on —
-Ubuntu 22.04 or equivalent-or-newer, which is why the Linux job pins that
-runner. It is a claim about *linkage against a stock system*, so only running
-the artifact directly on such a system tests it; a runtime that supplies its
-own libraries proves something else.
-_Avoid_: Minimum requirements, baseline, supported distro
+**Tested platforms**:
+The platforms a release is actually validated on, replacing the former
+"compatibility floor" (dropped in ADR-0004): NixOS + KDE Plasma (source build —
+tray and placement), Windows (release build), and Debian 13 XFCE (that the
+shipped AppImage binary starts on a mainstream non-Nix distro). The AppImage
+carries **no promised minimum distribution**; it is best-effort on glibc-based
+`x86_64` Linux, built on a pinned Ubuntu 24.04. A virgl/virtualized-GPU VM is
+not a valid environment for testing it.
+_Avoid_: Compatibility floor, minimum requirements, baseline, supported distro
 
 **Launcher**:
 The single `.desktop` file that puts the app in the applications menu. For the

@@ -27,6 +27,13 @@ The AppImage compatibility floor is Ubuntu 22.04 or an equivalent-or-newer
 userspace. The release workflow must pin that baseline rather than inherit the
 changing `ubuntu-latest` runner.
 
+> **Superseded by [ADR-0004](0004-drop-ubuntu-22-04-compatibility-floor.md).**
+> There is no longer a promised compatibility floor; the AppImage is best-effort
+> and built on a pinned Ubuntu 24.04. The pin-not-`ubuntu-latest` rule stands.
+> Manual validation likewise moves off the Kubuntu 22.04 VM named below to the
+> project's tested platforms (Debian 13 XFCE, NixOS + KDE Plasma); the
+> requirement to validate before a Linux release is unchanged.
+
 Before publication, the first Linux release is manually validated in a Kubuntu
 22.04 VM for launch, tray interaction, popup and mini-summary placement, and
 one in-app AppImage update. Later Linux releases still require launch, tray,

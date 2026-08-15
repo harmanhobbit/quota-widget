@@ -31,9 +31,10 @@ separate runtime to install.
 ### Linux
 
 Download the x86_64 `.AppImage` and its adjacent `.sig` file from the release
-you want. It is built on a pinned **Ubuntu 22.04** runner, which is the
-compatibility floor: use Ubuntu 22.04 or a newer compatible glibc-based Linux
-distribution. Make it executable and launch it directly:
+you want. It is built on a pinned **Ubuntu 24.04** runner and is best-effort on
+a modern glibc-based Linux distribution — there is no guaranteed minimum, and a
+current mainstream distro (tested on Debian 13) is what it targets. Make it
+executable and launch it directly:
 
 ```sh
 chmod +x QuotaWidget_<version>_amd64.AppImage

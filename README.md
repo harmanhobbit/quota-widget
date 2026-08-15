@@ -9,8 +9,9 @@ the tray and pops up as a compact always-on-top window.
 
 Built with Tauri 2 (Rust) + Svelte 5. The portable EXE is self-contained —
 Windows 11 ships the WebView2 runtime it renders with. Linux releases ship an
-x86_64 AppImage built on Ubuntu 22.04; a Nix flake is also in the tree as the
-reproducible source-build route (see [Building](#nixos--nix)).
+x86_64 AppImage built on Ubuntu 24.04 (best-effort, no promised minimum distro);
+a Nix flake is also in the tree as the reproducible source-build route (see
+[Building](#nixos--nix)).
 
 The source is public and licensed **Apache-2.0** — the complete text is in
 [`LICENSE`](LICENSE). Installable builds are a separate thing from the source:
@@ -304,19 +305,20 @@ autostart entry on Linux — no admin rights needed either way). Updating =
 replacing the EXE; on Nix, `nix profile upgrade`.
 
 **Linux releases** publish a signed x86_64 AppImage, built on pinned Ubuntu
-22.04 as the compatibility floor. Download the `.AppImage` and its `.sig` from
-the public dist repository, then run `chmod +x QuotaWidget_<version>_amd64.AppImage`
-followed by `./QuotaWidget_<version>_amd64.AppImage`. The public download page
-has the matching `minisign` verification command. The Nix flake is distinct: it
-is a reproducible source build that pins GTK/WebKit rather than a published,
-signed binary, so it does not participate in in-app updates — upgrade it the
-way you upgrade anything else in Nix.
+24.04. It is best-effort — there is no promised minimum distribution. Download
+the `.AppImage` and its `.sig` from the public dist repository, then run
+`chmod +x QuotaWidget_<version>_amd64.AppImage` followed by
+`./QuotaWidget_<version>_amd64.AppImage`. The public download page has the
+matching `minisign` verification command. The Nix flake is distinct: it is a
+reproducible source build that pins GTK/WebKit rather than a published, signed
+binary, so it does not participate in in-app updates — upgrade it the way you
+upgrade anything else in Nix.
 
-That floor is checked by launching the AppImage directly on a Kubuntu 22.04 VM
-with nothing extra installed. Running it on NixOS through `appimage-run` is
-supplemental coverage only: `appimage-run` supplies its own glibc and GTK/WebKit
-runtime, so it shows the app works under Nix's shims rather than that the binary
-fits the userspace a stock Ubuntu 22.04 system provides.
+The AppImage is validated on the platforms the project runs on (ADR-0004):
+NixOS + KDE Plasma exercises the tray and window placement, and Debian 13 XFCE
+confirms the shipped binary starts on a mainstream non-Nix distro. It does not
+start under virgl/virtualized-GPU VMs — a virtualized-GPU artifact, not a
+real-hardware failure.
 
 #### AppImage desktop integration
 
@@ -339,12 +341,12 @@ the file in place — which is what the in-app update does — keeps it working.
 *Moving* it does not, so the widget then offers to **repair** the launcher
 rather than silently retargeting it.
 
-#### Running on a newer host than the build floor
+#### Running on a newer host than the build base
 
-The AppImage is built on Ubuntu 22.04 as a compatibility floor, so on a newer
-host its bundled GTK/WebKit meets a newer GPU and GLib stack. Two things follow,
-and the app now handles both itself at startup when it detects it is running as
-an AppImage — no flags to pass:
+The AppImage is built on Ubuntu 24.04, so on a newer host its bundled GTK/WebKit
+meets a newer GPU and GLib stack. Two things follow, and the app now handles
+both itself at startup when it detects it is running as an AppImage — no flags
+to pass:
 
 - WebKitGTK's default DMA-BUF renderer can fail to bind the host GPU, printing
   `Could not create default EGL display: EGL_BAD_PARAMETER` and aborting before
@@ -375,7 +377,7 @@ Installable artifacts live in their own public repository,
 [`harmanhobbit/quota-widget-dist`](https://github.com/harmanhobbit/quota-widget-dist),
 so downloads stay separate from the source tree: pushing a `v*.*.*` tag runs
 `release.yml`, which builds signed Windows
-and Ubuntu-22.04 AppImage artifacts, then uploads the NSIS installer, its
+and Ubuntu-24.04 AppImage artifacts, then uploads the NSIS installer, its
 `.sig`, the portable EXE (renamed
 `QuotaWidget_<version>_x64-portable.exe`, since an asset name is its download
 URL and a bare `quota-widget.exe` reads identically across every release), the
@@ -396,8 +398,8 @@ home directory, or an update that rewrites the running executable.
 [`docs/linux-release-validation.md`](docs/linux-release-validation.md) is the
 checklist: what to look for in the dry run's combined `latest.json`, then
 launch, tray, popup and mini-summary placement, opt-in desktop integration and
-one end-to-end signed update on a Kubuntu 22.04 VM — with a reduced
-launch/tray/popup set for every later release.
+one end-to-end signed update on the project's tested Linux platforms — with a
+reduced launch/tray/popup set for every later release.
 
 The app checks that manifest at startup and every six hours, and shows an
 unobtrusive "Update available" line in Settings with a **Check now** button.
