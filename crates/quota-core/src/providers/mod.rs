@@ -5,6 +5,7 @@ pub mod deepseek;
 pub mod elevenlabs;
 pub mod firecrawl;
 pub mod fireworks;
+pub mod grok;
 pub mod hermes;
 pub mod moonshot;
 pub mod onehop;
@@ -88,6 +89,7 @@ pub fn adapter_kinds() -> &'static [(&'static str, &'static str)] {
     &[
         ("claude", "Claude"),
         ("codex", "Codex"),
+        ("grok", "Grok"),
         ("openrouter", "OpenRouter"),
         ("elevenlabs", "ElevenLabs"),
         ("firecrawl", "Firecrawl"),
@@ -117,6 +119,7 @@ pub fn providers_for(cfg: &Config) -> Vec<Box<dyn Provider>> {
                 "codex" => {
                     Some(Box::new(codex::Codex::new(key.clone(), label)) as Box<dyn Provider>)
                 }
+                "grok" => Some(Box::new(grok::Grok::new(key.clone(), label)) as Box<dyn Provider>),
                 "openrouter" => {
                     Some(Box::new(openrouter::OpenRouter::new(key.clone(), label))
                         as Box<dyn Provider>)
@@ -263,6 +266,7 @@ mod tests {
                 .map(|provider| provider.id())
                 .collect::<Vec<_>>(),
             vec![
+                "grok",
                 "openrouter",
                 "elevenlabs",
                 "firecrawl",

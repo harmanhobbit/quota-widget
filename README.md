@@ -2,7 +2,7 @@
 
 A system-tray widget for **Windows 11 and Linux** that watches your AI provider
 allowances in one place: Claude's rolling 5-hour window and weekly cap, Codex's
-weekly allowance, Hermes Portal credits, OpenRouter credits, ElevenLabs
+weekly allowance, Grok's SuperGrok allowance, Hermes Portal credits, OpenRouter credits, ElevenLabs
 credits, Firecrawl credits, DeepSeek, Moonshot and Venice balances, and Fireworks, Anthropic and
 OpenAI organization spend. It collapses to
 the tray and pops up as a compact always-on-top window.
@@ -117,6 +117,7 @@ Platform differences are small but real:
 |---|---|---|
 | **Claude** | A Claude Pro/Max login — either the Claude Code CLI (`claude`) or the widget's built-in browser sign-in | Calls the same usage endpoint Claude Code's `/usage` uses; shows the 5-hour window, weekly cap, and any per-model weekly caps the API reports. **Sign-in method** in Settings: *Auto* (default) prefers a fresh CLI token from `%USERPROFILE%\.claude\.credentials.json`, else the widget's own login; *Built-in* runs a PKCE browser sign-in (click "Sign in with Claude", authorize, paste back the code) — ideal if you only use Claude Desktop. When the widget refreshes a token itself, the rotated pair is stored in its own secret store and never written to Claude Code's file. Unofficial endpoints — may change. |
 | **Codex** | A ChatGPT plan — either the Codex CLI (`codex`) or the widget's built-in device sign-in | Calls the ChatGPT backend usage endpoint the Codex CLI's `/status` uses; renders whatever rate-limit windows the response contains (weekly today; adapts automatically if OpenAI reshapes it). **Sign-in method** in Settings: *Auto* (default) prefers `%USERPROFILE%\.codex\auth.json`, else the widget's own login; *Built-in* runs the same device flow as `codex login --device-auth` — click "Sign in with Codex", then type the short code shown into the browser page that opens. Note this flow is proprietary rather than RFC 8628, and undocumented: it's reimplemented from the Codex CLI source and can change without notice. Some accounts need an admin to enable device sign-in. Unofficial endpoints. |
+| **Grok** | A SuperGrok subscription — either the grok CLI (`grok`) or the widget's built-in device sign-in | Tracks the **SuperGrok consumer subscription** allowance (not the pay-per-token xAI API key balance). Calls the billing endpoint the grok CLI's `/usage` uses; shows the allowance window (`creditUsagePercent`, counting down to the weekly/monthly reset) and, if you've topped up, a prepaid-credit balance. **Sign-in method** in Settings: *Auto* (default) prefers a fresh CLI token from `~/.grok/auth.json`, else the widget's own login; *Built-in* runs the RFC 8628 device flow (`grok login --device-auth`) — click "Sign in with Grok", then enter the code shown on the xAI page that opens. When the widget refreshes a token itself, the rotated pair is stored in its own secret store and never written to the grok CLI's file. Reimplemented from the (Apache-2.0) grok CLI source; unofficial endpoints — may change. |
 | **OpenRouter** | An API key from [openrouter.ai/keys](https://openrouter.ai/keys) | Official `GET /api/v1/credits` API. Shows balance and lifetime usage in USD. Set an optional **Monthly budget** to track spend against a target; the widget records a month-start baseline because the API does not report month-to-date usage. |
 | **ElevenLabs** | An API key from [elevenlabs.io/app/settings/api-keys](https://elevenlabs.io/app/settings/api-keys) | Official `GET /v1/user/subscription` API. Shows the billing cycle's credit allowance as a usage window — used vs. limit, labelled “Credits”, counting down to the cycle reset. On plans with credit-limit extension enabled, usage can read past 100%. |
 | **Firecrawl** | An API key from [firecrawl.dev/app/api-keys](https://firecrawl.dev/app/api-keys) | Official `GET /v2/team/credit-usage` API. Shows the billing cycle's plan credits as a usage window — spent vs. granted, labelled “Credits” — plus the exact remaining/plan figures in the main window. Bonus credits above the plan correctly read as negative usage. The response carries both ends of the billing period, so the period-progress marker is exact rather than inferred. |
@@ -463,6 +464,7 @@ src-tauri           the Tauri shell
   poller.rs         poll loop → state → tray/toasts/events
   oauth.rs          built-in Claude sign-in (PKCE paste-back)
   codex_oauth.rs    built-in Codex sign-in (device code)
+  grok_oauth.rs     built-in Grok sign-in (RFC 8628 device code)
   updates.rs        6-hourly check of the public release manifest
   desktop.rs        IPC around quota-core's AppImage desktop integration
   secrets.rs        Credential Manager (Windows) / quota-core's file store (elsewhere)
@@ -474,13 +476,15 @@ scripts/            icon generation, version-drift guard
 
 ## Known limitations
 
-- Claude and Codex usage endpoints are the CLIs' private APIs; a provider-side
-  change can break those cards until this widget is updated. The cards degrade
-  to a labelled error state rather than crashing. The same applies doubly to
-  Codex's built-in sign-in: its device flow is proprietary (not RFC 8628) and
-  undocumented, so the endpoints and client id are pinned to what the Codex CLI
-  source did when this was written. If it breaks, `codex login` still works and
-  Auto mode picks that up.
+- Claude, Codex and Grok usage endpoints are the CLIs' private APIs; a
+  provider-side change can break those cards until this widget is updated. The
+  cards degrade to a labelled error state rather than crashing. The same applies
+  doubly to Codex's built-in sign-in: its device flow is proprietary (not RFC
+  8628) and undocumented, so the endpoints and client id are pinned to what the
+  Codex CLI source did when this was written. If it breaks, `codex login` still
+  works and Auto mode picks that up. Grok's endpoints (`proxy.grok.com`,
+  `auth.x.ai`) and client id are likewise reimplemented from the (Apache-2.0)
+  grok CLI source and pinned to that clone; `grok login` remains the fallback.
 - The Hermes adapter scans responses leniently for balance-like fields, but the
   portal may change shape; the endpoint URL is user-configurable for that
   reason.

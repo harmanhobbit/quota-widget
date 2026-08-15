@@ -8,6 +8,7 @@
   const PROVIDERS = [
     { id: 'claude', name: 'Claude', secret: null, note: 'Uses the Claude Code CLI login if present, or the built-in browser sign-in below.' },
     { id: 'codex', name: 'Codex', secret: null, note: 'Uses the Codex CLI login if present, or the built-in device sign-in below.' },
+    { id: 'grok', name: 'Grok', secret: null, note: 'SuperGrok subscription usage. Uses the grok CLI login if present, or the built-in device sign-in below.' },
     { id: 'openrouter', name: 'OpenRouter', secret: 'API key', note: 'Create a key at openrouter.ai/keys. Optional monthly budget tracks this month’s spend against your target.' },
     { id: 'elevenlabs', name: 'ElevenLabs', secret: 'API key', note: 'Create a key at elevenlabs.io/app/settings/api-keys.' },
     { id: 'firecrawl', name: 'Firecrawl', secret: 'API key', note: 'Create a key at firecrawl.dev/app/api-keys.' },
@@ -41,6 +42,8 @@
   // Codex uses a device flow: we show a short code, the user types it in the
   // browser, and Rust emits `codex-oauth` when polling resolves.
   let codex = $state({});
+  // Grok uses the same device flow as Codex; Rust emits `grok-oauth`.
+  let grok = $state({});
   // Native Wayland can't honour always-on-top, so the popup sinks behind other
   // windows regardless of the click-away setting. Worth saying so in place.
   let onWayland = $state(false);
@@ -189,6 +192,7 @@
       const kind = account.kind ?? id;
       if (kind === 'claude') oauthFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
       if (kind === 'codex') codexFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
+      if (kind === 'grok') grokFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
     }
     onWayland = await invoke('on_wayland');
     await refreshDesktop();
@@ -262,6 +266,7 @@
   onMount(() => {
     void initialiseSettings();
     let unlisten;
+    let unlistenGrok;
     let unlistenUpdate;
     let unlistenAnchor;
     // Rust owns the anchor and writes it when the summary is dragged. This
@@ -287,6 +292,16 @@
         flow.status = e.payload.error;
       }
     }).then((stop) => (unlisten = stop));
+    listen('grok-oauth', (e) => {
+      const flow = grokFor(e.payload.provider);
+      if (e.payload.ok) {
+        flow.signedIn = true;
+        flow.status = '';
+        flow.userCode = '';
+      } else {
+        flow.status = e.payload.error;
+      }
+    }).then((stop) => (unlistenGrok = stop));
     listen('update', (e) => setUpdateStatus(e.payload))
       .then((stop) => (unlistenUpdate = stop))
       .catch(() => {});
@@ -301,6 +316,7 @@
     window.addEventListener('keydown', escape, true);
     return () => {
       unlisten?.();
+      unlistenGrok?.();
       unlistenUpdate?.();
       unlistenAnchor?.();
       window.removeEventListener('keydown', escape, true);
@@ -309,6 +325,7 @@
 
   const newOauthFlow = () => ({ url: '', code: '', status: '', signedIn: false });
   const newCodexFlow = () => ({ userCode: '', url: '', status: '', signedIn: false });
+  const newGrokFlow = () => ({ userCode: '', url: '', status: '', signedIn: false });
 
   function oauthFor(provider) {
     return (oauth[provider] ??= newOauthFlow());
@@ -318,18 +335,24 @@
     return (codex[provider] ??= newCodexFlow());
   }
 
+  function grokFor(provider) {
+    return (grok[provider] ??= newGrokFlow());
+  }
+
   // The markup reads these from inside `{@const}`, which compiles to a derived.
   // Deriveds must not write to state, so these never create a missing entry —
   // they fall back to a throwaway blank flow. Entries are created eagerly by
   // `ensureFlows` instead.
   const oauthView = (provider) => oauth[provider] ?? newOauthFlow();
   const codexView = (provider) => codex[provider] ?? newCodexFlow();
+  const grokView = (provider) => grok[provider] ?? newGrokFlow();
 
   function ensureFlows() {
     for (const [id, account] of Object.entries(config.providers)) {
       const kind = account.kind ?? id;
       if (kind === 'claude') oauthFor(id);
       if (kind === 'codex') codexFor(id);
+      if (kind === 'grok') grokFor(id);
     }
   }
 
@@ -349,6 +372,24 @@
   async function codexClear(provider) {
     await invoke('clear_secret', { provider: `${provider}_oauth` });
     codexFor(provider).signedIn = false;
+  }
+
+  async function grokStart(provider) {
+    const flow = grokFor(provider);
+    flow.status = 'waiting';
+    try {
+      const r = await invoke('grok_oauth_start', { provider });
+      flow.userCode = r.user_code;
+      flow.url = r.verification_url;
+    } catch (e) {
+      flow.status = String(e);
+      flow.userCode = '';
+    }
+  }
+
+  async function grokClear(provider) {
+    await invoke('clear_secret', { provider: `${provider}_oauth` });
+    grokFor(provider).signedIn = false;
   }
 
   async function oauthStart(provider) {
@@ -460,7 +501,7 @@
     const task = (async () => {
       const kind = config.providers[id].kind ?? id;
       await invoke('clear_secret', { provider: id });
-      if (kind === 'claude' || kind === 'codex') await invoke('clear_secret', { provider: `${id}_oauth` });
+      if (kind === 'claude' || kind === 'codex' || kind === 'grok') await invoke('clear_secret', { provider: `${id}_oauth` });
       delete config.providers[id];
     })();
     pendingRemovals.add(task);
@@ -552,6 +593,7 @@
     const known = {
       claude: [{ id: 'window:five_hour', label: '5-hour' }, { id: 'window:weekly', label: 'Weekly' }],
       codex: [{ id: 'window:weekly', label: 'Weekly' }],
+      grok: [{ id: 'window:allowance', label: 'Allowance' }, { id: 'credits', label: 'Prepaid credits' }],
       openrouter: [{ id: 'credits', label: 'Credit balance' }, { id: 'window:monthly_spend', label: 'Monthly' }],
       elevenlabs: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
       firecrawl: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
@@ -739,6 +781,38 @@
               {/if}
               {#if codexFlow.status && codexFlow.status !== 'waiting'}
                 <p class="test bad">{codexFlow.status}</p>
+              {/if}
+            {/if}
+          {/if}
+          {#if p.id === 'grok'}
+            {@const grokFlow = grokView(id)}
+            <label class="field">Sign-in method
+              <select bind:value={account.settings.auth_mode}>
+                <option value={undefined}>Auto (CLI, then built-in)</option>
+                <option value="cli">Grok CLI only</option>
+                <option value="oauth">Built-in sign-in only</option>
+              </select>
+            </label>
+            {#if account.settings.auth_mode !== 'cli'}
+              <div class="row">
+                {#if grokFlow.signedIn}
+                  <span class="test good">Built-in sign-in active ✓</span>
+                  <button class="small" onclick={() => grokClear(id)}>Sign out</button>
+                {:else}
+                  <button class="small" onclick={() => grokStart(id)}>Sign in with Grok…</button>
+                {/if}
+              </div>
+              {#if grokFlow.userCode}
+                <p class="note">
+                  A browser window opened (or open this link yourself):
+                  <span class="wrap">{grokFlow.url}</span><br />
+                  Enter this code to authorize:
+                </p>
+                <p class="device-code">{grokFlow.userCode}</p>
+                <p class="note">Waiting for authorization…</p>
+              {/if}
+              {#if grokFlow.status && grokFlow.status !== 'waiting'}
+                <p class="test bad">{grokFlow.status}</p>
               {/if}
             {/if}
           {/if}

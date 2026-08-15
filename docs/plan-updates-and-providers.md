@@ -83,6 +83,29 @@ credit *allowance* rather than a balance, so it renders as a `UsageWindow` like
 Claude's weekly cap, not as `Credits`. It predates none of the table below; it
 was simply asked for first.
 
+**Also shipped, off-list: Grok / SuperGrok** — note this is **xAI's Grok
+subscription**, not **Groq** the inference host dropped just above; the
+same-sounding names are unrelated companies. It tracks the **SuperGrok consumer
+subscription** allowance (deliberately *not* the pay-per-token xAI API-key
+balance), which became feasible for the same reason Claude/Codex did: xAI
+open-sourced the `grok` CLI (Apache-2.0), exposing the billing endpoint its
+`/usage` calls. Like Claude/Codex it is an OAuth adapter, not a documented-key
+one, so it sits with them rather than in the "documented endpoint" table.
+
+- **Auth:** Auto by default — prefer a fresh grok-CLI token from
+  `~/.grok/auth.json`, else the widget's own RFC 8628 device-flow login
+  (issuer `auth.x.ai`); a token the widget refreshes is re-persisted only to its
+  own `grok_oauth` secret, never back to the CLI's `auth.json`.
+- **Metrics:** an allowance `UsageWindow` from `creditUsagePercent` (labelled
+  Weekly/Monthly from `currentPeriod.type`, counting down to `currentPeriod.end`)
+  **and** a `Credits` line from `prepaidBalance` (USD, omitted when zero) — so a
+  topped-up account shows both, a subscription-only account shows just the
+  allowance.
+- **Caveat:** `proxy.grok.com` (billing) and `auth.x.ai` (OAuth) are
+  CLI-internal, undocumented endpoints reimplemented from the grok CLI source and
+  pinned to that clone; they **may change without notice**, and `grok login`
+  remains the fallback that Auto mode picks up.
+
 ---
 
 ## Track 1 — Finesse patches
