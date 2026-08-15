@@ -15,9 +15,9 @@ child's tests or for [Linux release validation](linux-release-validation.md).
 
 ## Integration gate
 
-Verified on 2026-08-14 against this tree; see the note after the list for the
-one check that is CI/dev-shell-gated rather than reproducible on a bare Linux
-checkout.
+Verified on 2026-08-14 against the merged `main` tree; see the note after the
+list for the one check that is CI/dev-shell-gated rather than reproducible on a
+bare Linux checkout.
 
 - [x] The root `LICENSE` contains the canonical Apache License, Version 2.0,
       and workspace/package metadata names the same license. (`LICENSE`,
@@ -57,22 +57,28 @@ build/lint is verified under `nix develop` or in CI, not from a plain checkout.
 
 ## Distribution invariants
 
-Source visibility does not relax the distribution trust boundary. These are
-external/manual checks and remain **unverified** here — a release-workflow dry
-run and the manual Linux pass are needed before publication. Before publication,
-confirm that:
+Source visibility does not relax the distribution trust boundary. The signed
+release-workflow dry run was verified on 2026-08-14 as run
+[31839167541](https://github.com/harmanhobbit/quota-widget/actions/runs/31839167541).
+It passed the Linux quality gates, built and staged signed Windows artifacts and
+a signed Ubuntu 22.04 AppImage, and generated `latest.json` with both
+`windows-x86_64` and `linux-x86_64-appimage` entries. The generated inspection
+artifact contained the expected installer, portable EXE, AppImage, and
+signature files. The manual Linux pass remains **unverified** here — it still
+needs the checklist below on a KDE Plasma / Ubuntu 22.04 compatibility-floor
+machine before the first public release. Before publication, confirm that:
 
-- `.github/workflows/release.yml` still receives signing and publication
-  credentials only from GitHub Actions secrets, never repository values.
-- `src-tauri/tauri.conf.json` retains updater artifact creation, the committed
-  public updater key, and the existing distribution endpoint; no private
-  signing material is committed.
-- the release workflow dry run still produces signed Windows installer and
-  AppImage artifacts plus `latest.json`, and keeps the
-  `linux-x86_64-appimage` manifest entry.
-- the existing manual checklist in
-  [Linux release validation](linux-release-validation.md) is used for any
-  release that changes an AppImage, launcher, or updater path.
+- [x] `.github/workflows/release.yml` receives signing and publication
+      credentials only from GitHub Actions secrets, never repository values.
+- [x] `src-tauri/tauri.conf.json` retains updater artifact creation, the
+      committed public updater key, and the existing distribution endpoint; no
+      private signing material is committed.
+- [x] The release workflow dry run produces signed Windows installer and
+      AppImage artifacts plus `latest.json`, and keeps the
+      `linux-x86_64-appimage` manifest entry.
+- [ ] The existing manual checklist in
+      [Linux release validation](linux-release-validation.md) is used for any
+      release that changes an AppImage, launcher, or updater path.
 
 The visibility change itself is an external repository setting, not a release
 artifact change. Do not tag a release solely to make the source public.
