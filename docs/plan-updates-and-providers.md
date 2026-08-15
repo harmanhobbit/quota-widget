@@ -101,7 +101,7 @@ one, so it sits with them rather than in the "documented endpoint" table.
   **and** a `Credits` line from `prepaidBalance` (USD, omitted when zero) — so a
   topped-up account shows both, a subscription-only account shows just the
   allowance.
-- **Caveat:** `proxy.grok.com` (billing) and `auth.x.ai` (OAuth) are
+- **Caveat:** `cli-chat-proxy.grok.com` (billing) and `auth.x.ai` (OAuth) are
   CLI-internal, undocumented endpoints reimplemented from the grok CLI source and
   pinned to that clone; they **may change without notice**, and `grok login`
   remains the fallback that Auto mode picks up.

@@ -476,7 +476,7 @@ scripts/            icon generation, version-drift guard
   doubly to Codex's built-in sign-in: its device flow is proprietary (not RFC
   8628) and undocumented, so the endpoints and client id are pinned to what the
   Codex CLI source did when this was written. If it breaks, `codex login` still
-  works and Auto mode picks that up. Grok's endpoints (`proxy.grok.com`,
+  works and Auto mode picks that up. Grok's endpoints (`cli-chat-proxy.grok.com`,
   `auth.x.ai`) and client id are likewise reimplemented from the (Apache-2.0)
   grok CLI source and pinned to that clone; `grok login` remains the fallback.
 - The Hermes adapter scans responses leniently for balance-like fields, but the

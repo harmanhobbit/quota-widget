@@ -1,6 +1,6 @@
-//! Grok (SuperGrok subscription) usage via the same `proxy.grok.com` billing
-//! endpoint xAI's open-sourced `grok` CLI calls for its `/usage` command. These
-//! are unofficial, CLI-internal endpoints and may change.
+//! Grok (SuperGrok subscription) usage via the same `cli-chat-proxy.grok.com`
+//! billing endpoint xAI's open-sourced `grok` CLI calls for its `/usage`
+//! command. These are unofficial, CLI-internal endpoints and may change.
 //!
 //! Auth sources, controlled by the `auth_mode` provider setting (mirrors
 //! `claude.rs`):
@@ -32,8 +32,10 @@ pub struct Grok {
 /// Tokens stored by the widget's own device-code sign-in.
 pub const OAUTH_SECRET_KEY: &str = "grok_oauth";
 
-/// SuperGrok credits/usage endpoint the CLI's `/usage` hits (via the chat proxy).
-const BILLING_URL: &str = "https://proxy.grok.com/v1/billing?format=credits";
+/// SuperGrok credits/usage endpoint the CLI's `/usage` hits. The host is the
+/// CLI's `cli_chat_proxy_base_url` (`…/v1`), which forwards to the backend
+/// `GetGrokCreditsConfig`; `format=credits` selects the new credits shape.
+const BILLING_URL: &str = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
 /// xAI OAuth2 issuer; token refresh lives at `{issuer}/oauth2/token`.
 const TOKEN_URL: &str = "https://auth.x.ai/oauth2/token";
 /// The grok CLI's public OAuth client id.
