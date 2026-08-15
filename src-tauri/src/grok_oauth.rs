@@ -67,7 +67,9 @@ pub async fn start(http: &reqwest::Client) -> Result<DeviceLogin, String> {
         .map_err(|e| format!("could not reach xAI sign-in: {e}"))?;
 
     if resp.status().as_u16() == 404 {
-        return Err("device sign-in isn't available for this account — run `grok login` instead".into());
+        return Err(
+            "device sign-in isn't available for this account — run `grok login` instead".into(),
+        );
     }
     if !resp.status().is_success() {
         return Err(format!("sign-in request rejected (HTTP {})", resp.status()));
@@ -123,10 +125,7 @@ pub async fn poll_for_tokens(http: &reqwest::Client, login: &DeviceLogin) -> Res
             .post(format!("{ISSUER}/oauth2/token"))
             .header("x-grok-client-version", CLIENT_VERSION)
             .form(&[
-                (
-                    "grant_type",
-                    "urn:ietf:params:oauth:grant-type:device_code",
-                ),
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                 ("device_code", login.device_code.as_str()),
                 ("client_id", CLIENT_ID),
             ])
@@ -221,4 +220,3 @@ mod tests {
         assert!(secret["userId"].is_null());
     }
 }
-</content>

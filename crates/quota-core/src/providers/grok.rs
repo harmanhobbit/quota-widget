@@ -139,8 +139,16 @@ impl Provider for Grok {
         let resp = req.send().await.map_err(network_err)?;
         match resp.status().as_u16() {
             200..=299 => {}
-            401 | 403 => return Err(FetchError::AuthExpired(reauth_hint(auth_mode(ctx, &self.key)))),
-            s => return Err(FetchError::Network(format!("HTTP {s} from billing endpoint"))),
+            401 | 403 => {
+                return Err(FetchError::AuthExpired(reauth_hint(auth_mode(
+                    ctx, &self.key,
+                ))))
+            }
+            s => {
+                return Err(FetchError::Network(format!(
+                    "HTTP {s} from billing endpoint"
+                )))
+            }
         }
         let body: BillingResponse = resp.json().await.map_err(network_err)?;
         let config = body
@@ -426,14 +434,18 @@ fn parse_billing(config: &BillingConfig) -> (Vec<UsageWindow>, Option<Credits>) 
 
     // Only show a prepaid line when there's actually a positive balance, so
     // accounts that never top up don't display a $0.00 credits line.
-    let credits = config.prepaid_balance.as_ref().filter(|c| c.val > 0).map(|c| Credits {
-        balance: c.val as f64 / 100.0,
-        label: Some("Prepaid credits".into()),
-        unit: "USD".into(),
-        used: None,
-        granted: None,
-        est_tokens_remaining: None,
-    });
+    let credits = config
+        .prepaid_balance
+        .as_ref()
+        .filter(|c| c.val > 0)
+        .map(|c| Credits {
+            balance: c.val as f64 / 100.0,
+            label: Some("Prepaid credits".into()),
+            unit: "USD".into(),
+            used: None,
+            granted: None,
+            est_tokens_remaining: None,
+        });
 
     (windows, credits)
 }
@@ -542,7 +554,8 @@ mod tests {
             expires_at_ms: 1000,
             user_id: Some("u-1".into()),
         };
-        let parsed = parse_grok_tokens(&serde_json::from_str(&t.to_secret_json()).unwrap()).unwrap();
+        let parsed =
+            parse_grok_tokens(&serde_json::from_str(&t.to_secret_json()).unwrap()).unwrap();
         assert_eq!(parsed, t);
         assert!(t.expired(1_000_000));
         assert!(!t.expired(-100_000));
@@ -653,7 +666,12 @@ mod tests {
                 }
             }),
         );
-        let ctx = ProviderCtx::new(dir.path().into(), dir.path().into(), secrets, Config::default());
+        let ctx = ProviderCtx::new(
+            dir.path().into(),
+            dir.path().into(),
+            secrets,
+            Config::default(),
+        );
         let t = Grok::new("grok".into(), None).resolve(&ctx).await.unwrap();
         assert_eq!(t.access, "widget-access");
         assert_eq!(t.user_id.as_deref(), Some("u-widget"));
