@@ -152,15 +152,27 @@ impl Provider for Grok {
                 )))
             }
         }
-        let body: BillingResponse = resp.json().await.map_err(network_err)?;
+        let raw: Value = resp.json().await.map_err(network_err)?;
+        let body: BillingResponse =
+            serde_json::from_value(raw.clone()).map_err(|e| FetchError::Parse(e.to_string()))?;
         let config = body
             .config
             .ok_or_else(|| FetchError::Parse("billing response had no config".into()))?;
         let (windows, credits) = parse_billing(&config);
         if windows.is_empty() && credits.is_none() {
-            return Err(FetchError::Parse(
-                "billing response had neither a usage allowance nor a credit balance".into(),
-            ));
+            // Neither an allowance nor a balance came through. Surface which
+            // config fields the backend actually returned so a mismatch in the
+            // response shape is diagnosable without the caller's token.
+            let fields = raw
+                .get("config")
+                .and_then(Value::as_object)
+                .map(|o| o.keys().cloned().collect::<Vec<_>>().join(", "))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "none".into());
+            return Err(FetchError::Parse(format!(
+                "billing response had neither a usage allowance nor a credit balance \
+                 (config fields: {fields})"
+            )));
         }
         Ok(UsageSnapshot::ok(self.id(), self.name(), windows, credits))
     }
@@ -397,16 +409,26 @@ struct Cent {
 /// Build the allowance window (when a usage percentage is derivable) and the
 /// prepaid-credits line (when the account has topped up) from a billing config.
 fn parse_billing(config: &BillingConfig) -> (Vec<UsageWindow>, Option<Credits>) {
-    let pct = config.credit_usage_percent.or_else(|| {
-        match (config.monthly_limit.as_ref(), config.used.as_ref()) {
-            (Some(limit), Some(used)) if limit.val > 0 => {
-                Some(used.val as f64 / limit.val as f64 * 100.0)
-            }
-            _ => None,
-        }
-    });
-
     let period = config.current_period.as_ref();
+
+    let pct = config
+        .credit_usage_percent
+        .or_else(
+            || match (config.monthly_limit.as_ref(), config.used.as_ref()) {
+                (Some(limit), Some(used)) if limit.val > 0 => {
+                    Some(used.val as f64 / limit.val as f64 * 100.0)
+                }
+                _ => None,
+            },
+        )
+        .or_else(|| {
+            // proto3 JSON omits zero-valued scalars, so a cycle with 0% used
+            // arrives with no `creditUsagePercent` at all. A present
+            // `current_period` still means there is an active allowance being
+            // tracked — show it at 0% rather than reporting "no allowance".
+            period.map(|_| 0.0)
+        });
+
     let resets_at = period
         .and_then(|p| p.end.as_deref())
         .or(config.billing_period_end.as_deref())
@@ -522,6 +544,28 @@ mod tests {
         let (windows, credits) = parse_billing(&config);
         assert_eq!(windows.len(), 1);
         assert!(credits.is_none(), "a $0 prepaid balance must not render");
+    }
+
+    #[test]
+    fn active_period_with_omitted_percent_shows_zero() {
+        // A fresh SuperGrok cycle with nothing used yet: proto3 omits the 0.0
+        // `creditUsagePercent`, but `currentPeriod` is present. The allowance
+        // must still render, at 0%, rather than erroring as "no allowance".
+        let config = config_of(serde_json::json!({
+            "config": {
+                "currentPeriod": {
+                    "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                    "start": "2026-08-11T00:00:00Z",
+                    "end": "2026-08-18T00:00:00Z"
+                }
+            }
+        }));
+        let (windows, credits) = parse_billing(&config);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].label, "Weekly allowance");
+        assert_eq!(windows[0].used_pct, 0.0);
+        assert!(windows[0].resets_at.is_some());
+        assert!(credits.is_none());
     }
 
     #[test]
