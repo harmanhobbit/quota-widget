@@ -9,10 +9,13 @@ the repo root. That grant is the authoritative one; the workspace `Cargo.toml`,
 consistent with it.
 
 **Only that premise is superseded.** Every distribution decision ADR-0002 makes
-still stands, unchanged:
+still stands, unchanged — with one later exception noted inline below:
 
 - Release artifacts are published to the separate public dist repository, not
   attached to the source repo. `release.yml` remains the single publisher.
+  (**Superseded by [ADR-0005](0005-main-repo-primary-release-channel.md):** the
+  main repo is now the primary publish target and `release.yml` publishes to
+  both, with the dist repo kept as a temporary compatibility mirror.)
 - The Linux artifact is one signed `x86_64` AppImage; `x86_64` is the only
   published-binary promise, whatever architectures the flake describes.
 - Every published artifact keeps its updater signature, and the manifest's

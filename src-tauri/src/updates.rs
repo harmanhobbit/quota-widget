@@ -1,10 +1,12 @@
 //! Upstream update detection.
 //!
-//! Release manifests and binaries live in the separate public
-//! `quota-widget-dist` repo, keeping downloads apart from the (now public,
-//! Apache-2.0) source tree — see ADR-0003. This module only *detects* a newer
-//! release and reports it; the updater plugin installs releases only for bundle
-//! types it can safely replace.
+//! Release manifests and binaries are published from the main source repo,
+//! `harmanhobbit/quota-widget`, which is public under Apache-2.0 — see ADR-0005.
+//! Every release is still mirrored to the legacy `quota-widget-dist` repo during
+//! a transition period, so already-installed clients that poll the old endpoint
+//! keep updating; new builds poll the main repo below. This module only
+//! *detects* a newer release and reports it; the updater plugin installs
+//! releases only for bundle types it can safely replace.
 //!
 //! Version comparison, manifest parsing, and artifact selection deliberately
 //! live in `quota-core` (`quota_core::update`) because that is the crate with
@@ -18,10 +20,11 @@ use std::time::Duration;
 use tauri::utils::config::BundleType;
 use tauri::Emitter;
 
-/// The stable URL of the public manifest. `latest/download` always resolves to
-/// the newest release, so the app never needs to know a version to find one.
+/// The stable URL of the public manifest, now served from the main source repo
+/// (ADR-0005). `latest/download` always resolves to the newest release, so the
+/// app never needs to know a version to find one.
 const MANIFEST_URL: &str =
-    "https://github.com/harmanhobbit/quota-widget-dist/releases/latest/download/latest.json";
+    "https://github.com/harmanhobbit/quota-widget/releases/latest/download/latest.json";
 
 /// GitHub is polled rarely on purpose: an update is not time-critical, and the
 /// poller's own quota cycle runs far more often than this.

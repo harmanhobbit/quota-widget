@@ -11,6 +11,13 @@ This repository holds **published binaries only**. The source lives in
 public, and is licensed Apache-2.0; every asset here is built and signed by that
 repository's release workflow.
 
+> **The main repository is now the primary home for releases.** Since the source
+> went public, every release is published there first — its
+> [Releases page](https://github.com/harmanhobbit/quota-widget/releases/latest)
+> is the place to download from. This repository continues to mirror every
+> release during a transition period, so apps installed before the switch keep
+> updating automatically. The binaries in both places are identical.
+
 ## Download
 
 Grab the newest build from [**Releases**](../../releases/latest). Each release
@@ -93,8 +100,8 @@ same model the GitHub CLI and the Claude and Codex CLIs use. So this protects
 against other accounts and offline access, not against malware you are running.
 
 The keys never leave the app except to the provider they belong to. They are
-not sent anywhere else, and the app's own update check talks only to this
-repository's release manifest and carries no credentials.
+not sent anywhere else, and the app's own update check talks only to the
+project's public release manifest and carries no credentials.
 
 Worth judging what you paste in accordingly: a read-only usage key is a very
 different prospect from an organization admin key, and the Anthropic Admin and
@@ -102,10 +109,13 @@ OpenAI Admin providers deliberately require the latter.
 
 ## Updates
 
-The app checks this repository's `latest.json` at startup and every six hours,
+The app checks a `latest.json` update manifest at startup and every six hours,
 and shows an unobtrusive "Update available" line in Settings with a **Check
-now** button. Uncheck **Check for updates** in Settings to turn the automatic
-checks off; **Check now** keeps working either way.
+now** button. Builds installed from here read this repository's manifest, and
+newer builds read the main repository's — both are kept in step during the
+transition, so either way you are told about the same release. Uncheck **Check
+for updates** in Settings to turn the automatic checks off; **Check now** keeps
+working either way.
 
 An **Install update** button appears when the app is running as something it
 can replace. The download's signature is always verified before anything is

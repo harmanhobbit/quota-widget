@@ -4,6 +4,13 @@
 > The source repository is now public under Apache-2.0, so this ADR's
 > private-source premise — the first paragraph below — no longer holds. Every
 > distribution decision that follows it still stands unchanged.
+>
+> **Publishing location further superseded by
+> [ADR-0005](0005-main-repo-primary-release-channel.md).** Releases are now
+> published primarily from the main source repository, with the dist repository
+> kept only as a temporary compatibility mirror for already-installed clients.
+> The dist repo is no longer the sole publish target, and `release.yml` is no
+> longer a single-repo publisher. Every non-location decision below still holds.
 
 Quota Widget supports Linux but its Nix flake is available only to source-repository
 collaborators. We will publish Linux distribution artifacts from the private source
