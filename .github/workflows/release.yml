@@ -1,8 +1,20 @@
 name: Release
 
-# Publishes to the dist repo, harmanhobbit/quota-widget-dist, which carries
-# downloads only. Every upload is explicit rather than a glob over the
-# workspace, so a stray build product can never become a published asset.
+# Publishes a release to TWO repositories (ADR-0005):
+#   1. this repo, harmanhobbit/quota-widget — the primary release/update channel
+#      now that the source is public. New builds poll its latest.json.
+#   2. harmanhobbit/quota-widget-dist — the legacy downloads-only repo, kept as a
+#      temporary compatibility mirror so already-installed clients that still
+#      poll the old endpoint keep updating. Dual publishing stays on until those
+#      clients have migrated.
+# Every upload is explicit rather than a glob over the workspace, so a stray
+# build product can never become a published asset.
+#
+# Two tokens, two scopes, and they must not be crossed: the primary release is
+# created with the built-in GITHUB_TOKEN (needs `contents: write`, granted on
+# the publish job only), which can write releases in *this* repo and nowhere
+# else; the mirror release is created with DIST_REPO_TOKEN, whose whole reason
+# for existing is that the built-in token cannot write to another repository.
 #
 # Signing and dist-repo credentials come from CI secrets and nothing here may
 # echo them: the source repo is public, so a leaked value would be a leak to
@@ -232,8 +244,14 @@ jobs:
           path: release-assets/
 
   publish:
-    name: Publish to dist repo
+    name: Publish releases
     needs: [verify-tag, test, frontend, build-windows, build-linux]
+    # `contents: write` is scoped to this job alone (top-level stays read), and
+    # only ever used against *this* repo via the built-in GITHUB_TOKEN. The
+    # mirror release in the dist repo uses DIST_REPO_TOKEN instead — this
+    # permission grant does not, and cannot, reach another repository.
+    permissions:
+      contents: write
     # Publication is deliberately a separate, cheap Linux job. It cannot begin
     # until both platform-specific builds have produced signed artifacts.
     if: |
@@ -280,13 +298,17 @@ jobs:
             echo "::error::a signed release artifact is missing its signature"
             exit 1
           fi
-          windows_url="https://github.com/harmanhobbit/quota-widget-dist/releases/download/$tag/$(basename "$installer")"
-          linux_url="https://github.com/harmanhobbit/quota-widget-dist/releases/download/$tag/$(basename "$appimage")"
+          # URLs and notes point at the main repo, the primary channel (ADR-0005).
+          # The dist repo receives this same manifest as a compatibility mirror;
+          # its assets are byte-identical, so a client that fetched the manifest
+          # from either repo downloads the same signed files from the main repo.
+          windows_url="https://github.com/harmanhobbit/quota-widget/releases/download/$tag/$(basename "$installer")"
+          linux_url="https://github.com/harmanhobbit/quota-widget/releases/download/$tag/$(basename "$appimage")"
           # jq -Rs slurps the signature verbatim, so newlines and any quoting in
           # the minisign output survive into valid JSON.
           jq -n \
             --arg version "$version" \
-            --arg notes "See https://github.com/harmanhobbit/quota-widget-dist/releases/tag/$tag" \
+            --arg notes "See https://github.com/harmanhobbit/quota-widget/releases/tag/$tag" \
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg windows_url "$windows_url" \
             --arg linux_url "$linux_url" \
@@ -305,7 +327,41 @@ jobs:
           echo "appimage=$appimage" >> "$GITHUB_OUTPUT"
           echo "appimage_signature=$appimage.sig" >> "$GITHUB_OUTPUT"
 
-      - name: Publish release to dist repo
+      # Primary channel (ADR-0005). The tag already exists in this repo — it is
+      # what triggered the run — so this attaches a release to it. Uses the
+      # built-in GITHUB_TOKEN with the job's `contents: write`; that token can
+      # write releases here and only here. Published first so that if the mirror
+      # step below ever fails, the channel new builds actually poll is already
+      # live.
+      - name: Publish release to main repo
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="v$version"
+
+          # --repo is this repo explicitly; no cross-repo write is possible with
+          # this token. latest.json ships here because this is the manifest new
+          # builds fetch from latest/download.
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$tag" \
+            --notes "Quota Widget $tag" \
+            "${{ steps.assets.outputs.installer }}" \
+            "${{ steps.assets.outputs.installer_signature }}" \
+            "${{ steps.assets.outputs.portable }}" \
+            "${{ steps.assets.outputs.appimage }}" \
+            "${{ steps.assets.outputs.appimage_signature }}" \
+            latest.json
+
+      # Compatibility mirror (ADR-0005): the same assets and the same latest.json
+      # go to the legacy dist repo so already-installed clients still polling its
+      # endpoint keep updating. Dual publishing is temporary; the dist repo is
+      # not retired here.
+      - name: Publish release to dist repo (compatibility mirror)
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
         shell: bash
         env:

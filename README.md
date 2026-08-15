@@ -373,24 +373,30 @@ handles the bump, `Cargo.lock`, commit, annotated tag, and push — confirming
 before anything leaves the machine. See "Releases" in `AGENTS.md` for what it
 does and the by-hand equivalent.
 
-Installable artifacts live in their own public repository,
-[`harmanhobbit/quota-widget-dist`](https://github.com/harmanhobbit/quota-widget-dist),
-so downloads stay separate from the source tree: pushing a `v*.*.*` tag runs
-`release.yml`, which builds signed Windows
-and Ubuntu-24.04 AppImage artifacts, then uploads the NSIS installer, its
-`.sig`, the portable EXE (renamed
-`QuotaWidget_<version>_x64-portable.exe`, since an asset name is its download
-URL and a bare `quota-widget.exe` reads identically across every release), the
-AppImage and its `.sig`, and a `latest.json` manifest. It only publishes after
-both platform builds succeed. It also republishes `docs/dist-README.md` as that
-repo's landing page, so the public download instructions cannot drift from what
-ships — edit that file, not the dist repo directly. The tag must match the
-workspace `Cargo.toml` version — CI refuses to publish a mislabelled tree.
-Signing and publishing credentials (`TAURI_SIGNING_PRIVATE_KEY`, its password,
-and `DIST_REPO_TOKEN`) are read from CI secrets only; no key material is in
-this repository. A `workflow_dispatch` defaults to a **dry run**: it builds and signs, then
-attaches the manifest and installer as workflow artifacts instead of publishing,
-which is the safe way to exercise the signing key end to end.
+Releases are published primarily from **this repository** now that the source
+is public (ADR-0005), and mirrored to the older downloads-only repository
+[`harmanhobbit/quota-widget-dist`](https://github.com/harmanhobbit/quota-widget-dist)
+during a transition period so clients installed before the switch — which have
+the dist repo's manifest URL baked in — keep updating. Pushing a `v*.*.*` tag
+runs `release.yml`, which builds signed Windows and Ubuntu-24.04 AppImage
+artifacts, then uploads the NSIS installer, its `.sig`, the portable EXE
+(renamed `QuotaWidget_<version>_x64-portable.exe`, since an asset name is its
+download URL and a bare `quota-widget.exe` reads identically across every
+release), the AppImage and its `.sig`, and a `latest.json` manifest whose URLs
+point at this repo. It publishes the release **here first** with the built-in
+`GITHUB_TOKEN`, then mirrors the identical assets to the dist repo with
+`DIST_REPO_TOKEN` — main first so the channel new builds poll is live even if
+the mirror step fails. Both steps only run after both platform builds succeed.
+The mirror also republishes `docs/dist-README.md` as the dist repo's landing
+page, so the public download instructions cannot drift from what ships — edit
+that file, not the dist repo directly. The tag must match the workspace
+`Cargo.toml` version — CI refuses to publish a mislabelled tree. Signing and
+publishing credentials (`TAURI_SIGNING_PRIVATE_KEY`, its password, and
+`DIST_REPO_TOKEN`) are read from CI secrets only; no key material is in this
+repository. A `workflow_dispatch` defaults to a **dry run**: it builds and
+signs, then attaches the manifest and installer as workflow artifacts instead
+of publishing to either repo, which is the safe way to exercise the signing key
+end to end.
 
 Linux needs a manual pass on top of that, because nothing in a build log shows
 the tray, window placement against a real panel, the launcher written into a

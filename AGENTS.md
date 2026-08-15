@@ -126,7 +126,10 @@ git push origin main --follow-tags
 
 The tag is what ships. Pushing `v*.*.*` runs **`release.yml`**, which builds a
 signed NSIS installer and publishes it, the portable EXE, the `.sig`, and
-`latest.json` to the public dist repo; it first checks the tag matches
+`latest.json` — **first to this repo** (the primary channel now the source is
+public, using the built-in `GITHUB_TOKEN`), **then mirrored to the public dist
+repo** with `DIST_REPO_TOKEN` so already-installed clients keep updating during
+the transition (ADR-0005). It first checks the tag matches
 `Cargo.toml` and refuses to publish a mislabelled tree. `build.yml` no longer
 watches tags — it produces the same Windows artifacts on demand via
 `gh workflow run build.yml --ref <ref>`, without publishing. Both spend the
@@ -209,9 +212,9 @@ verified.** Do not push to get CI to check your work.
 CI (`.github/workflows/build.yml`) runs the core tests on Linux for every branch
 push and PR. The Windows portable EXE + NSIS installer come from a manual
 dispatch of that workflow. Release tags belong to `release.yml` instead, which
-signs and publishes to the public dist repo; the two workflows must never both
-watch tags, or one tag pays for two 2x-metered Windows builds and produces two
-competing sets of assets.
+signs and publishes to this repo and mirrors to the public dist repo
+(ADR-0005); the two workflows must never both watch tags, or one tag pays for
+two 2x-metered Windows builds and produces two competing sets of assets.
 
 **Bundling now signs, so it needs a key.** `bundle.createUpdaterArtifacts` is
 on and `tauri.conf.json` carries an updater pubkey, so `npm run tauri build`
@@ -424,10 +427,12 @@ which covers the case the prompt existed for. Do not build it as originally
 specced.
 
 Release infrastructure is live and proven: `release.yml` publishes signed
-assets to the public `harmanhobbit/quota-widget-dist` repo, and both
-`TAURI_SIGNING_PRIVATE_KEY` and `DIST_REPO_TOKEN` work. Agents cannot read
-those secrets, so verify release changes by running the workflow — a
-`workflow_dispatch` defaults to a dry run that signs without publishing.
+assets to this repo (primary, via the built-in `GITHUB_TOKEN`) and mirrors them
+to the public `harmanhobbit/quota-widget-dist` repo (via `DIST_REPO_TOKEN`)
+during the transition (ADR-0005); `TAURI_SIGNING_PRIVATE_KEY` and
+`DIST_REPO_TOKEN` both work. Agents cannot read those secrets, so verify release
+changes by running the workflow — a `workflow_dispatch` defaults to a dry run
+that signs without publishing to either repo.
 
 **Numbering is a hard requirement:** finesse items are patch bumps, features are
 minor bumps, and **no revision introduces more than one feature**. The plan

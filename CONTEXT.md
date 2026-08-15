@@ -71,9 +71,10 @@ _Avoid_: Align, dock, reposition
 
 **Distribution artifact**:
 A binary published for download — the AppImage, the installer, the portable
-EXE. It is built and signed in CI and published to the dist repository, and is
-a different thing from the source: the source being readable is not a
-distribution channel, and a source build is never one of these.
+EXE. It is built and signed in CI and published to the main repository (the
+primary channel) and mirrored to the dist repository during the transition
+(ADR-0005), and is a different thing from the source: the source being readable
+is not a distribution channel, and a source build is never one of these.
 _Avoid_: Build, release, asset, package
 
 **Installable artifact**:

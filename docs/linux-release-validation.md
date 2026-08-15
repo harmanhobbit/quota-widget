@@ -71,10 +71,11 @@ portable EXE, the AppImage and its `.sig`, and `latest.json`. What to check:
         AppImage selects this entry and nothing else.
 - [ ] `version` is bare SemVer with no `v`, and matches `Cargo.toml`. The tag
       keeps its `v`; the manifest does not.
-- [ ] Each `url` names the dist repo's download path for tag `v<version>` and
-      the asset's real basename. A dry run publishes nothing, so these URLs are
-      *predictions* — they only resolve once the tag ships. Check the shape,
-      not that they 200.
+- [ ] Each `url` names the **main repo's** download path
+      (`harmanhobbit/quota-widget`, the primary channel — ADR-0005) for tag
+      `v<version>` and the asset's real basename. A dry run publishes nothing,
+      so these URLs are *predictions* — they only resolve once the tag ships.
+      Check the shape, not that they 200.
 - [ ] Each `signature` is the verbatim contents of the matching `.sig` file
       (the manifest is built with `jq --rawfile`, so it should match byte for
       byte, newlines included).
@@ -206,9 +207,10 @@ package.
 ## 5. One end-to-end signed in-app update
 
 **Sequencing constraint, read this first.** The app fetches its manifest from a
-fixed URL — the dist repo's *latest* release — so this test needs an installed
-AppImage older than a published release that carries a
-`linux-x86_64-appimage` entry. Two published Linux releases, or one published
+fixed URL — for current builds the main repo's *latest* release (ADR-0005); a
+build installed before the channel switch fetches the dist repo's, kept in step
+by the mirror — so this test needs an installed AppImage older than a published
+release that carries a `linux-x86_64-appimage` entry. Two published Linux releases, or one published
 release plus a retained older AppImage from a dry run of an earlier ref, are
 the only ways to get there. Until such a pair exists, this step cannot be run,
 and the honest record is "not yet exercised", not a pass.
