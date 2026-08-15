@@ -14,13 +14,23 @@ change to the AppImage, the updater, or the launcher runs the full set.
 - **Every later Linux release** — [Reduced later-release
   checks](#reduced-later-release-checks): launch, tray, popup.
 
-The environment is a **Kubuntu 22.04 VM**. That is deliberate: Ubuntu 22.04 is
-the compatibility floor the AppImage is built against (`release.yml` pins
-`ubuntu-22.04` for `build-linux`), and Kubuntu puts KDE Plasma in front of it,
-which is the desktop whose SNI tray and panel geometry the widget is written
-for. Testing on anything newer proves the app runs *above* the floor, not at
-it. See [NixOS is supplemental](#nixos-appimage-run-is-supplemental-coverage)
-for what the other Linux box here can and cannot tell you.
+The manual pass runs across the platforms the project is actually validated on
+(ADR-0004); there is no longer a single "compatibility floor" VM:
+
+- **Debian 13 XFCE** — a stock, mainstream, non-Nix distro. This is where the
+  *shipped AppImage binary* is launched directly, to prove it starts on a normal
+  desktop with nothing extra installed.
+- **NixOS + KDE Plasma** — the desktop the SNI tray and panel geometry are
+  written for. The Plasma-specific tray, tooltip, and placement checks run here;
+  the maintainer runs Plasma on NixOS day to day.
+- **Windows** — the signed release build, covered by its own install/update
+  checks elsewhere.
+
+Where a check below names Plasma, run it on the NixOS + Plasma machine; the
+direct-launch and update checks can run on Debian 13 XFCE. A virgl/virtualized-GPU
+VM is **not** a valid environment for any of this — see
+[How the tested platforms divide the coverage](#how-the-tested-platforms-divide-the-coverage)
+for why, and for what each machine can and cannot tell you.
 
 ---
 
@@ -47,7 +57,7 @@ The `release-dry-run` artifact holds the NSIS installer and its `.sig`, the
 portable EXE, the AppImage and its `.sig`, and `latest.json`. What to check:
 
 - [ ] Both platform jobs succeeded — `Signed Windows artifacts` and
-      `Signed AppImage (Ubuntu 22.04)`. `publish` will not run otherwise, and
+      `Signed AppImage (Ubuntu 24.04)`. `publish` will not run otherwise, and
       the point of the dry run is the *combined* manifest.
 - [ ] `latest.json` carries **both** platform entries, each with a non-empty
       `signature` and a `url`:
@@ -84,19 +94,21 @@ Keep this AppImage. It is the "old version" the update test in step 4 needs.
 
 ---
 
-## 2. Direct AppImage launch on the Kubuntu 22.04 VM
+## 2. Direct AppImage launch on Debian 13 XFCE
 
-Copy the AppImage to the VM — a normal download location, not a path you would
-never use — and start it the way the download page tells a user to:
+Copy the AppImage to the Debian 13 XFCE machine — a normal download location,
+not a path you would never use — and start it the way the download page tells a
+user to:
 
 ```sh
 chmod +x QuotaWidget_<version>_amd64.AppImage
 ./QuotaWidget_<version>_amd64.AppImage
 ```
 
-- [ ] It starts on Kubuntu 22.04 with no extra packages installed. This is the
-      compatibility-floor claim; anything you had to `apt install` first
-      invalidates it and needs recording.
+- [ ] It starts on a stock Debian 13 XFCE install with no extra packages added.
+      The AppImage makes no minimum-distro promise, but it must start on a
+      current mainstream distro out of the box; anything you had to `apt install`
+      first needs recording.
 - [ ] An icon appears in the panel. Both windows start hidden, so nothing is
       presented unless the first poll trips an auto-popup alert.
 - [ ] Settings' footer reads the version you built.
@@ -240,11 +252,11 @@ anything — the message surfaces as `Update failed: …` in the same row.
 
 ## Reduced later-release checks
 
-Every subsequent Linux release, on the same Kubuntu 22.04 VM, once the tag has
+Every subsequent Linux release, on the tested platforms, once the tag has
 published:
 
-- [ ] **Launch** — the released AppImage starts on the VM with nothing extra
-      installed, and puts its icon in the panel.
+- [ ] **Launch** — the released AppImage starts on Debian 13 XFCE with nothing
+      extra installed, and puts its icon in the panel.
 - [ ] **Tray** — left-click toggles the mini summary, hover shows the tooltip,
       right-click gives Open / Refresh now / Settings / Quit.
 - [ ] **Popup** — opens near the tray, inside the work area, and Settings reads
@@ -265,34 +277,34 @@ gaps is not.
 
 ---
 
-## NixOS `appimage-run` is supplemental coverage
+## How the tested platforms divide the coverage
 
-The other Linux machine here is NixOS, where an AppImage is normally run with
-`appimage-run`. That is worth doing, and it is **not** the compatibility-floor
-test.
+No single machine covers everything, so each platform answers a different
+question (ADR-0004):
 
-`appimage-run` extracts the image and runs its payload against a runtime that
-Nix supplies — its own glibc, GTK, WebKitGTK and friends, chosen to make
-foreign binaries work. A success therefore proves the binary is correct and the
-app behaves under Nix's shims. It says nothing about whether the AppImage's
-linkage fits the userspace a stock Ubuntu 22.04 system provides, which is the
-actual promise on the download page. A binary that quietly picked up a newer
-glibc symbol from the build runner would pass under `appimage-run` and fail on
-the machine the floor was written for.
+- **Debian 13 XFCE — does the shipped binary start on a stock distro?** The
+  AppImage is launched *directly* (`./…AppImage`), against the distro's own
+  glibc and GTK/WebKit. This is the only check that exercises the AppImage's
+  linkage on a normal, non-Nix userspace, which is what a downloader actually
+  has. Nothing else here substitutes for it.
 
-So:
+- **NixOS + KDE Plasma — does the UI behave under Plasma?** This is where the
+  SNI tray, the Plasma-drawn tooltip, panel-aware placement, and the Plasma
+  application-menu integration are validated (sections 3–4). The maintainer runs
+  Plasma on NixOS, so this is the everyday environment. Note that running the
+  AppImage on NixOS goes through `appimage-run`, which supplies its *own* glibc
+  and GTK/WebKit runtime — so a NixOS run shows the app behaves under Nix's
+  shims, not that the binary links against a stock distro. That linkage question
+  belongs to the Debian 13 XFCE run above. The Nix *package* is a different thing
+  again: a reproducible source build that pins its own GTK/WebKit and is not an
+  installable artifact, so it shows upgrade guidance rather than an install
+  button, and proves nothing about the AppImage at all.
 
-- The **compatibility floor is Ubuntu 22.04, or an equivalent-or-newer
-  userspace**, and it is tested by launching the AppImage directly on the
-  Kubuntu 22.04 VM with no extra packages installed. That is the only check
-  that establishes it.
-- NixOS `appimage-run` is **supplemental**: a second desktop environment and a
-  second way of starting the image, useful for catching behaviour that is not
-  about linkage.
-- A NixOS pass never substitutes for the VM pass. If only the NixOS run was
-  done, the floor is untested and the record must say so.
+- **Windows — the signed release build**, covered by its own install and update
+  checks.
 
-Note also that the Nix *package* is a different thing again: a reproducible
-source build that pins its own GTK/WebKit and is not an installable artifact,
-so it shows upgrade guidance rather than an install button. Running the Nix
-package proves nothing about the AppImage at all.
+**Not a valid environment: virgl / virtualized-GPU VMs.** The bundled WebKit
+aborts with `Could not create default EGL display: EGL_BAD_PARAMETER` on virgl
+regardless of the app, so a failure there is a property of the virtual GPU, not
+the release. Validate on real-GPU hardware, or a VM with a normal (non-virgl)
+display adapter.

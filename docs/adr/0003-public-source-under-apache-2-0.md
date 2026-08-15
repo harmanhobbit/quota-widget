@@ -19,7 +19,10 @@ still stands, unchanged:
   Linux entry keeps the artifact-qualified `linux-x86_64-appimage` target.
 - The AppImage compatibility floor stays Ubuntu 22.04, pinned in the workflow
   rather than inherited from `ubuntu-latest`, and Linux releases still need the
-  manual validation pass in `docs/linux-release-validation.md`.
+  manual validation pass in `docs/linux-release-validation.md`. (The floor
+  itself is since dropped — see
+  [ADR-0004](0004-drop-ubuntu-22-04-compatibility-floor.md); the pinned-runner
+  rule and the manual-validation requirement both stand.)
 - Desktop integration stays self-managed, per-user and opt-in, with the
   ownership-marker rules for removal.
 
@@ -33,8 +36,8 @@ Nix upgrade, exactly as before.
 
 Documentation may no longer explain a gap by pointing at repository visibility.
 The reason to prefer a signed release artifact over a source build is that it
-is signed, reproducible in CI and validated on the compatibility floor — not
-that the source is unavailable. `docs/dist-README.md` in particular is still
+is signed, reproducible in CI and validated on the project's tested platforms
+(ADR-0004) — not that the source is unavailable. `docs/dist-README.md` in particular is still
 written for downloaders rather than builders, but for that reason and not
 because the code is unreadable.
 

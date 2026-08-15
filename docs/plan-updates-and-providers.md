@@ -570,12 +570,12 @@ second feature beside it. The Nix flake remains the reproducible/developer
 route and may continue to expose more architectures, but only `x86_64` is a
 published-binary promise.
 
-The Linux build runs in a pinned Ubuntu 22.04 environment, establishing the
-AppImage compatibility floor as Ubuntu 22.04 or an equivalent-or-newer
-userspace. Do not use `ubuntu-latest`: advancing a CI label must not silently
-narrow the release's compatibility promise. Linux is a separate 1x-metered job
-from the 2x Windows build; a publishing step gathers both signed artifact sets
-only after they succeed.
+The Linux build runs in a pinned Ubuntu 24.04 environment (ADR-0004 dropped the
+former Ubuntu 22.04 compatibility floor; the AppImage is now best-effort with no
+promised minimum distribution). Do not use `ubuntu-latest`: advancing a CI label
+must not silently move the bundled userspace out from under a release. Linux is
+a separate 1x-metered job from the 2x Windows build; a publishing step gathers
+both signed artifact sets only after they succeed.
 
 - `.github/workflows/release.yml` — build an AppImage on the pinned Linux
   runner with the same `TAURI_SIGNING_PRIVATE_KEY`; find the AppImage and its
@@ -602,7 +602,7 @@ only after they succeed.
   app's ownership marker; preserve user-modified entries and explain manual
   cleanup.
 - `docs/dist-README.md` and `README.md` — replace the Windows-only claims with
-  the Ubuntu-22.04-or-newer AppImage path, `chmod +x` launch instructions,
+  the best-effort AppImage path, `chmod +x` launch instructions,
   desktop-integration explanation, Nix distinction, update/restart behavior,
   and concise manual minisign verification for the AppImage. The public
   download page continues to be generated from `docs/dist-README.md`.
@@ -610,12 +610,11 @@ only after they succeed.
 **Verification.** Run the existing core tests, frontend build and smoke mount,
 then use the release workflow's dry run to inspect the signed AppImage,
 signature, and combined manifest. Before the first public Linux release,
-manually validate in a Kubuntu 22.04 VM: direct AppImage launch, tray,
-popup/mini placement under Plasma, opt-in desktop integration, and one
-end-to-end in-app update. Later Linux releases still require launch, tray, and
-popup validation there. NixOS with `appimage-run` is useful supplemental
-coverage, but not the compatibility-floor test: an ordinary AppImage does not
-run natively there.
+manually validate on the project's tested platforms (ADR-0004): direct AppImage
+launch on Debian 13 XFCE, tray and popup/mini placement under KDE Plasma on
+NixOS, opt-in desktop integration, and one end-to-end in-app update. Later Linux
+releases still require launch, tray, and popup validation. A virgl/virtualized-GPU
+VM is not a valid environment for the AppImage.
 
 ### One provider per minor
 

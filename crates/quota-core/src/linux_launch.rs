@@ -1,9 +1,9 @@
-//! Startup environment shims for the compatibility-floor Linux AppImage.
+//! Startup environment shims for the Linux AppImage.
 //!
-//! The AppImage is deliberately built on Ubuntu 22.04 so it starts on the
-//! widest range of hosts (see the release notes in `AGENTS.md`). That same
-//! bundled-old-userspace design is what makes two things go wrong when the
-//! image runs on a *newer* host than it was built on:
+//! The AppImage bundles its own GTK/WebKit/GLib userspace from the Ubuntu
+//! runner it is built on (currently 24.04 — ADR-0004; it carries no promised
+//! compatibility floor). Running that bundled userspace on a *newer* host than
+//! it was built on is what makes two things go wrong:
 //!
 //! 1. **WebKitGTK's DMA-BUF renderer aborts.** WebKitGTK ≥ 2.42 defaults to a
 //!    DMA-BUF/EGL rendering path that asks the host for an EGL display. When the
@@ -15,10 +15,11 @@
 //!    fatal failure; the shim below is what keeps the app launchable.
 //!
 //! 2. **GIO loads the host's GVFS modules against the bundled GLib.** The
-//!    bundled GLib is 2.72 (22.04); a newer host's GIO modules
-//!    (`libgvfscommon.so`, `libgvfsdbus.so`) reference `g_task_set_static_name`,
-//!    a symbol added in GLib 2.76 that the bundled GLib does not export, so GIO
-//!    logs `undefined symbol: g_task_set_static_name` for each as it scans the
+//!    bundled GLib is whatever the build base ships (2.80 on 24.04). A host
+//!    newer than the build base can carry GIO modules (`libgvfscommon.so`,
+//!    `libgvfsdbus.so`) that reference GLib symbols the bundled GLib does not
+//!    export — historically `g_task_set_static_name`, added in GLib 2.76 — so
+//!    GIO logs `undefined symbol: …` for each as it scans the
 //!    host module directory. Pointing `GIO_MODULE_DIR` at the AppImage's own
 //!    bundled modules keeps GIO on the version-matched set. The widget needs no
 //!    GIO module of its own — its HTTP is reqwest + rustls and the webview runs

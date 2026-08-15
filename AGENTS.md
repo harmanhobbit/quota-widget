@@ -137,9 +137,9 @@ built and was signed; it cannot see the tray, window placement, the launcher it
 writes into a home directory, or an update that rewrites the running
 executable. `docs/linux-release-validation.md` is that checklist — a dry-run
 manifest inspection, then launch, tray, popup, mini-summary placement, opt-in
-desktop integration and one end-to-end signed update on a Kubuntu 22.04 VM, and
-a reduced launch/tray/popup set for every later release. It also records why
-NixOS `appimage-run` is supplemental rather than the compatibility-floor test.
+desktop integration and one end-to-end signed update on the project's tested
+Linux platforms, and a reduced launch/tray/popup set for every later release. It
+also records which platform each check runs on (ADR-0004).
 
 **`release/<version>` branches are for stabilisation only.** If a release needs
 fixes after the version commit but before the tag — or an old line needs a
@@ -414,7 +414,7 @@ The two items that section once tracked as outstanding have since shipped too:
    through to the "upgrade the way you installed it" note. (Native Windows update
    itself shipped as 0.19.0 and is proven end to end, in-place install included.)
 2. **Linux distribution** — shipped. `release.yml` builds and publishes a signed
-   `x86_64` AppImage on pinned Ubuntu 22.04, with per-user desktop integration
+   `x86_64` AppImage on pinned Ubuntu 24.04, with per-user desktop integration
    and in-place AppImage updates, and the source is public under Apache-2.0
    (ADR-0003). See the plan's "Linux distribution" section for the rationale.
 

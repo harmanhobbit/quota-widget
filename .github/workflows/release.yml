@@ -157,15 +157,18 @@ jobs:
           path: release-assets/
 
   build-linux:
-    name: Signed AppImage (Ubuntu 22.04)
+    name: Signed AppImage (Ubuntu 24.04)
     needs: [verify-tag, test, frontend]
-    # Keep the oldest supported glibc baseline explicit. Newer runners can
-    # quietly raise it, producing an AppImage that no longer starts on 22.04.
+    # Pin a specific Ubuntu, never `ubuntu-latest`, so a runner-label change
+    # can't silently move the bundled glibc/WebKit base out from under a
+    # release. 24.04 replaced the retired 22.04 base (ADR-0004): the AppImage
+    # is best-effort with no promised compatibility floor, but which base it is
+    # built on stays a deliberate, reviewed choice.
     if: |
       !cancelled() && needs.test.result == 'success'
       && needs.frontend.result == 'success'
       && needs.verify-tag.result != 'failure'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -175,7 +178,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
-      - name: Install Tauri's Ubuntu 22.04 bundle prerequisites
+      - name: Install Tauri's Ubuntu 24.04 bundle prerequisites
         run: |
           # Tauri's current WebKitGTK binding requires the 4.1 JavaScriptCore
           # ABI and its libsoup 3 dependency. The 4.0 package leaves both
@@ -201,6 +204,11 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # 24.04 restricts the unprivileged user namespaces linuxdeploy's FUSE
+          # mount relies on, so the AppImage tooling can't mount itself on the
+          # runner. Extracting instead of mounting is the supported workaround
+          # and changes nothing about the produced image.
+          APPIMAGE_EXTRACT_AND_RUN: 1
 
       - name: Stage signed AppImage
         run: |
@@ -234,7 +242,7 @@ jobs:
       && needs.verify-tag.result != 'failure'
       && needs.build-windows.result == 'success'
       && needs.build-linux.result == 'success'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: Download signed release assets
