@@ -339,6 +339,25 @@ the file in place — which is what the in-app update does — keeps it working.
 *Moving* it does not, so the widget then offers to **repair** the launcher
 rather than silently retargeting it.
 
+#### Running on a newer host than the build floor
+
+The AppImage is built on Ubuntu 22.04 as a compatibility floor, so on a newer
+host its bundled GTK/WebKit meets a newer GPU and GLib stack. Two things follow,
+and the app now handles both itself at startup when it detects it is running as
+an AppImage — no flags to pass:
+
+- WebKitGTK's default DMA-BUF renderer can fail to bind the host GPU, printing
+  `Could not create default EGL display: EGL_BAD_PARAMETER` and aborting before
+  a window opens. The app sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` to fall back
+  to a renderer that needs no EGL display.
+- GIO scanning the host's GVFS modules against the bundled (older) GLib logs
+  `undefined symbol: g_task_set_static_name`; the app points `GIO_MODULE_DIR` at
+  its own bundled modules so only version-matched ones load. A stray `atk-bridge`
+  "unknown signature" line has the same version-skew cause and is harmless.
+
+Both are only applied when unset, so exporting either variable yourself still
+wins. A native or Nix install is untouched.
+
 Removal only deletes files the app wrote and you have not since edited: a
 launcher or icon you changed is left exactly as it is, and Settings tells you
 where it is so you can delete it yourself. A `.desktop` file at that path that

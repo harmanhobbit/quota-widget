@@ -500,7 +500,31 @@ fn quit(app: tauri::AppHandle) {
 // ---- app entry --------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Apply the Linux AppImage startup environment shims before anything can touch
+/// GTK or WebKit. See `quota_core::linux_launch` for why each variable is set.
+/// This must run first in `run()`, while the process is still single-threaded,
+/// so the `set_var` calls have no other thread to race.
+#[cfg(target_os = "linux")]
+fn apply_appimage_launch_env() {
+    // The AppImage's own gio modules sit beside its bundled GLib. Offer the
+    // directory only when it actually exists, so GIO is never pointed at a
+    // missing path — x86_64 is the only architecture the AppImage ships.
+    let bundled_gio = std::env::var("APPDIR").ok().and_then(|appdir| {
+        let dir = format!("{appdir}/usr/lib/x86_64-linux-gnu/gio/modules");
+        std::path::Path::new(&dir).is_dir().then_some(dir)
+    });
+    for (key, value) in quota_core::linux_launch::appimage_launch_overrides(
+        |k| std::env::var(k).ok(),
+        bundled_gio.as_deref(),
+    ) {
+        std::env::set_var(key, value);
+    }
+}
+
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    apply_appimage_launch_env();
+
     let config_dir = config_dir();
     let loaded = Config::load(&config_dir);
     let config = loaded.config;
