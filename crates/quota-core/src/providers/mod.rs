@@ -20,8 +20,20 @@ use crate::model::{FetchError, UsageSnapshot};
 use chrono::{DateTime, TimeZone, Utc};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// One rotated credential an adapter asked the host to persist, and whether
+/// that write succeeded. Collected by [`ProviderCtx::persist_secret`] and
+/// drained by [`crate::refresh::refresh`] into its [`crate::refresh::RefreshOutcome`],
+/// so a persistence failure is reported alongside the rest of one refresh
+/// pass rather than only logged by the host in passing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CredentialWrite {
+    pub key: String,
+    pub value: String,
+    pub result: Result<(), String>,
+}
 
 /// Everything an adapter needs to fetch: shared HTTP client, the user's home
 /// directory (overridable in tests), pasted secrets, and the live config (for
@@ -36,13 +48,17 @@ pub struct ProviderCtx {
     pub secrets: HashMap<String, String>,
     pub config: Config,
     /// Called when an adapter rotates a stored credential (e.g. an OAuth
-    /// refresh) so the host can persist it. Key is the secret name.
+    /// refresh) so the host can persist it. Key is the secret name. Returns
+    /// whether the write succeeded, which `persist_secret` records.
     pub on_secret_update: Option<SecretUpdateHook>,
+    /// Every credential write requested during this context's lifetime (one
+    /// refresh pass), in call order.
+    credential_writes: Mutex<Vec<CredentialWrite>>,
 }
 
 /// Host callback invoked as `(secret_name, value)` when an adapter rotates a
-/// stored credential.
-pub type SecretUpdateHook = std::sync::Arc<dyn Fn(&str, &str) + Send + Sync>;
+/// stored credential. Returns `Err` with a reason when the write failed.
+pub type SecretUpdateHook = std::sync::Arc<dyn Fn(&str, &str) -> Result<(), String> + Send + Sync>;
 
 impl ProviderCtx {
     pub fn new(
@@ -66,13 +82,33 @@ impl ProviderCtx {
             secrets,
             config,
             on_secret_update: None,
+            credential_writes: Mutex::new(Vec::new()),
         }
     }
 
     pub fn persist_secret(&self, key: &str, value: &str) {
-        if let Some(f) = &self.on_secret_update {
-            f(key, value);
-        }
+        let result = match &self.on_secret_update {
+            Some(f) => f(key, value),
+            None => Ok(()),
+        };
+        self.credential_writes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(CredentialWrite {
+                key: key.to_string(),
+                value: value.to_string(),
+                result,
+            });
+    }
+
+    /// Every credential write requested so far, in call order. Non-consuming:
+    /// callers ([`crate::refresh::refresh`], tests) can inspect without ending
+    /// the context's lifetime.
+    pub fn credential_writes(&self) -> Vec<CredentialWrite> {
+        self.credential_writes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 

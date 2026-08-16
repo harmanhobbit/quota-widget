@@ -88,11 +88,14 @@ impl AppState {
         let secrets = secrets::load_all(&self.config_dir, &config);
         let mut ctx = ProviderCtx::new(home, self.config_dir.clone(), secrets, config);
         // Adapters that rotate tokens (Claude OAuth refresh) persist them here.
+        // A write failure is not logged here: it is collected into the
+        // refresh operation's outcome (`ProviderCtx::credential_writes`) and
+        // reported by the caller that consumes it (`poller::poll_once`),
+        // which is the one place that already knows this is a refresh pass
+        // rather than, say, a `test_provider` probe.
         let dir = self.config_dir.clone();
         ctx.on_secret_update = Some(std::sync::Arc::new(move |key: &str, value: &str| {
-            if let Err(e) = secrets::set(&dir, key, value) {
-                eprintln!("failed to persist rotated secret {key}: {e}");
-            }
+            secrets::set(&dir, key, value)
         }));
         ctx
     }
