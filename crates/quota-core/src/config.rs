@@ -315,6 +315,9 @@ impl Default for Config {
                 ..Default::default()
             },
         );
+        // Grok is disabled by default: unlike Claude/Codex it needs an explicit
+        // sign-in (or the grok CLI logged in) before it can fetch anything.
+        providers.insert("grok".into(), ProviderConfig::default());
         providers.insert("openrouter".into(), ProviderConfig::default());
         providers.insert("elevenlabs".into(), ProviderConfig::default());
         providers.insert("firecrawl".into(), ProviderConfig::default());
@@ -1296,6 +1299,7 @@ mod tests {
         assert_eq!(
             loaded.providers.keys().collect::<Vec<_>>(),
             vec![
+                &"grok",
                 &"openrouter",
                 &"elevenlabs",
                 &"firecrawl",
