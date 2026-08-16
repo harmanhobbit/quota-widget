@@ -132,6 +132,113 @@ One configured sign-in to a provider, with its own name, secrets and settings.
 A provider may have several, and each is ordered and displayed independently.
 _Avoid_: Provider (the vendor), profile, connection
 
+**Android app**:
+The full-screen Android form of Quota Widget, where a user views detailed
+usage, manages accounts and changes settings.
+_Avoid_: Android widget, mobile widget
+
+**Home-screen widget**:
+The compact Quota Widget surface placed in an Android launcher's home screen.
+It is a companion surface of the standalone [[Android app]], not the app itself.
+_Avoid_: Android app, mobile app, desktop widget
+
+**Outcome parity**:
+The cross-platform promise that accounts, quota meanings, ordering, thresholds,
+status and visual identity agree while each platform uses its own native
+surfaces and interactions.
+_Avoid_: Pixel parity, interaction parity, identical experience
+
+**Background refresh target**:
+The interval Android asks for between quota refresh opportunities while the app
+is not in use. It is a best-effort request to the operating system, never a
+promise that a refresh will run at that time.
+_Avoid_: Poll interval, refresh guarantee, refresh schedule
+
+**Widget instance**:
+One placement of the [[home-screen widget]], with its own selected accounts and
+headlines. A user may place several independently configured instances.
+_Avoid_: Android widget, widget type, copy
+
+**Credential source**:
+The way an account supplies authentication, such as built-in sign-in, a pasted
+secret or a desktop CLI login. A provider may exist on every platform without
+every credential source existing there.
+_Avoid_: Provider, account, authentication method
+
+**Personal Android build**:
+A consistently signed APK produced on demand for the owner's direct install.
+It is not a public release or a [[distribution artifact]].
+_Avoid_: Android release, debug build, Play Store build
+
+**Android application identity**:
+The permanent package identity `tech.allaway.quotawidget`, shared by every
+personal Android build so later APKs update the same installed application.
+_Avoid_: Desktop identifier, app name, signing identity
+
+**Android validation target**:
+The real device and launcher on which the personal Android build must be
+manually proven: a Google Pixel 7 running Android 17 with Pixel Launcher.
+_Avoid_: Android support matrix, emulator, minimum API
+
+**Pending sign-in**:
+The short-lived state of a built-in browser sign-in that has started but not
+finished. It survives the Android app leaving memory, but only until the
+provider's flow expires.
+_Avoid_: Login session, account, saved sign-in
+
+**Shared configuration**:
+The accounts, provider settings, thresholds, alerts, ordering and headline
+choices whose meaning is common to every Quota Widget platform.
+_Avoid_: Config file, platform settings, synced configuration
+
+**Platform preferences**:
+Choices about behaviour that exists on only one host, such as desktop window
+placement or Android home-screen presentation.
+_Avoid_: Shared configuration, provider settings
+
+**Widget privacy mode**:
+A per-[[widget instance]] choice that hides quota figures and balances while
+retaining account names and status colours.
+_Avoid_: Private account, secret widget, lock-screen mode
+
+**Trusted endpoint**:
+A provider endpoint reached over HTTPS whose certificate is accepted by the
+platform's system trust store.
+_Avoid_: Custom endpoint, secure endpoint, certificate override
+
+**Foreground refresh**:
+Quota refreshes performed while the Android app is visible: once immediately
+on entry, then at the configured interval until the app leaves the foreground.
+_Avoid_: Background refresh, continuous polling, widget refresh
+
+**Stale reading**:
+The last successful quota figure retained after a newer refresh fails. It is
+visibly aged and unavailable rather than replaced by a blank or current-looking
+value.
+_Avoid_: Cached value, old data, failed reading
+
+**Configuration draft**:
+The editable copy of Settings that remains separate from saved configuration
+until the user explicitly saves it. Leaving with changes requires a discard
+decision.
+_Avoid_: Live settings, autosaved settings, form state
+
+**Provider onboarding**:
+The Android first-run path from an empty account list through choosing a
+provider and supplying one of its supported [[credential source]]s.
+_Avoid_: Default accounts, setup wizard, sign-in
+
+**Alert memory**:
+The last alert level successfully evaluated for an account on this Android
+installation. It survives process death, reboot and upgrade so those lifecycle
+events cannot turn an unchanged critical state into repeated crossings.
+_Avoid_: Alert baseline, notification history, cached alert
+
+**Unconfigured widget instance**:
+A [[widget instance]] whose saved account selection is missing or unreadable.
+It asks to be configured and never silently substitutes another account.
+_Avoid_: Empty widget, broken widget, default widget
+
 **Desktop integration**:
 A per-user launcher and icon registration that makes a standalone AppImage
 discoverable from the desktop environment's application menu.
