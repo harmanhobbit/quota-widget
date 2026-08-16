@@ -1,4 +1,6 @@
 use crate::model::{Status, UsageSnapshot, UsageWindow};
+use crate::platform_preferences::PlatformPreferences;
+use crate::shared_config::SharedConfig;
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -396,6 +398,29 @@ impl ConfigRecovery {
     }
 }
 
+/// `shared_config::SharedConfig` carries its own copy of this shape (see that
+/// module's doc for why it does not depend on this one surviving), so once
+/// storage has migrated its recovery state is bridged back into the type this
+/// module's callers — and the IPC layer — already know.
+impl From<crate::shared_config::RecoveryKind> for RecoveryKind {
+    fn from(kind: crate::shared_config::RecoveryKind) -> Self {
+        match kind {
+            crate::shared_config::RecoveryKind::Malformed => RecoveryKind::Malformed,
+            crate::shared_config::RecoveryKind::Unreadable => RecoveryKind::Unreadable,
+        }
+    }
+}
+
+impl From<crate::shared_config::SharedConfigRecovery> for ConfigRecovery {
+    fn from(recovery: crate::shared_config::SharedConfigRecovery) -> Self {
+        ConfigRecovery {
+            kind: recovery.kind.into(),
+            path: recovery.path,
+            detail: recovery.detail,
+        }
+    }
+}
+
 /// The result of a load: always a usable `Config`, plus whatever had to be set
 /// aside to produce it.
 #[derive(Debug, Clone, PartialEq)]
@@ -613,24 +638,56 @@ impl Config {
         self.providers.get(provider_id)?.settings.get(key).cloned()
     }
 
-    /// Reads `config.json`, always yielding a usable config.
-    ///
-    /// Three outcomes, and the difference between them matters: no file is a
-    /// first run and starts on the established defaults; a valid file loads and
-    /// migrates as it always has; a file that exists but cannot be read or
-    /// parsed runs on defaults *and* reports a [`ConfigRecovery`], because
-    /// quietly treating it as a first run is how a working setup gets replaced
-    /// by an empty one at the next save.
-    pub fn load(dir: &Path) -> ConfigLoad {
-        let path = dir.join("config.json");
-        let (mut cfg, recovery) = match std::fs::read_to_string(&path) {
+    /// Splits into the two files storage now uses: see
+    /// `crate::shared_config` and `crate::platform_preferences`.
+    pub fn split(&self) -> (SharedConfig, PlatformPreferences) {
+        (
+            SharedConfig::from_legacy(self),
+            PlatformPreferences::from_legacy(self),
+        )
+    }
+
+    /// Reassembles the combined shape every other part of the desktop app
+    /// (IPC, `Settings.svelte`, the poller) still reads and writes — the split
+    /// is a storage-layer detail, not something that reaches the frontend.
+    pub fn from_parts(shared: SharedConfig, prefs: PlatformPreferences) -> Self {
+        Self {
+            // Always current: `SharedConfig`/`PlatformPreferences` are never
+            // constructed except from an already-migrate_mini_summary'd
+            // legacy `Config` (see `read_legacy`) or from defaults that are
+            // already in the current shape, so re-running that migration
+            // would be wrong — `migrate_mini_summary` keys off this field, and
+            // `SharedConfig::version` tracks a different, unrelated axis.
+            version: 2,
+            poll_interval_secs: prefs.poll_interval_secs,
+            thresholds: shared.thresholds,
+            alerts: shared.alerts,
+            autostart: prefs.autostart,
+            hide_on_blur: prefs.hide_on_blur,
+            mini_summary_bars: prefs.mini_summary_bars,
+            scroll_opacity: prefs.scroll_opacity,
+            scroll_opacity_invert: prefs.scroll_opacity_invert,
+            check_updates: prefs.check_updates,
+            desktop_integration_prompted: prefs.desktop_integration_prompted,
+            sort_order: shared.sort_order,
+            sort_basis: shared.sort_basis,
+            mini_anchor: prefs.mini_anchor,
+            providers: shared.providers,
+        }
+    }
+
+    /// Reads a pre-split `config.json` exactly as every build before the
+    /// split did — including the mini-summary migration — without deciding
+    /// what to do about the result. Used only by `migrate_if_needed`.
+    fn read_legacy(path: &Path) -> (Self, Option<ConfigRecovery>) {
+        let (mut cfg, recovery) = match std::fs::read_to_string(path) {
             Ok(text) => match serde_json::from_str::<Self>(&text) {
                 Ok(cfg) => (cfg, None),
                 Err(e) => (
                     Self::default(),
                     Some(ConfigRecovery {
                         kind: RecoveryKind::Malformed,
-                        path,
+                        path: path.to_path_buf(),
                         detail: e.to_string(),
                     }),
                 ),
@@ -643,15 +700,72 @@ impl Config {
                 Self::default(),
                 Some(ConfigRecovery {
                     kind: RecoveryKind::Unreadable,
-                    path,
+                    path: path.to_path_buf(),
                     detail: e.to_string(),
                 }),
             ),
         };
         cfg.migrate_mini_summary();
+        (cfg, recovery)
+    }
+
+    /// One-time upgrade from the combined `config.json` to the two files
+    /// storage now uses, run transparently the first time this build sees a
+    /// data directory that has not migrated yet.
+    ///
+    /// Returns `Some` only when migration could not proceed because the
+    /// legacy file is there but unreadable — exactly the condition that used
+    /// to block `save`, now reported against `config.json` one last time
+    /// rather than a `shared-config.json` that was never created. A directory
+    /// that has already migrated (`shared-config.json` present) or never had
+    /// a legacy file at all returns `None` immediately and touches nothing.
+    fn migrate_if_needed(dir: &Path) -> Option<ConfigRecovery> {
+        if dir.join(crate::shared_config::FILE_NAME).exists() {
+            return None;
+        }
+        let legacy_path = dir.join("config.json");
+        let (legacy, recovery) = Self::read_legacy(&legacy_path);
+        if let Some(recovery) = recovery {
+            return Some(recovery);
+        }
+        // No legacy file either: a true first run, nothing to migrate.
+        if !legacy_path.exists() {
+            return None;
+        }
+        let (shared, prefs) = legacy.split();
+        // Best-effort: a failure here just means the fresh split files don't
+        // exist yet and the *next* load or save retries the whole migration
+        // from the still-untouched legacy file — nothing is lost either way.
+        if shared.write_fresh(dir).is_err() || prefs.save(dir).is_err() {
+            return None;
+        }
+        // Kept, never deleted, and never consulted again once the split files
+        // exist — `migrate_if_needed`'s first check short-circuits on them.
+        let _ = std::fs::rename(&legacy_path, dir.join("config.json.migrated"));
+        None
+    }
+
+    /// Reads the current configuration, always yielding a usable value.
+    ///
+    /// Three outcomes: no data directory (or one that migrated cleanly) is a
+    /// first run or an ordinary load on the established defaults; a valid
+    /// shared configuration loads as-is; a shared configuration — or, before
+    /// the one-time migration, a legacy `config.json` — that exists but cannot
+    /// be read or parsed runs on defaults *and* reports a [`ConfigRecovery`],
+    /// because quietly treating it as a first run is how a working setup gets
+    /// replaced by an empty one at the next save.
+    pub fn load(dir: &Path) -> ConfigLoad {
+        if let Some(recovery) = Self::migrate_if_needed(dir) {
+            return ConfigLoad {
+                config: Self::default(),
+                recovery: Some(recovery),
+            };
+        }
+        let shared = SharedConfig::load(dir);
+        let prefs = PlatformPreferences::load(dir);
         ConfigLoad {
-            config: cfg,
-            recovery,
+            config: Self::from_parts(shared.config, prefs),
+            recovery: shared.recovery.map(ConfigRecovery::from),
         }
     }
 
@@ -663,18 +777,22 @@ impl Config {
         Self::load(dir).recovery
     }
 
-    /// Writes the config, unless doing so would destroy an existing one we
-    /// could not read.
+    /// Writes the configuration, unless doing so would destroy an existing one
+    /// we could not read.
     ///
     /// The ordinary save path must never be the thing that discards a user's
-    /// accounts: with an unreadable `config.json` present this fails with
-    /// `InvalidData` and writes nothing. Replacing it is a separate, explicit
-    /// act — [`Config::save_after_recovery`].
+    /// accounts: with an unreadable shared configuration (or, pre-migration, an
+    /// unreadable legacy `config.json`) present this fails with `InvalidData`
+    /// and writes nothing. Replacing it is a separate, explicit act —
+    /// [`Config::save_after_recovery`].
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
-        if let Some(recovery) = Self::recovery_state(dir) {
+        if let Some(recovery) = Self::migrate_if_needed(dir) {
             return Err(refuse_overwrite(&recovery));
         }
-        self.write(dir)
+        if let Some(recovery) = SharedConfig::recovery_state(dir) {
+            return Err(refuse_overwrite(&ConfigRecovery::from(recovery)));
+        }
+        self.write_split(dir)
     }
 
     /// The explicit recovery action: move the unreadable original aside, then
@@ -683,52 +801,57 @@ impl Config {
     ///
     /// A no-op recovery (nothing wrong on disk) is not an error; it just saves,
     /// which keeps the command idempotent if the file was fixed by hand in the
-    /// meantime.
+    /// meantime. Handles both a pre-migration unreadable `config.json` and a
+    /// post-migration unreadable `shared-config.json` — whichever one is
+    /// actually blocking is the one moved aside.
     pub fn save_after_recovery(&self, dir: &Path) -> std::io::Result<Option<PathBuf>> {
-        let Some(recovery) = Self::recovery_state(dir) else {
-            self.write(dir)?;
+        // Pre-migration: an outstanding unreadable legacy `config.json` is the
+        // thing to recover from. A valid legacy file (or none at all) just
+        // migrates transparently, same as `load`/`save`, before falling
+        // through to the post-migration path below.
+        if !dir.join(crate::shared_config::FILE_NAME).exists() {
+            let legacy_path = dir.join("config.json");
+            let (_, recovery) = Self::read_legacy(&legacy_path);
+            if recovery.is_some() {
+                let kept = free_backup_path(dir, "config.json");
+                std::fs::rename(&legacy_path, &kept)?;
+                self.write_split(dir)?;
+                return Ok(Some(kept));
+            }
+            Self::migrate_if_needed(dir);
+        }
+        let Some(_) = SharedConfig::recovery_state(dir) else {
+            self.write_split(dir)?;
             return Ok(None);
         };
-        let kept = free_backup_path(dir);
-        std::fs::rename(&recovery.path, &kept)?;
-        self.write(dir)?;
+        let (shared, prefs) = self.split();
+        let kept = shared
+            .save_after_recovery(dir)?
+            .expect("recovery_state confirmed a shared-config recovery is outstanding");
+        prefs.save(dir)?;
         Ok(Some(kept))
     }
 
-    fn write(&self, dir: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
-        let mut out = self.clone();
-        out.migrate_mini_summary();
-        // The pre-v2 fields are dead to this build but a downgrade still reads
-        // them, so mirror the picker into them: the first selected headline is
-        // the closest single-value equivalent.
-        for provider in out.providers.values_mut() {
-            provider.in_tray = provider.tray_metric.as_deref() != Some("none");
-            provider.mini_summary_metric = match provider.mini_summary_metrics.as_deref() {
-                None => None,
-                Some([]) => Some("none".into()),
-                Some([first, ..]) => Some(first.clone()),
-            };
-        }
-        let text = serde_json::to_string_pretty(&out).expect("config serializes");
-        let path = dir.join("config.json");
-        let tmp = dir.join("config.json.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(tmp, path)
+    fn write_split(&self, dir: &Path) -> std::io::Result<()> {
+        let (shared, prefs) = self.split();
+        shared.write_fresh(dir)?;
+        prefs.save(dir)
     }
 }
 
-/// Where an unreadable config is kept when the user replaces it. Numbered
-/// rather than overwritten, because a second failure must not destroy the copy
-/// taken after the first one — the whole point of keeping it is that it is the
-/// only surviving record of the accounts.
-fn free_backup_path(dir: &Path) -> PathBuf {
-    let first = dir.join("config.json.unreadable");
+/// Where an unreadable legacy `config.json` is kept when the user replaces it
+/// (pre-migration only — a post-migration `shared-config.json` uses
+/// `crate::shared_config`'s own numbering). Numbered rather than overwritten,
+/// because a second failure must not destroy the copy taken after the first
+/// one — the whole point of keeping it is that it is the only surviving
+/// record of the accounts.
+fn free_backup_path(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(format!("{name}.unreadable"));
     if !first.exists() {
         return first;
     }
     for n in 2u32.. {
-        let candidate = dir.join(format!("config.json.unreadable.{n}"));
+        let candidate = dir.join(format!("{name}.unreadable.{n}"));
         if !candidate.exists() {
             return candidate;
         }
@@ -1111,24 +1234,32 @@ mod tests {
             loaded.config.save(dir.path()).unwrap();
         }
 
-        /// A second failure must not overwrite the copy taken after the first.
+        /// Once migrated, `config.json` is no longer consulted at all — a second
+        /// write to it (simulating some other process touching the old file
+        /// after the split) must not be mistaken for a second recovery, and
+        /// must not disturb the shared configuration the app is actually using.
+        /// The numbered-backup guarantee for *repeated* corruption now belongs
+        /// to `shared_config`, since `shared-config.json` is the live store —
+        /// see `shared_config::tests::a_second_recovery_keeps_the_earlier_copy`.
         #[test]
-        fn a_second_recovery_keeps_the_earlier_copy() {
+        fn a_stale_legacy_file_after_migration_is_inert() {
             let dir = tempfile::tempdir().unwrap();
             std::fs::write(dir.path().join("config.json"), "first").unwrap();
             let first = Config::default()
                 .save_after_recovery(dir.path())
                 .unwrap()
                 .unwrap();
-            std::fs::write(dir.path().join("config.json"), "second").unwrap();
-            let second = Config::default()
-                .save_after_recovery(dir.path())
-                .unwrap()
-                .unwrap();
-
-            assert_ne!(first, second);
             assert_eq!(std::fs::read_to_string(&first).unwrap(), "first");
-            assert_eq!(std::fs::read_to_string(&second).unwrap(), "second");
+
+            // Something else writes garbage back to the now-inert legacy path.
+            std::fs::write(dir.path().join("config.json"), "second").unwrap();
+            let cfg = Config {
+                poll_interval_secs: 77,
+                ..Default::default()
+            };
+            // Not treated as a recovery scenario: the live store is fine.
+            assert_eq!(cfg.save_after_recovery(dir.path()).unwrap(), None);
+            assert_eq!(load(dir.path()).poll_interval_secs, 77);
         }
 
         /// Recovering when there is nothing wrong is an ordinary save, so the
@@ -1157,6 +1288,108 @@ mod tests {
                 None
             );
             assert!(!dir.path().join("config.json.unreadable").exists());
+        }
+    }
+
+    /// The on-disk half of the shared-configuration/platform-preferences
+    /// split: a pre-split `config.json` transparently becomes the two new
+    /// files the first time this build touches the data directory, with every
+    /// value preserved and the legacy file kept (never deleted) as a receipt.
+    mod migration {
+        use super::*;
+
+        /// A config with something in it worth losing, so a test that silently
+        /// discards it is distinguishable from one that keeps it.
+        fn a_configured_file() -> String {
+            let mut cfg = Config {
+                poll_interval_secs: 300,
+                ..Default::default()
+            };
+            cfg.providers
+                .insert("claude#2".into(), ProviderConfig::default());
+            serde_json::to_string_pretty(&cfg).unwrap()
+        }
+
+        #[test]
+        fn a_legacy_config_migrates_transparently_on_first_load() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("config.json"), a_configured_file()).unwrap();
+
+            let loaded = Config::load(dir.path());
+            assert_eq!(loaded.recovery, None, "a clean migration reports nothing");
+            assert_eq!(loaded.config.poll_interval_secs, 300);
+            assert!(loaded.config.providers.contains_key("claude#2"));
+
+            // The split files exist, and the legacy file is kept as a receipt
+            // rather than deleted.
+            assert!(dir.path().join("shared-config.json").exists());
+            assert!(dir.path().join("platform-preferences.json").exists());
+            assert!(!dir.path().join("config.json").exists());
+            assert!(dir.path().join("config.json.migrated").exists());
+
+            // The migration runs exactly once: a second load reads the split
+            // files directly and does not re-touch the legacy receipt.
+            let receipt_before =
+                std::fs::read_to_string(dir.path().join("config.json.migrated")).unwrap();
+            let again = Config::load(dir.path());
+            assert_eq!(again.config, loaded.config);
+            assert_eq!(
+                std::fs::read_to_string(dir.path().join("config.json.migrated")).unwrap(),
+                receipt_before
+            );
+        }
+
+        /// Every shared field and every platform field survives the split,
+        /// not just the two spot-checked by the transparency test above.
+        #[test]
+        fn migration_preserves_every_field_across_both_new_files() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut cfg = Config {
+                sort_order: SortOrder::UsageDesc,
+                sort_basis: SortBasis::WorstCase,
+                autostart: true,
+                hide_on_blur: true,
+                mini_anchor: MiniAnchor {
+                    monitor: Some("DP-1".into()),
+                    corner: Corner::TopLeft,
+                },
+                ..Default::default()
+            };
+            cfg.thresholds.warn_pct = 42.0;
+            cfg.providers.get_mut("claude").unwrap().label = Some("Work".into());
+            let text = serde_json::to_string_pretty(&cfg).unwrap();
+            std::fs::write(dir.path().join("config.json"), text).unwrap();
+
+            let migrated = Config::load(dir.path()).config;
+            assert_eq!(migrated, cfg);
+        }
+
+        /// An unreadable legacy `config.json` still blocks migration exactly as
+        /// it always blocked an ordinary load — the split files must not be
+        /// created from data that could not be read.
+        #[test]
+        fn an_unreadable_legacy_config_blocks_migration() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("config.json"), "{not json").unwrap();
+
+            let loaded = Config::load(dir.path());
+            assert!(loaded.recovery.is_some());
+            assert!(!dir.path().join("shared-config.json").exists());
+            assert!(!dir.path().join("platform-preferences.json").exists());
+            assert!(dir.path().join("config.json").exists());
+        }
+
+        /// A fresh install (no legacy file at all) never creates a
+        /// `config.json.migrated` receipt — there was nothing to migrate.
+        #[test]
+        fn a_true_first_run_never_writes_a_migration_receipt() {
+            let dir = tempfile::tempdir().unwrap();
+            let loaded = Config::load(dir.path());
+            assert_eq!(loaded.config, Config::default());
+            assert!(!dir.path().join("config.json.migrated").exists());
+            loaded.config.save(dir.path()).unwrap();
+            assert!(!dir.path().join("config.json.migrated").exists());
+            assert!(dir.path().join("shared-config.json").exists());
         }
     }
 
@@ -1277,11 +1510,13 @@ mod tests {
             loaded.providers["claude"].tray_metric.as_deref(),
             Some("window:weekly")
         );
-        // The downgrade mirror is the first selected headline.
-        assert_eq!(
-            loaded.providers["claude"].mini_summary_metric.as_deref(),
-            Some("window:five_hour")
-        );
+        // No downgrade mirror any more: `write_split` no longer maintains the
+        // pre-v2 `mini_summary_metric` field the way legacy `Config::write`
+        // did. That mirror existed so an *older build* reading the same
+        // `config.json` could still find a usable single-value field — but an
+        // older, pre-split build has no idea `shared-config.json` exists at
+        // all, so maintaining the mirror inside it would serve no reader.
+        assert_eq!(loaded.providers["claude"].mini_summary_metric, None);
     }
 
     #[test]

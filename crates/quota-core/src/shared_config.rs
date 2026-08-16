@@ -19,7 +19,9 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-const FILE_NAME: &str = "shared-config.json";
+/// The filename `crate::config::Config` checks for to decide whether a data
+/// directory has migrated to the split storage yet.
+pub(crate) const FILE_NAME: &str = "shared-config.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -111,23 +113,28 @@ impl SharedConfig {
         if let Some(recovery) = Self::recovery_state(dir) {
             return Err(refuse_overwrite(&recovery));
         }
-        self.write(dir)
+        self.write_fresh(dir)
     }
 
     /// The explicit recovery action: move the unreadable original aside, then
     /// save. See [`Config::save_after_recovery`], which this mirrors.
     pub fn save_after_recovery(&self, dir: &Path) -> std::io::Result<Option<PathBuf>> {
         let Some(recovery) = Self::recovery_state(dir) else {
-            self.write(dir)?;
+            self.write_fresh(dir)?;
             return Ok(None);
         };
         let kept = free_backup_path(dir);
         std::fs::rename(&recovery.path, &kept)?;
-        self.write(dir)?;
+        self.write_fresh(dir)?;
         Ok(Some(kept))
     }
 
-    fn write(&self, dir: &Path) -> std::io::Result<()> {
+    /// Writes unconditionally, with no refusal check. `pub(crate)` because the
+    /// only caller outside this module's own `save`/`save_after_recovery` is
+    /// `crate::config::Config`, which has already made its own recovery
+    /// decision (including the pre-migration legacy-file case this module
+    /// knows nothing about) before ever reaching here.
+    pub(crate) fn write_fresh(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
         let text = serde_json::to_string_pretty(self).expect("shared config serializes");
         let path = dir.join(FILE_NAME);
@@ -281,6 +288,28 @@ mod tests {
         let loaded = SharedConfig::load(dir.path());
         assert_eq!(loaded.recovery, None);
         assert_eq!(loaded.config.sort_order, SortOrder::ExpirySoonest);
+    }
+
+    /// A second failure must not overwrite the copy taken after the first —
+    /// this is the live store's own numbered-backup guarantee, now that
+    /// `crate::config::Config` delegates its on-disk recovery here.
+    #[test]
+    fn a_second_recovery_keeps_the_earlier_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(FILE_NAME), "first").unwrap();
+        let first = SharedConfig::default()
+            .save_after_recovery(dir.path())
+            .unwrap()
+            .unwrap();
+        std::fs::write(dir.path().join(FILE_NAME), "second").unwrap();
+        let second = SharedConfig::default()
+            .save_after_recovery(dir.path())
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read_to_string(&first).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "second");
     }
 
     /// Migration must preserve account identity: relabelling never changes
