@@ -178,9 +178,7 @@ pub fn account_id_from_jwt(id_token: &str) -> Option<String> {
 }
 
 /// Recursively collect every object carrying a `used_percent` field, labelling
-/// each by its window length. Despite that upstream field name, Codex reports
-/// the percentage *remaining*; `UsageWindow::used_pct` is consumed usage for
-/// every shared consumer. Handles both the `rate_limits.{primary,secondary}`
+/// each by its window length. Handles both the `rate_limits.{primary,secondary}`
 /// shape and older/flatter variants.
 fn parse_usage(body: &Value) -> Vec<UsageWindow> {
     let mut found = Vec::new();
@@ -195,8 +193,8 @@ fn parse_usage(body: &Value) -> Vec<UsageWindow> {
 fn collect_windows(v: &Value, out: &mut Vec<(f64, UsageWindow)>) {
     match v {
         Value::Object(obj) => {
-            let remaining_pct = obj.get("used_percent").and_then(as_f64);
-            if let Some(remaining_pct) = remaining_pct {
+            let pct = obj.get("used_percent").and_then(as_f64);
+            if let Some(pct) = pct {
                 let minutes = obj
                     .get("window_minutes")
                     .or_else(|| obj.get("window_duration_mins"))
@@ -223,10 +221,7 @@ fn collect_windows(v: &Value, out: &mut Vec<(f64, UsageWindow)>) {
                     UsageWindow {
                         metric_id: metric_id_for_minutes(minutes),
                         label: label_for_minutes(minutes),
-                        // Do not clamp: a bonus above the nominal allowance
-                        // remains negative usage, and an overage remains past
-                        // 100%, matching the shared window contract.
-                        used_pct: 100.0 - remaining_pct,
+                        used_pct: pct,
                         resets_at,
                         // The response carries the window's length, so the
                         // period start is exact rather than inferred.
@@ -282,7 +277,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn converts_remaining_percent_to_consumed_usage() {
+    fn parses_primary_secondary_shape() {
         let body: Value = serde_json::from_str(
             r#"{
               "plan_type": "plus",
@@ -297,11 +292,10 @@ mod tests {
         assert_eq!(w.len(), 2);
         assert_eq!(w[0].label, "5-hour");
         assert_eq!(w[0].metric_id, "five_hour");
-        assert_eq!(w[0].used_pct, 87.5);
+        assert_eq!(w[0].used_pct, 12.5);
         assert!(w[0].resets_at.is_some());
         assert_eq!(w[1].label, "Weekly");
         assert_eq!(w[1].metric_id, "weekly");
-        assert_eq!(w[1].used_pct, 56.0);
         // The reset is relative to now, so check the span rather than a fixed
         // instant: period_start sits one window length before it.
         assert_eq!(
@@ -322,7 +316,6 @@ mod tests {
         .unwrap();
         let w = parse_usage(&body);
         assert_eq!(w.len(), 1);
-        assert_eq!(w[0].used_pct, 60.0);
         assert!(w[0].resets_at.is_some());
         assert_eq!(w[0].period_start, None);
     }
@@ -336,7 +329,7 @@ mod tests {
         let w = parse_usage(&body);
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].label, "Weekly");
-        assert_eq!(w[0].used_pct, 29.0);
+        assert_eq!(w[0].used_pct, 71.0);
     }
 
     /// The shape served as of Aug 2026: the length moved to
@@ -364,7 +357,7 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].label, "Weekly");
         assert_eq!(w[0].metric_id, "weekly");
-        assert_eq!(w[0].used_pct, 76.0);
+        assert_eq!(w[0].used_pct, 24.0);
         assert_eq!(
             w[0].resets_at,
             chrono::TimeZone::timestamp_opt(&Utc, 1786165245, 0).single()
