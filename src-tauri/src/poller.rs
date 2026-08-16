@@ -1,11 +1,13 @@
-//! Background poll loop: fetch enabled providers, update shared state, drive
-//! the tray icon, dispatch alerts, and push snapshots to the webview.
+//! Background poll loop: schedule quota-core's shared refresh operation, then
+//! present its outcome — update shared state, drive the tray icon, dispatch
+//! alerts, and push snapshots to the webview. Scheduling and presentation are
+//! the desktop host's job; the fetch/order/aggregate/alert decisions
+//! themselves live in `quota_core::refresh`, so Android can drive the same
+//! operation from its own scheduler without duplicating any of that logic.
 
 use crate::{tray, AppState};
-use futures_util::future::join_all;
 use quota_core::alerts::{self, AlertLevel};
-use quota_core::model::{Status, UsageSnapshot};
-use quota_core::providers::providers_for;
+use quota_core::model::UsageSnapshot;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::AppHandle;
@@ -27,111 +29,74 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
 async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
     let cfg = state.config.read().await.clone();
     let ctx = state.provider_ctx(cfg.clone());
-    let ctx = &ctx;
 
-    let mut fresh = join_all(
-        providers_for(&cfg)
-            .into_iter()
-            .filter(|provider| {
-                let enabled = cfg
-                    .providers
-                    .get(provider.id())
-                    .map(|p| p.enabled)
-                    .unwrap_or(false);
-                enabled
-            })
-            .map(|provider| async move {
-                match provider.fetch(&ctx).await {
-                    Ok(s) => s,
-                    Err(e) => UsageSnapshot::failed(provider.id(), provider.name(), e),
-                }
-            }),
-    )
-    .await;
+    let prior = state.snapshots.read().await.clone();
+    let mut engine = state.alert_engine.lock().await;
+    let outcome = quota_core::refresh::refresh(&ctx, &prior, &mut engine).await;
+    drop(engine);
 
-    // Update shared state. When a fetch fails but we have older data, keep the
-    // stale numbers and attach the new error, so the UI shows greyed-out values
-    // with a reason instead of a blank card.
+    for write in &outcome.credential_writes {
+        if let Err(e) = &write.result {
+            eprintln!("failed to persist rotated secret {}: {e}", write.key);
+        }
+    }
+
+    // Update shared state with the ordered, stale-merged snapshots the
+    // operation produced.
     {
         let mut map = state.snapshots.write().await;
-        for s in &mut fresh {
-            if let (Some(err), Some(prev)) = (s.error.clone(), map.get(&s.provider_id)) {
-                if prev.error.is_none() && !(prev.windows.is_empty() && prev.credits.is_none()) {
-                    let mut merged = prev.clone();
-                    merged.error = Some(err);
-                    *s = merged;
-                }
-            }
+        for s in &outcome.snapshots {
             map.insert(s.provider_id.clone(), s.clone());
         }
     }
 
-    // Display order, applied once so the tooltip, the mini summary, and the
-    // main popup all agree. The tray icon's own status folds every account, so
-    // order cannot change it.
-    cfg.sort_snapshots(&mut fresh);
-
-    // Tray icon: each account contributes the value its tray picker names —
-    // the worst of its selected mini-summary headlines by default, or one
-    // pinned headline. "None" opts the account out, while `tray_color` is the
-    // global-style alert opt-out that keeps it visible but neutral in the icon.
-    let mut worst = Status::Ok;
-    let mut worst_pct: f64 = 0.0;
-    let mut tip_lines = Vec::new();
-    for s in &fresh {
-        let low = cfg
-            .providers
-            .get(&s.provider_id)
-            .and_then(|p| p.low_balance_warn);
-        if cfg.effective_alerts(&s.provider_id).tray_color {
-            if let Some((st, pct)) = cfg.mini_tray_status(s, low) {
-                worst = worst.max(st);
-                if let Some(pct) = pct {
-                    worst_pct = worst_pct.max(pct);
-                }
-            }
-        }
-        tip_lines.push(tooltip_line(s));
-    }
+    // Tray icon: the operation already folded every tray-eligible account into
+    // one aggregate status and percentage.
+    let tip_lines: Vec<String> = outcome.snapshots.iter().map(tooltip_line).collect();
     let tooltip = if tip_lines.is_empty() {
         "Quota Widget — no providers enabled".into()
     } else {
         tip_lines.join("\n")
     };
     #[cfg(target_os = "linux")]
-    crate::tray_linux::set_status(worst, worst_pct / 100.0, tooltip);
+    crate::tray_linux::set_status(
+        outcome.aggregate.status,
+        outcome.aggregate.pct / 100.0,
+        tooltip,
+    );
     #[cfg(not(target_os = "linux"))]
-    tray::set_status(app, worst, worst_pct / 100.0, &tooltip);
+    tray::set_status(
+        app,
+        outcome.aggregate.status,
+        outcome.aggregate.pct / 100.0,
+        &tooltip,
+    );
 
-    // Alerts (edge-triggered in the engine; dispatch per the presentation
-    // policy, which folds the per-account toggles together with the tray-first
-    // launch rule — a state the first poll merely *found* must never throw the
-    // main window at a user who has not asked for it).
-    let mut engine = state.alert_engine.lock().await;
-    for s in &fresh {
-        let toggles = cfg.effective_alerts(&s.provider_id);
-        for event in engine.evaluate(s, &cfg) {
-            let how = alerts::presentation(&event, &toggles);
-            let title = match event.level {
-                AlertLevel::Critical => format!("{} — critical", event.provider_name),
-                _ => format!("{} — warning", event.provider_name),
-            };
-            if how.notify {
-                let _ = app
-                    .notification()
-                    .builder()
-                    .title(&title)
-                    .body(&event.message)
-                    .show();
-            }
-            if how.open_window {
-                tray::show_popup(app, None);
-            }
+    // Alerts: dispatch per the presentation policy, which folds the
+    // per-account toggles together with the tray-first launch rule — a state
+    // the first poll merely *found* must never throw the main window at a user
+    // who has not asked for anything.
+    for event in &outcome.alerts {
+        let toggles = cfg.effective_alerts(&event.provider_id);
+        let how = alerts::presentation(event, &toggles);
+        let title = match event.level {
+            AlertLevel::Critical => format!("{} — critical", event.provider_name),
+            _ => format!("{} — warning", event.provider_name),
+        };
+        if how.notify {
+            let _ = app
+                .notification()
+                .builder()
+                .title(&title)
+                .body(&event.message)
+                .show();
+        }
+        if how.open_window {
+            tray::show_popup(app, None);
         }
     }
-    drop(engine);
 
-    crate::emit_snapshots(app, &fresh);
+    crate::emit_snapshots(app, &outcome.snapshots);
 }
 
 fn tooltip_line(s: &UsageSnapshot) -> String {
