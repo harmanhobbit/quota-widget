@@ -94,32 +94,12 @@
       snapshots = initial.snapshots;
       config = initial.config;
       secretStored = await hasSecret('openrouter').catch(() => false);
-      // Debug-only CI seed path (see .github/workflows/build.yml, the
-      // `android` job): compiled entirely out of release builds. When set,
-      // it lets CI prove live quota renders without fragile UI-automation
-      // typing.
-      try {
-        const ciKey = await invoke('ci_test_key');
-        if (ciKey) {
-          // Reload-resilient seed. Tauri's Android WebView can reload once
-          // during startup and drop this chain's in-flight callbacks (logcat:
-          // "[TAURI] Couldn't find callback id … app is reloaded while Rust is
-          // running an asynchronous operation"), leaving the account
-          // half-applied — persisted but never refreshed, or not persisted at
-          // all. So don't gate on the account being absent: on every onMount
-          // (including the one after a reload) ensure it exists, re-store the
-          // key, and ALWAYS refresh. Idempotent, so it converges to a rendered
-          // OpenRouter card regardless of where a prior attempt was cut off.
-          if (!config.providers.openrouter) {
-            config.providers.openrouter = newOpenRouterAccount();
-          }
-          secretInput = ciKey;
-          await persist();
-          await refresh();
-        }
-      } catch {
-        // No such command outside a debug build — nothing to seed.
-      }
+      // The debug-only CI OpenRouter seed lives in Rust `setup()` (see
+      // src-tauri/src/mobile.rs), not here: the Android webview reloads once
+      // during startup and drops in-flight invoke callbacks, which repeatedly
+      // cut a JS-side seed's persist→refresh chain short. Seeding in Rust
+      // before the webview loads means getSnapshots() above already returns the
+      // seeded account and its snapshot, with nothing to do here.
     });
     const unlisten = [];
     listen('snapshots', (e) => (snapshots = e.payload)).then((u) => unlisten.push(u));

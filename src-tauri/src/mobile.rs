@@ -205,7 +205,42 @@ pub fn run() {
                 .path()
                 .app_config_dir()
                 .unwrap_or_else(|_| std::env::temp_dir());
-            let loaded = Config::load(&config_dir);
+            let mut loaded = Config::load(&config_dir);
+            // CI-only OpenRouter seed for issue #108's emulator proof. Done
+            // here in Rust — before the webview loads — rather than in the JS
+            // onMount, because Tauri's Android webview reloads once during
+            // startup and drops any in-flight `invoke` callbacks (logcat:
+            // "[TAURI] Couldn't find callback id … app is reloaded while Rust
+            // is running an asynchronous operation"), which kept cutting the JS
+            // seed's persist→refresh chain short so no account was ever stored.
+            // Seeding synchronously at setup means the account exists before
+            // the first `refresh_once` below, and the eprintln makes it
+            // unambiguous in logcat whether the key was actually baked in.
+            // `ci_test_key()` is compiled to `None` in release builds, so this
+            // whole block vanishes there.
+            match ci_test_key() {
+                Some(key) => {
+                    eprintln!("[ci-seed] OPENROUTER_CI_KEY present; seeding openrouter account");
+                    if let Err(e) = crate::secrets::set(&config_dir, "openrouter", key) {
+                        eprintln!("[ci-seed] storing openrouter secret failed: {e}");
+                    }
+                    let account = quota_core::config::ProviderConfig {
+                        kind: Some("openrouter".to_string()),
+                        enabled: true,
+                        ..Default::default()
+                    };
+                    loaded
+                        .config
+                        .providers
+                        .insert("openrouter".to_string(), account);
+                    if let Err(e) = loaded.config.save(&config_dir) {
+                        eprintln!("[ci-seed] saving seeded config failed: {e}");
+                    }
+                }
+                None => {
+                    eprintln!("[ci-seed] no OPENROUTER_CI_KEY baked in (ci_test_key() == None)")
+                }
+            }
             let state = Arc::new(MobileState {
                 config_dir,
                 config: RwLock::new(loaded.config),
