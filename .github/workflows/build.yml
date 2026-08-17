@@ -150,6 +150,20 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+      # GitHub-hosted Linux runners DO expose /dev/kvm, but the runner user
+      # isn't in the `kvm` group, so without this the emulator logs
+      # "ProbeKVM: This user doesn't have permissions to use KVM" and falls back
+      # to pure software rendering — which made `adb install` take 8+ minutes
+      # and the system ANR continuously, so the app never got a responsive
+      # surface to render in. This udev rule opens /dev/kvm to all users,
+      # restoring hardware acceleration (the fix documented in
+      # android-emulator-runner's README). It's what makes an API-34 image
+      # boot in reasonable time below.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-linux-android
@@ -203,20 +217,23 @@ jobs:
           # specifically. This job only needs to prove the app launches and
           # renders.
           #
-          # Three iterations to land here: API 24 "default" (AOSP) hit a
-          # core-library-desugaring gap unrelated to this app
-          # (NoClassDefFoundError: java.lang.BootstrapMethodError inside
-          # Tauri's own plugin manager / Jackson init) — fixed by bumping to
-          # API 26. But "default" AOSP images ship no WebView package at all
-          # (that's Google-provided), which every Tauri app needs
-          # (MissingWebViewPackageException on launch) — needs google_apis.
-          # google_apis at API 28 then hung 20+ minutes rather than crashing:
-          # GitHub-hosted Linux runners get no KVM through this action
-          # ("Disabling Linux hardware acceleration" in the job's own log),
-          # so software-emulating a heavy image was impractical. Landing on
-          # google_apis at the same API 26 that already fixed the desugaring
-          # issue, as the lightest image that actually has WebView.
-          api-level: 26
+          # google_apis (not "default" AOSP): the AOSP images ship no WebView
+          # package at all, and every Tauri app needs one
+          # (MissingWebViewPackageException on launch).
+          #
+          # API 34, not something older, on purpose: a system image's bundled
+          # System WebView is frozen at the image's release, and the frontend
+          # bundle (Svelte 5 runtime + our code) uses globalThis (Chrome 71),
+          # queueMicrotask (71), Object.fromEntries (73), String.replaceAll
+          # (85) and structuredClone (98). The old API-26 image's Chrome 69
+          # lacked all of these, so the app threw on the first line and rendered
+          # nothing — chasing them with polyfills one 20-minute run at a time is
+          # a losing game. API 34 ships Chrome ~114, which has them natively, so
+          # the app renders as it does on a real (updatable-WebView) device.
+          # This is only viable because the Enable KVM step above restores
+          # hardware acceleration; a heavy image under pure software emulation
+          # was impractically slow (8-minute installs, constant ANRs).
+          api-level: 34
           target: google_apis
           arch: x86_64
           avd-name: quota-widget-ci

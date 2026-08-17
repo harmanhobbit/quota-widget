@@ -5,27 +5,42 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Quota Widget</title>
     <!--
-      `globalThis` polyfill. Tauri's Android shell can run on a System WebView
-      frozen at Chrome 69 (e.g. the API-26 emulator image bundles exactly this,
-      with no Play Store to update it), and `globalThis` only landed in Chrome
-      71. Svelte 5's compiled runtime references it as a bare identifier
-      (`globalThis == null ? ...`), which throws `ReferenceError: globalThis is
-      not defined` on the very first line of the bundle — killing the whole app
-      before anything renders. This can't be solved by Vite's `build.target`:
-      that downlevels *syntax*, not missing runtime globals. Classic (non-module)
-      inline script so it executes during parse, before the deferred
-      `type="module"` bundle. Canonical Object.prototype form so it works
-      regardless of what the global object is called.
+      Defensive shims for older System WebViews. Tauri's Android shell uses
+      whatever WebView the device provides, and Svelte 5's compiled runtime
+      references a couple of globals as bare identifiers, so a WebView older
+      than they are throws `ReferenceError: … is not defined` on the very first
+      line of the bundle and renders nothing. `build.target` can't help — it
+      downlevels *syntax*, not missing runtime globals.
+
+      These two (`globalThis` and `queueMicrotask`, both Chrome 71) are the ones
+      Svelte hits first and are trivial to provide. This is NOT a complete
+      legacy shim: the bundle also uses `structuredClone` (Chrome 98) and other
+      modern APIs, so a genuinely ancient WebView still won't run. That's fine
+      in practice — real devices ship an updatable, modern System WebView, so
+      this only cushions the margins. (The CI emulator's image is pinned new
+      enough to have all of these natively; see build.yml.)
+
+      Classic (non-module) inline script so it runs during parse, before the
+      deferred `type="module"` bundle. Canonical Object.prototype form for
+      globalThis so it works regardless of what the global object is called.
     -->
     <script>
       (function () {
-        if (typeof globalThis === 'object') return;
-        Object.defineProperty(Object.prototype, '__quota_widget_globalThis__', {
-          get: function () { return this; },
-          configurable: true,
-        });
-        __quota_widget_globalThis__.globalThis = __quota_widget_globalThis__;
-        delete Object.prototype.__quota_widget_globalThis__;
+        if (typeof globalThis !== 'object') {
+          Object.defineProperty(Object.prototype, '__quota_widget_globalThis__', {
+            get: function () { return this; },
+            configurable: true,
+          });
+          __quota_widget_globalThis__.globalThis = __quota_widget_globalThis__;
+          delete Object.prototype.__quota_widget_globalThis__;
+        }
+        if (typeof globalThis.queueMicrotask !== 'function') {
+          globalThis.queueMicrotask = function (cb) {
+            Promise.resolve().then(cb).catch(function (e) {
+              setTimeout(function () { throw e; }, 0);
+            });
+          };
+        }
       })();
     </script>
   </head>
