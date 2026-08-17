@@ -188,8 +188,16 @@ jobs:
       - name: Boot emulator and run
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 24
-          target: default
+          # ADR 0006's eventual API 24 compatibility floor is a concern for
+          # the later signed-build ticket, which needs to validate against it
+          # specifically. This job only needs to prove the app launches and
+          # renders — API 24's bare "default" (AOSP) system image hit a
+          # core-library-desugaring gap unrelated to this app
+          # (NoClassDefFoundError: java.lang.BootstrapMethodError inside
+          # Tauri's own plugin manager / Jackson init), so this uses a
+          # more complete image instead of chasing that down here.
+          api-level: 28
+          target: google_apis
           arch: x86_64
           avd-name: quota-widget-ci
           disable-animations: true
