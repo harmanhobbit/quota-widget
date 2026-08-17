@@ -194,10 +194,14 @@ jobs:
           # renders — API 24's bare "default" (AOSP) system image hit a
           # core-library-desugaring gap unrelated to this app
           # (NoClassDefFoundError: java.lang.BootstrapMethodError inside
-          # Tauri's own plugin manager / Jackson init), so this uses a
-          # more complete image instead of chasing that down here.
-          api-level: 28
-          target: google_apis
+          # Tauri's own plugin manager / Jackson init). Bumping only the API
+          # level while keeping the lightweight "default" (no Google Play)
+          # target: GitHub-hosted Linux runners get no KVM through this
+          # action (confirmed by "Disabling Linux hardware acceleration" in
+          # this job's own log), so software-emulating a heavier google_apis
+          # image at API 28 just hung for 20+ minutes rather than crashing.
+          api-level: 26
+          target: default
           arch: x86_64
           avd-name: quota-widget-ci
           disable-animations: true
