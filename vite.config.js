@@ -23,7 +23,15 @@ export default defineConfig({
     strictPort: true,
   },
   build: {
-    target: 'chrome110',
+    // Downlevel to ES2019 so esbuild transforms ES2020+ syntax that older
+    // WebViews can't parse: nullish coalescing (`??`), optional chaining
+    // (`?.`), and logical-assignment (`??=`/`||=`/`&&=`, emitted by both our
+    // code and Svelte 5's compiled runtime). Desktop WebViews (WebView2 /
+    // WebKitGTK) parse the modern syntax fine, but Tauri's Android shell can
+    // run on a System WebView old enough to throw "Unexpected token =" on the
+    // whole bundle. `chrome110` here was an unexplained default, not a hard
+    // requirement, so lowering it project-wide is safe.
+    target: 'es2019',
     outDir: 'dist',
   },
 });
