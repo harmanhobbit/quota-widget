@@ -100,8 +100,19 @@
       // typing.
       try {
         const ciKey = await invoke('ci_test_key');
-        if (ciKey && !config.providers.openrouter) {
-          config.providers.openrouter = newOpenRouterAccount();
+        if (ciKey) {
+          // Reload-resilient seed. Tauri's Android WebView can reload once
+          // during startup and drop this chain's in-flight callbacks (logcat:
+          // "[TAURI] Couldn't find callback id … app is reloaded while Rust is
+          // running an asynchronous operation"), leaving the account
+          // half-applied — persisted but never refreshed, or not persisted at
+          // all. So don't gate on the account being absent: on every onMount
+          // (including the one after a reload) ensure it exists, re-store the
+          // key, and ALWAYS refresh. Idempotent, so it converges to a rendered
+          // OpenRouter card regardless of where a prior attempt was cut off.
+          if (!config.providers.openrouter) {
+            config.providers.openrouter = newOpenRouterAccount();
+          }
           secretInput = ciKey;
           await persist();
           await refresh();
