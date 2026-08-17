@@ -114,7 +114,7 @@ mod desktop_app {
     }
 
     impl AppState {
-        fn provider_ctx(&self, config: Config) -> ProviderCtx {
+        pub(crate) fn provider_ctx(&self, config: Config) -> ProviderCtx {
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
             let secrets = secrets::load_all(&self.config_dir, &config);
             let mut ctx = ProviderCtx::new(home, self.config_dir.clone(), secrets, config);
