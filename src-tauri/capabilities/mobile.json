@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Android usage-list window capabilities. Mobile registers no plugins (no tray, no autostart, no updater, no notifications — all later tickets per ADR 0006), so this only needs the baseline core permission; every command it actually calls (get_snapshots, set_config, ...) is an app-defined command, not a plugin one, and app-defined commands aren't ACL-gated.",
+  "windows": ["main"],
+  "platforms": ["android"],
+  "permissions": ["core:default"]
+}
