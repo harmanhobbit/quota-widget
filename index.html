@@ -4,6 +4,30 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Quota Widget</title>
+    <!--
+      `globalThis` polyfill. Tauri's Android shell can run on a System WebView
+      frozen at Chrome 69 (e.g. the API-26 emulator image bundles exactly this,
+      with no Play Store to update it), and `globalThis` only landed in Chrome
+      71. Svelte 5's compiled runtime references it as a bare identifier
+      (`globalThis == null ? ...`), which throws `ReferenceError: globalThis is
+      not defined` on the very first line of the bundle — killing the whole app
+      before anything renders. This can't be solved by Vite's `build.target`:
+      that downlevels *syntax*, not missing runtime globals. Classic (non-module)
+      inline script so it executes during parse, before the deferred
+      `type="module"` bundle. Canonical Object.prototype form so it works
+      regardless of what the global object is called.
+    -->
+    <script>
+      (function () {
+        if (typeof globalThis === 'object') return;
+        Object.defineProperty(Object.prototype, '__quota_widget_globalThis__', {
+          get: function () { return this; },
+          configurable: true,
+        });
+        __quota_widget_globalThis__.globalThis = __quota_widget_globalThis__;
+        delete Object.prototype.__quota_widget_globalThis__;
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

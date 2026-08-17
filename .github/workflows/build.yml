@@ -222,23 +222,19 @@ jobs:
           avd-name: quota-widget-ci
           disable-animations: true
           emulator-boot-timeout: 900
-          script: |
-            adb install -r "${{ steps.apk.outputs.path }}"
-            adb shell am start -n tech.allaway.quotawidget/.MainActivity
-            sleep 15
-            adb exec-out screencap -p > emulator-screenshot.png
-            # The debug-only auto-seed (see mobile.rs's ci_test_key) pastes
-            # OPENROUTER_CI_KEY, enables the account and refreshes on launch
-            # when the command reports a key — this just waits for the
-            # result to land rather than typing anything in.
-            adb logcat -d > logcat.txt
-            adb shell uiautomator dump /sdcard/ui.xml || true
-            adb pull /sdcard/ui.xml ui.xml || true
-            if grep -qi "FATAL EXCEPTION" logcat.txt; then
-              echo "app crashed on launch — see the uploaded logcat.txt artifact"
-              exit 1
-            fi
-            grep -q "OpenRouter" ui.xml || { echo "OpenRouter card did not render"; exit 1; }
+          # android-emulator-runner executes `script` line-by-line, each line in
+          # its own `sh -c`, so a multi-line `if … fi` here is split apart and
+          # dies with "Syntax error: end of file unexpected" before any assertion
+          # runs (this bit three earlier iterations). Keep this a SINGLE line
+          # delegating to a checked-in script — which also polls generously for
+          # the slow software-emulated boot, dismisses transient ANR dialogs,
+          # captures diagnostics, and can be exercised locally with a mock adb.
+          # The script installs the APK, launches MainActivity, and asserts the
+          # OpenRouter card renders (proving the Svelte bundle mounts inside the
+          # Android WebView). The debug-only auto-seed in mobile.rs's
+          # ci_test_key pastes OPENROUTER_CI_KEY and refreshes on launch, so no
+          # UI typing is needed.
+          script: bash scripts/android-emulator-check.sh "${{ steps.apk.outputs.path }}"
       - name: Upload screenshot and logcat
         if: always()
         uses: actions/upload-artifact@v6
