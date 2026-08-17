@@ -126,3 +126,74 @@ jobs:
       # No release-publishing step here on purpose. release.yml is the single
       # source of published assets, and it publishes to the dist repo; a second
       # draft release on the source repo would compete with it.
+
+  android:
+    name: Android emulator proof (debug)
+    needs: [test, frontend]
+    # Dispatch-only, matching build-windows: an emulator runner is not cheap
+    # either, and this proves issue #108's foreground path rather than
+    # gating every push.
+    if: github.event_name == 'workflow_dispatch' && needs.test.result == 'success' && needs.frontend.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - uses: android-actions/setup-android@v3
+      - name: Install NDK 28
+        run: sdkmanager --install "ndk;28.0.13004108"
+      - run: npm ci
+      - run: npm run build
+      # `tauri android init` generates src-tauri/gen/android fresh every run
+      # (it is gitignored, like the rest of src-tauri/gen/) — this is also
+      # the step that proves the Android-specific identifier override in
+      # tauri.android.conf.json actually works, since a hyphenated
+      # identifier is an illegal Android package segment.
+      - name: tauri android init
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.0.13004108
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.0.13004108
+        run: npm run tauri android init
+      - name: Build debug APK
+        # OPENROUTER_CI_KEY is read via `option_env!` at compile time by the
+        # `#[cfg(debug_assertions)]` half of `ci_test_key()` in
+        # src-tauri/src/mobile.rs — baked into the binary here, so nothing
+        # downstream needs to patch the generated Gradle project or type the
+        # key in through UI automation.
+        env:
+          OPENROUTER_CI_KEY: ${{ secrets.OPENROUTER_CI_KEY }}
+        run: npm run tauri android build -- --debug --target x86_64
+      - name: Boot emulator and run
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 24
+          target: default
+          arch: x86_64
+          avd-name: quota-widget-ci
+          disable-animations: true
+          script: |
+            adb install -r src-tauri/gen/android/app/build/outputs/apk/x86_64/debug/app-x86_64-debug.apk
+            adb shell am start -n online.harmanhobbit.quotawidget/.MainActivity
+            sleep 15
+            adb exec-out screencap -p > emulator-screenshot.png
+            # The debug-only auto-seed (see mobile.rs's ci_test_key) pastes
+            # OPENROUTER_CI_KEY, enables the account and refreshes on launch
+            # when the command reports a key — this just waits for the
+            # result to land rather than typing anything in.
+            adb logcat -d | grep -i "FATAL EXCEPTION" && exit 1
+            adb shell uiautomator dump /sdcard/ui.xml
+            adb pull /sdcard/ui.xml ui.xml
+            grep -q "OpenRouter" ui.xml || { echo "OpenRouter card did not render"; exit 1; }
+      - name: Upload screenshot
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-emulator-screenshot
+          path: emulator-screenshot.png

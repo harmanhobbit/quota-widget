@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { resetsIn as fmtResetsIn, periodProgress as fmtPeriodProgress } from './period.js';
+  import { resetsIn as fmtResetsIn, periodProgress as fmtPeriodProgress } from '../period.js';
 
   let { snap } = $props();
 

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "online.harmanhobbit.quotawidget",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Quota Widget",
+        "resizable": true,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "visible": true,
+        "transparent": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true
+  }
+}

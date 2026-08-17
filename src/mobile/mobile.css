@@ -1,0 +1,55 @@
+/* Android-sized controls, layered on top of the shared desktop styles in
+   src/styles.css — touch targets need to be bigger than a mouse pointer's,
+   and the mobile shell fills the screen rather than sizing itself to fit a
+   floating popup. */
+
+.mobile {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #1e1e1e);
+}
+
+.mobile-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  flex: 0 0 auto;
+}
+
+.mobile-header .title {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.mobile .icon {
+  min-width: 44px;
+  min-height: 44px;
+  font-size: 1.25rem;
+}
+
+.mobile .cards {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px 16px 16px;
+}
+
+.mobile-settings {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0 16px 16px;
+}
+
+.mobile button,
+.mobile input,
+.mobile select {
+  min-height: 44px;
+  font-size: 1rem;
+}
+
+.mobile .provider-disclosure,
+.mobile .metric-item {
+  min-height: 44px;
+}

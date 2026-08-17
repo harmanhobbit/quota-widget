@@ -639,7 +639,7 @@ const CASES = [
     },
   },
   {
-    file: 'src/lib/ProviderCard.svelte',
+    file: 'src/lib/shared/UsageCard.svelte',
     props: () => ({
       snap: {
         provider_name: 'Firecrawl',
@@ -1149,7 +1149,7 @@ const CASES = [
     },
   },
   {
-    file: 'src/lib/ProviderCard.svelte',
+    file: 'src/lib/shared/UsageCard.svelte',
     props: () => ({ snap: structuredClone(SNAPSHOTS[0]) }),
     verify: async ({ target }) => {
       const bars = [...target.querySelectorAll('.bar')];
@@ -1170,16 +1170,116 @@ const CASES = [
   // figure cannot be misread as money remaining. The unlabelled balance above
   // it must stay bare.
   {
-    file: 'src/lib/ProviderCard.svelte',
+    file: 'src/lib/shared/UsageCard.svelte',
     props: () => ({ snap: structuredClone(SNAPSHOTS[4]) }),
     expect: ['Cost this month: 8.75 USD'],
   },
   {
-    file: 'src/lib/ProviderCard.svelte',
+    file: 'src/lib/shared/UsageCard.svelte',
     props: () => ({ snap: structuredClone(SNAPSHOTS[2]) }),
     verify: ({ target }) => {
       const balance = target.querySelector('.balance').textContent.trim();
       if (balance !== '3.42 USD') throw new Error(`unlabelled balance rendered as ${balance}`);
+    },
+  },
+  // Thresholds: the shared warn/critical percent editor, reflecting whatever
+  // object it is handed.
+  {
+    file: 'src/lib/shared/Thresholds.svelte',
+    props: () => ({ thresholds: { warn_pct: 80, critical_pct: 95 } }),
+    expect: ['Warn at', 'Critical at'],
+    verify: ({ target }) => {
+      const nums = [...target.querySelectorAll('input.num')].map((el) => el.value);
+      if (nums.join(',') !== '80,95') throw new Error(`thresholds rendered as ${nums.join(',')}`);
+    },
+  },
+  // Ordering: the basis select stays inert while the order is Manual, exactly
+  // as it does inline in Settings.
+  {
+    file: 'src/lib/shared/Ordering.svelte',
+    props: () => ({ sortOrder: 'manual', sortBasis: 'icon' }),
+    expect: ['Order accounts by', 'Sorting on'],
+    verify: ({ target }) => {
+      const basisSelect = [...target.querySelectorAll('select')].find((el) => el.value === 'icon');
+      if (!basisSelect.disabled) throw new Error('basis select was live under Manual');
+    },
+  },
+  // HeadlineSelection: opening the menu and toggling an item updates the
+  // summary text and the account's saved selection, the same behaviour
+  // Settings.svelte exercises inline.
+  {
+    file: 'src/lib/shared/HeadlineSelection.svelte',
+    props: () => ({
+      account: { mini_summary_metrics: ['credits'], tray_metric: null, enabled: true },
+      options: [{ id: 'credits', label: 'Credit balance' }, { id: 'window:monthly_spend', label: 'Monthly' }],
+      open: false,
+      onToggle() { globalThis.__SMOKE_TOGGLED__ = true; },
+    }),
+    expect: ['Mini-summary headlines', 'Tray icon status'],
+    verify: ({ target }) => {
+      const toggle = target.querySelector('.metric-toggle');
+      if (toggle.textContent.trim() !== 'Credit balance ▾') {
+        throw new Error(`summary text was ${toggle.textContent.trim()}`);
+      }
+      toggle.click();
+      if (!globalThis.__SMOKE_TOGGLED__) throw new Error('clicking the toggle did not call onToggle');
+    },
+  },
+  // SimpleKeyAccount: a plain API-key account row — collapsed by default,
+  // expands to show the headline picker and secret input, and reaches its
+  // callbacks on Test/Remove.
+  {
+    file: 'src/lib/shared/SimpleKeyAccount.svelte',
+    props: () => ({
+      id: 'openrouter',
+      account: { label: null, enabled: true, low_balance_warn: null, mini_summary_metrics: null, tray_metric: null },
+      providerName: 'OpenRouter',
+      providerNote: 'Create a key at openrouter.ai/keys.',
+      secretStored: false,
+      secretInput: '',
+      lowBalanceWarn: true,
+      headlineOptions: [{ id: 'credits', label: 'Credit balance' }],
+      headlineOpen: false,
+      onToggleHeadline() {},
+      expanded: false,
+      testResult: null,
+      onTest() { globalThis.__SMOKE_TESTED__ = true; },
+      onClearSecret() {},
+      onRemove() { globalThis.__SMOKE_REMOVED__ = true; },
+    }),
+    verify: ({ target, flushSync }) => {
+      if (target.querySelector('.metric-picker')) throw new Error('account did not start collapsed');
+      target.querySelector('.provider-disclosure').click();
+      flushSync();
+      if (!target.querySelector('.metric-picker')) throw new Error('expanding did not reveal the headline picker');
+      if (!target.querySelector('input[type="password"]')) throw new Error('no secret input was rendered');
+      [...target.querySelectorAll('.provider-footer button')].find((b) => b.textContent.trim() === 'Test').click();
+      if (!globalThis.__SMOKE_TESTED__) throw new Error('Test did not reach onTest');
+      [...target.querySelectorAll('.provider-footer button')].find((b) => b.textContent.trim() === 'Remove account').click();
+      if (!globalThis.__SMOKE_REMOVED__) throw new Error('Remove did not reach onRemove');
+    },
+  },
+  // MobileApp: the Android shell. Opens directly to the usage list (no
+  // window/tray chrome), and Settings offers the one-provider onboarding flow.
+  {
+    file: 'src/mobile/MobileApp.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, providers: {} },
+    verify: async ({ target, flushSync }) => {
+      if (target.querySelector('.mobile-header button[title="Back"]')) {
+        throw new Error('the list view showed a Back button');
+      }
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+      const add = [...target.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Add OpenRouter account');
+      if (!add) throw new Error('Settings did not offer to add an OpenRouter account');
+      add.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!target.querySelector('.provider')) throw new Error('adding an account did not render its row');
+      if (globalThis.__SMOKE_LAST_CONFIG__?.providers?.openrouter?.kind !== 'openrouter') {
+        throw new Error('adding an account did not persist an openrouter entry');
+      }
     },
   },
 ];
@@ -1276,15 +1376,13 @@ export class LogicalSize { constructor(w,h){ this.width=w; this.height=h; } }
 export class LogicalPosition { constructor(x,y){ this.x=x; this.y=y; } }`);
 }
 
-// Compile a component and its local .svelte imports, rewriting bare Tauri
-// specifiers to the stubs above.
-const built = new Set();
-function build(rel) {
-  if (built.has(rel)) return join(WORK, rel.replace(/\.svelte$/, '.js'));
-  built.add(rel);
-  const src = readFileSync(join(ROOT, rel), 'utf8');
-  const { js } = compile(src, { generate: 'client', filename: rel });
-  let code = js.code.replace(/(from\s+')@tauri-apps\/api\/([\w-]+)(')/g, (_m, a, mod, z) => {
+// Rewrite bare `@tauri-apps/...` specifiers to the stubs above, relative to
+// where `rel` will land in WORK. Shared between compiled .svelte output and
+// plain .js modules (like lib/host.js) that import Tauri directly — without
+// this a plain-.js copy would resolve the *real* npm package instead of the
+// stub, and its calls to `window.__TAURI_INTERNALS__` would throw under jsdom.
+function rewriteTauriImports(code, rel) {
+  code = code.replace(/(from\s+')@tauri-apps\/api\/([\w-]+)(')/g, (_m, a, mod, z) => {
     const target = relative(dirname(rel), `@tauri-apps/api/${mod}.js`);
     return `${a}${target.startsWith('.') ? target : './' + target}${z}`;
   });
@@ -1294,6 +1392,18 @@ function build(rel) {
     const target = relative(dirname(rel), `@tauri-apps/${pkg}/index.js`);
     return `${a}${target.startsWith('.') ? target : './' + target}${z}`;
   });
+  return code;
+}
+
+// Compile a component and its local .svelte imports, rewriting bare Tauri
+// specifiers to the stubs above.
+const built = new Set();
+function build(rel) {
+  if (built.has(rel)) return join(WORK, rel.replace(/\.svelte$/, '.js'));
+  built.add(rel);
+  const src = readFileSync(join(ROOT, rel), 'utf8');
+  const { js } = compile(src, { generate: 'client', filename: rel });
+  let code = rewriteTauriImports(js.code, rel);
   // Recurse into sibling component imports so App pulls in its children.
   for (const m of code.matchAll(/from\s+'(\.[^']*\.svelte)'/g)) {
     build(join(dirname(rel), m[1]).replace(/^\/+/, ''));
@@ -1321,7 +1431,9 @@ mkdirSync(join(WORK, 'src/lib'), { recursive: true });
 // helper this harness forgot to stage fails to render for a reason that has
 // nothing to do with the component.
 for (const f of readdirSync(join(ROOT, 'src/lib')).filter((f) => f.endsWith('.js'))) {
-  writeFileSync(join(WORK, 'src/lib', f), readFileSync(join(ROOT, 'src/lib', f), 'utf8'));
+  const rel = `src/lib/${f}`;
+  const code = rewriteTauriImports(readFileSync(join(ROOT, rel), 'utf8'), rel);
+  writeFileSync(join(WORK, rel), code);
 }
 
 const { mount, unmount, flushSync } = await import('svelte');
