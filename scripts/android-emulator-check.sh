@@ -56,9 +56,15 @@ deadline=$(( SECONDS + budget ))
 echo "==> Waiting for the OpenRouter card to render (budget: ${budget}s)"
 found=0
 while [ "$SECONDS" -lt "$deadline" ]; do
-  # Bail out immediately on a genuine crash — no point polling a dead process.
-  if adb logcat -d 2>/dev/null | grep -q "FATAL EXCEPTION"; then
-    echo "!! FATAL EXCEPTION in logcat — app crashed on launch"
+  # Bail out immediately on a genuine crash of OUR app — no point polling a
+  # dead process. Scope to our package: a real app crash logs
+  # "FATAL EXCEPTION: …" followed by "Process: <pkg>, PID: …". A bare
+  # "FATAL EXCEPTION" match also caught "FATAL EXCEPTION: UiAutomation" — the
+  # accessibility service crashing with "Bad file descriptor" during our OWN
+  # `uiautomator dump` calls — which aborted the poll ~13s in even though the
+  # app had already rendered the OpenRouter card fine.
+  if adb logcat -d 2>/dev/null | grep -A3 "FATAL EXCEPTION" | grep -q "Process: $pkg"; then
+    echo "!! FATAL EXCEPTION for $pkg in logcat — app crashed on launch"
     break
   fi
 
