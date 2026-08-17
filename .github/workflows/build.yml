@@ -14,6 +14,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      target:
+        description: Which dispatch-only job(s) to run
+        type: choice
+        default: both
+        options: [both, windows, android]
 
 # A newer push supersedes any in-flight run for the same branch — no more
 # hand-cancelling half-done Windows builds.
@@ -73,8 +79,10 @@ jobs:
     # Packaging here is dispatch-only. Ordinary branch and main pushes never
     # reach the Windows runner, which bills at a 2x multiplier against a
     # hand-budgeted quota. Tag builds belong to release.yml, which signs and
-    # publishes; this job exists to hand-test a branch on Windows.
-    if: github.event_name == 'workflow_dispatch' && needs.test.result == 'success' && needs.frontend.result == 'success'
+    # publishes; this job exists to hand-test a branch on Windows. `target`
+    # lets a dispatch run just this job or just `android` — useful while
+    # iterating on one platform without re-paying for the other every time.
+    if: github.event_name == 'workflow_dispatch' && inputs.target != 'android' && needs.test.result == 'success' && needs.frontend.result == 'success'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -132,8 +140,10 @@ jobs:
     needs: [test, frontend]
     # Dispatch-only, matching build-windows: an emulator runner is not cheap
     # either, and this proves issue #108's foreground path rather than
-    # gating every push.
-    if: github.event_name == 'workflow_dispatch' && needs.test.result == 'success' && needs.frontend.result == 'success'
+    # gating every push. `target` lets a dispatch run just this job or just
+    # `windows` — useful while iterating on one platform without re-paying
+    # for the other every time.
+    if: github.event_name == 'workflow_dispatch' && inputs.target != 'windows' && needs.test.result == 'success' && needs.frontend.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -191,20 +201,27 @@ jobs:
           # ADR 0006's eventual API 24 compatibility floor is a concern for
           # the later signed-build ticket, which needs to validate against it
           # specifically. This job only needs to prove the app launches and
-          # renders — API 24's bare "default" (AOSP) system image hit a
+          # renders.
+          #
+          # Three iterations to land here: API 24 "default" (AOSP) hit a
           # core-library-desugaring gap unrelated to this app
           # (NoClassDefFoundError: java.lang.BootstrapMethodError inside
-          # Tauri's own plugin manager / Jackson init). Bumping only the API
-          # level while keeping the lightweight "default" (no Google Play)
-          # target: GitHub-hosted Linux runners get no KVM through this
-          # action (confirmed by "Disabling Linux hardware acceleration" in
-          # this job's own log), so software-emulating a heavier google_apis
-          # image at API 28 just hung for 20+ minutes rather than crashing.
+          # Tauri's own plugin manager / Jackson init) — fixed by bumping to
+          # API 26. But "default" AOSP images ship no WebView package at all
+          # (that's Google-provided), which every Tauri app needs
+          # (MissingWebViewPackageException on launch) — needs google_apis.
+          # google_apis at API 28 then hung 20+ minutes rather than crashing:
+          # GitHub-hosted Linux runners get no KVM through this action
+          # ("Disabling Linux hardware acceleration" in the job's own log),
+          # so software-emulating a heavy image was impractical. Landing on
+          # google_apis at the same API 26 that already fixed the desugaring
+          # issue, as the lightest image that actually has WebView.
           api-level: 26
-          target: default
+          target: google_apis
           arch: x86_64
           avd-name: quota-widget-ci
           disable-animations: true
+          emulator-boot-timeout: 900
           script: |
             adb install -r "${{ steps.apk.outputs.path }}"
             adb shell am start -n tech.allaway.quotawidget/.MainActivity
