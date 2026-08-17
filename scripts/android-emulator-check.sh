@@ -31,12 +31,6 @@ apk="${1:?usage: android-emulator-check.sh <path-to-apk>}"
 pkg="tech.allaway.quotawidget"
 activity="${pkg}/.MainActivity"
 
-# Total budget for the app to boot and render, in seconds. Deliberately
-# generous because the runner has no hardware acceleration. Overridable via
-# ANDROID_CHECK_BUDGET so the polling logic can be exercised quickly in a
-# local mock-adb test without waiting the full CI budget.
-deadline=$(( SECONDS + ${ANDROID_CHECK_BUDGET:-240} ))
-
 dump_ui() {
   # uiautomator occasionally races the surface; `|| true` keeps the loop alive.
   adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 || true
@@ -49,7 +43,17 @@ adb install -r "$apk"
 echo "==> Launching $activity"
 adb shell am start -n "$activity"
 
-echo "==> Waiting for the OpenRouter card to render (budget: ${ANDROID_CHECK_BUDGET:-240}s)"
+# Start the render budget HERE, not at script top: on a KVM-less runner the
+# `adb install` above can itself take 8+ minutes, and `SECONDS` counts from the
+# script's start — computing the deadline earlier let the install consume the
+# entire budget, so the loop ran zero iterations and gave up ~4s after launch
+# (before the WebView had even painted). Deliberately generous because first
+# paint + the debug auto-seed's network refresh are slow under software
+# emulation. Overridable via ANDROID_CHECK_BUDGET for the local mock-adb test.
+budget="${ANDROID_CHECK_BUDGET:-300}"
+deadline=$(( SECONDS + budget ))
+
+echo "==> Waiting for the OpenRouter card to render (budget: ${budget}s)"
 found=0
 while [ "$SECONDS" -lt "$deadline" ]; do
   # Bail out immediately on a genuine crash — no point polling a dead process.
@@ -75,7 +79,9 @@ while [ "$SECONDS" -lt "$deadline" ]; do
       adb shell input keyevent KEYCODE_BACK >/dev/null 2>&1 || true
     fi
   fi
-  sleep 5
+  # Space polls out: each iteration dumps the full logcat + a uiautomator
+  # snapshot, and hammering that on a KVM-less emulator only feeds the ANRs.
+  sleep 8
 done
 
 echo "==> Capturing diagnostics"
