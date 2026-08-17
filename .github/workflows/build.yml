@@ -195,20 +195,27 @@ jobs:
           disable-animations: true
           script: |
             adb install -r "${{ steps.apk.outputs.path }}"
-            adb shell am start -n online.harmanhobbit.quotawidget/.MainActivity
+            adb shell am start -n tech.allaway.quotawidget/.MainActivity
             sleep 15
             adb exec-out screencap -p > emulator-screenshot.png
             # The debug-only auto-seed (see mobile.rs's ci_test_key) pastes
             # OPENROUTER_CI_KEY, enables the account and refreshes on launch
             # when the command reports a key — this just waits for the
             # result to land rather than typing anything in.
-            adb logcat -d | grep -i "FATAL EXCEPTION" && exit 1
-            adb shell uiautomator dump /sdcard/ui.xml
-            adb pull /sdcard/ui.xml ui.xml
+            adb logcat -d > logcat.txt
+            adb shell uiautomator dump /sdcard/ui.xml || true
+            adb pull /sdcard/ui.xml ui.xml || true
+            if grep -qi "FATAL EXCEPTION" logcat.txt; then
+              echo "app crashed on launch — see the uploaded logcat.txt artifact"
+              exit 1
+            fi
             grep -q "OpenRouter" ui.xml || { echo "OpenRouter card did not render"; exit 1; }
-      - name: Upload screenshot
+      - name: Upload screenshot and logcat
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: android-emulator-screenshot
-          path: emulator-screenshot.png
+          name: android-emulator-diagnostics
+          path: |
+            emulator-screenshot.png
+            logcat.txt
+            ui.xml
