@@ -199,17 +199,6 @@ fn ci_test_key() -> Option<&'static str> {
 
 #[tauri::mobile_entry_point]
 pub fn run() {
-    let handler = tauri::generate_handler![
-        get_snapshots,
-        set_config,
-        set_secret,
-        has_secret,
-        clear_secret,
-        refresh_now,
-        test_provider,
-        ci_test_key,
-    ];
-
     tauri::Builder::default()
         .setup(move |app| {
             let config_dir = app
@@ -232,7 +221,16 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(handler)
+        .invoke_handler(tauri::generate_handler![
+            get_snapshots,
+            set_config,
+            set_secret,
+            has_secret,
+            clear_secret,
+            refresh_now,
+            test_provider,
+            ci_test_key,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running quota-widget (mobile)");
 }
