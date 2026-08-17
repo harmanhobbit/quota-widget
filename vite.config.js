@@ -11,11 +11,25 @@ if (!appVersion) throw new Error('Could not read workspace version from Cargo.to
 // makes local and main builds visually identical to a release build.
 const buildBranch = process.env.QUOTA_WIDGET_BRANCH ?? '';
 
+// Which shell main.js mounts (desktop App vs mobile MobileApp) is decided at
+// BUILD time, not by sniffing navigator.userAgent at runtime: under Tauri's
+// wry Android shell the System WebView's UA did not reliably contain "Android"
+// (it reported a desktop UA in CI), so the runtime check silently mounted the
+// desktop app on the phone. `tauri android build` re-runs this build via its
+// beforeBuildCommand with TAURI_ENV_PLATFORM=android|ios set, which is the
+// authoritative signal. QUOTA_WIDGET_MOBILE is an explicit CI override the
+// Android job also sets, so the proof never depends on Tauri internals alone.
+const isMobileBuild =
+  process.env.QUOTA_WIDGET_MOBILE === '1' ||
+  process.env.TAURI_ENV_PLATFORM === 'android' ||
+  process.env.TAURI_ENV_PLATFORM === 'ios';
+
 export default defineConfig({
   plugins: [svelte()],
   define: {
     __QUOTA_WIDGET_VERSION__: JSON.stringify(appVersion),
     __QUOTA_WIDGET_BRANCH__: JSON.stringify(buildBranch),
+    __IS_MOBILE__: JSON.stringify(isMobileBuild),
   },
   clearScreen: false,
   server: {

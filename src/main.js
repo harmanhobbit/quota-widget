@@ -10,10 +10,15 @@ import './mobile/mobile.css';
 // popup. Tray hover is the shell's own native tooltip on both platforms, so
 // there is no third window for it.
 const isMini = new URLSearchParams(location.search).get('view') === 'mini';
-// Android's WebView reports its platform in the user agent; every desktop
-// target (Windows/Linux, whatever the OS) does not. No window/tray concepts
-// exist there, so it gets its own shell rather than branching App.svelte.
-const isMobile = navigator.userAgent.includes('Android');
+// Mobile vs desktop is decided at BUILD time (see vite.config.js): the Android
+// APK is built with TAURI_ENV_PLATFORM=android, baking __IS_MOBILE__ true, so
+// it mounts the phone shell (MobileApp) instead of branching App.svelte. The
+// userAgent check is only a runtime fallback: Tauri's wry Android WebView does
+// NOT reliably put "Android" in navigator.userAgent (in CI it reported a
+// desktop UA), which silently mounted the desktop app on the phone — the bug
+// this replaces. No window/tray concepts exist on mobile, hence a separate
+// shell.
+const isMobile = __IS_MOBILE__ || navigator.userAgent.includes('Android');
 const target = document.getElementById('app');
 
 export default mount(isMobile ? MobileApp : isMini ? MiniSummary : App, { target });
