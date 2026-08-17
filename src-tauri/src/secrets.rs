@@ -10,9 +10,14 @@ use quota_core::config::Config;
 use std::collections::HashMap;
 use std::path::Path;
 
+#[cfg(not(mobile))]
+pub use quota_core::secret_store::oauth_key;
 /// Entry naming is shared with the file store, so the two backends agree on
-/// which names a configuration implies.
-pub use quota_core::secret_store::{oauth_key, valid_key};
+/// which names a configuration implies. `oauth_key` derives the secret name
+/// for a built-in sign-in flow (Claude/Codex/Grok OAuth), which is
+/// desktop-only for now — mobile's one provider (OpenRouter) is a pasted key,
+/// not OAuth — so it is re-exported only where desktop's `lib.rs` uses it.
+pub use quota_core::secret_store::valid_key;
 
 /// Windows Credential Manager caps one blob at CRED_MAX_CREDENTIAL_BLOB_SIZE
 /// (2560 bytes, counted as UTF-16 — so 1280 code units). A Codex OAuth secret
