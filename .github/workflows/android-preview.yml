@@ -1,0 +1,127 @@
+name: Android preview (Obtainium)
+
+# Dispatch-only. Builds a debug-signed **arm64** APK and publishes it to a
+# single rolling GitHub **prerelease** tagged `android-preview`, so it can be
+# installed and updated on a phone via Obtainium.
+#
+# This is a PREVIEW/testing channel, deliberately separate from release.yml:
+#   * it never touches the signed release channel, latest.json, or the desktop
+#     updater;
+#   * it never bumps the app version (the version rules in AGENTS.md forbid that
+#     off a release commit) — each build just gets a throwaway
+#     `<version>-preview.<run>` versionName and an incrementing versionCode so
+#     Android accepts the update and Obtainium notices it;
+#   * it is debug-signed with a committed, intentionally-public debug key
+#     (ci/android-preview/README.md), NOT a real release key.
+#
+# ACTIVATION NOTE: workflow_dispatch only lists a workflow once the file is on
+# the default branch (main). Dispatching then builds whatever ref you pass
+# (`gh workflow run android-preview.yml --ref <branch>`), so before the Android
+# feature merges you can point it at the feature branch; after it merges, just
+# dispatch main.
+on:
+  workflow_dispatch:
+
+# Scoped to this job: create/replace the prerelease in THIS repo via the
+# built-in token. It cannot write to any other repository.
+permissions:
+  contents: write
+
+concurrency:
+  group: android-preview
+  cancel-in-progress: true
+
+jobs:
+  android-preview:
+    name: Build + publish arm64 preview APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - uses: android-actions/setup-android@v3
+      - name: Install NDK 28
+        run: sdkmanager --install "ndk;28.0.13004108"
+
+      # Stable debug signing. `tauri android build --debug` signs with the
+      # runner's ~/.android/debug.keystore, which CI otherwise generates fresh
+      # (a different certificate) every run — and Android rejects an in-place
+      # update when the certificate changes, breaking Obtainium updates. Pinning
+      # the committed key makes every preview share one certificate. See
+      # ci/android-preview/README.md; this is a public debug key, not a secret.
+      - name: Pin the committed debug keystore
+        run: |
+          mkdir -p "$HOME/.android"
+          cp ci/android-preview/debug.keystore "$HOME/.android/debug.keystore"
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: tauri android init
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.0.13004108
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.0.13004108
+        run: npm run tauri android init
+
+      # arm64 debug APK. QUOTA_WIDGET_MOBILE=1 forces the mobile shell at build
+      # time (same as build.yml). The --config override gives this build a
+      # unique versionName and an incrementing versionCode (the workflow run
+      # number, which is monotonic) WITHOUT editing any committed file: Android
+      # requires a higher versionCode to accept an update, and Obtainium uses
+      # the change to detect a new build. `--apk` skips the unused AAB.
+      - name: Build debug arm64 APK
+        env:
+          OPENROUTER_CI_KEY: ${{ secrets.OPENROUTER_CI_KEY }}
+          QUOTA_WIDGET_MOBILE: '1'
+        run: |
+          set -euo pipefail
+          base=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          run="${GITHUB_RUN_NUMBER}"
+          npm run tauri android build -- --debug --apk --target aarch64 \
+            --config "{\"version\":\"${base}-preview.${run}\",\"bundle\":{\"android\":{\"versionCode\":${run}}}}"
+
+      - name: Locate APK
+        id: apk
+        run: |
+          set -euo pipefail
+          apk=$(find src-tauri/gen/android -name '*.apk' -path '*debug*' | head -1)
+          if [ -z "$apk" ]; then echo "::error::no debug APK found under src-tauri/gen/android"; exit 1; fi
+          # Stable asset name: one APK per release, same download URL each build,
+          # so Obtainium's APK selection never has to guess.
+          cp "$apk" quota-widget-android-arm64.apk
+          echo "path=quota-widget-android-arm64.apk" >> "$GITHUB_OUTPUT"
+
+      # Roll the single `android-preview` prerelease. Delete-and-recreate (not
+      # edit) so the release's timestamp is fresh every build — that lets
+      # Obtainium's "use release date as version" reliably detect an update even
+      # though the tag name never changes. --cleanup-tag moves the tag to the
+      # built ref's commit.
+      - name: Publish rolling android-preview prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="android-preview"
+          base=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          notes=$(printf '%s\n' \
+            "Rolling Android preview — arm64, **debug-signed**, not a release." \
+            "" \
+            "- version: \`${base}-preview.${GITHUB_RUN_NUMBER}\` (versionCode ${GITHUB_RUN_NUMBER})" \
+            "- commit: ${GITHUB_SHA}" \
+            "" \
+            "Install and update via Obtainium — see \`docs/android-preview.md\`.")
+          gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "Android preview (arm64, debug)" \
+            --notes "$notes" \
+            "${{ steps.apk.outputs.path }}"
