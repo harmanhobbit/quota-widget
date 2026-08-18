@@ -32,8 +32,26 @@ _Avoid_: Cost, usage, burn
 How far through a usage window's period the present moment is, drawn on that
 window's bar. It shares the bar's x-axis with the usage fill but measures a
 different quantity — time elapsed, not allowance consumed — which is why a
-half-full bar past the marker means the allowance is burning fast.
+half-full bar past the marker means the allowance is burning fast. For a window
+that resets weekly it measures *scheduled* time elapsed under the account's
+[[usage schedule]] rather than raw calendar time, freezing on off-days; every
+other window measures raw calendar time.
 _Avoid_: Progress marker, time marker, tick
+
+**Usage schedule**:
+The set of weekdays an account is expected to be used on. It redistributes a
+weekly [[period marker]]'s expected pace onto those days alone — five active
+days make each worth a fifth of the week — so the marker holds flat on off-days
+instead of creeping. It shapes only the expectation, never the usage figure a
+provider reports.
+_Avoid_: Active days, working days, roster, duty cycle
+
+**Calendar marker**:
+The raw, unscheduled position of the present moment in a period — where the
+[[period marker]] would sit with no [[usage schedule]] applied. Revealed while a
+bar is pressed and held, so a glance answers "where would I be on the plain
+calendar?" without leaving the scheduled view.
+_Avoid_: True marker, real marker, raw marker
 
 **Informational window**:
 A usage window that is shown but never colours a card or the tray, because
