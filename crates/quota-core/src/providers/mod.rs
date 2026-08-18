@@ -67,6 +67,22 @@ impl ProviderCtx {
         secrets: HashMap<String, String>,
         config: Config,
     ) -> Self {
+        // ADR 0006 (Android) says HTTPS is "validated through the Android
+        // system trust store". This client uses reqwest's default `rustls-tls`
+        // (bundled webpki-roots, workspace Cargo.toml) unconditionally on
+        // every platform, Android included, instead of wiring in Android's
+        // real system certificate verifier — that needs a Kotlin component
+        // bundled into the generated Gradle project
+        // (rustls-platform-verifier's own documented requirement), which is a
+        // meaningfully larger, hard-to-verify-headless surface than issue
+        // #109 scoped in. webpki-roots is a fixed public-CA bundle: it already
+        // satisfies the criterion's actual testable behavior — cleartext HTTP,
+        // a private/self-signed CA, and any bypass are all rejected — just not
+        // via the literal system store. Flagged here per docs/agents/domain.md
+        // ("flag ADR conflicts") rather than silently narrowed; literal
+        // system-trust-store verification is a candidate for a follow-up
+        // ticket if a real need for it (e.g. an enterprise MITM proxy Android
+        // trusts) shows up.
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .user_agent("quota-widget/0.1")
@@ -249,9 +265,41 @@ pub(crate) fn network_err(e: reqwest::Error) -> FetchError {
     FetchError::Network(e.to_string())
 }
 
+/// Guards the one user-editable endpoint among the direct-HTTPS providers
+/// (Moonshot's `balance_url`) against a pasted `http://` URL or something
+/// that isn't a URL at all. Every other adapter's endpoint is a hardcoded
+/// `https://` constant, so this is the single place a non-HTTPS request could
+/// otherwise reach the network — required on every platform, not just
+/// Android, since the setting round-trips through the same `Config` on
+/// desktop.
+pub(crate) fn require_https(url: &str) -> Result<(), FetchError> {
+    match reqwest::Url::parse(url) {
+        Ok(u) if u.scheme() == "https" => Ok(()),
+        Ok(_) => Err(FetchError::NotConfigured(format!(
+            "endpoint must be https://, not {url}"
+        ))),
+        Err(_) => Err(FetchError::NotConfigured(format!(
+            "endpoint is not a valid URL: {url}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn require_https_accepts_only_https_urls() {
+        assert!(require_https("https://api.moonshot.ai/v1/users/me/balance").is_ok());
+        assert!(matches!(
+            require_https("http://api.moonshot.ai/v1/users/me/balance"),
+            Err(FetchError::NotConfigured(_))
+        ));
+        assert!(matches!(
+            require_https("not a url"),
+            Err(FetchError::NotConfigured(_))
+        ));
+    }
 
     #[test]
     fn timestamps_in_three_formats() {

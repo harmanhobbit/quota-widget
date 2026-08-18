@@ -10,11 +10,13 @@
 //! criterion that the shared refresh operation is what produces quota, not a
 //! Kotlin/JS reimplementation.
 //!
-//! What is deliberately absent, all belonging to later tickets per
-//! `docs/adr/0006-…`: background scheduling (WorkManager), Keystore-backed
-//! secret encryption (this reuses the same plaintext-in-app-private-dir store
-//! desktop uses today — see `secrets.rs`), widgets, and notifications. This
-//! is a debug/dev build proving the foreground path only.
+//! Issue #109 added Keystore-backed secret encryption (`secrets.rs`'s
+//! `target_os = "android"` backend), empty-first-run provider onboarding, and
+//! multi-account CRUD for every direct-HTTPS pasted-key provider — desktop's
+//! CLI/OAuth/SSH-only providers (Claude, Codex, Grok, Hermes) stay excluded.
+//! What is still deliberately absent, belonging to later tickets per
+//! `docs/adr/0006-…`: background scheduling (WorkManager), widgets, built-in
+//! sign-in (Claude/Codex/Grok OAuth), and Hermes cookie mode.
 
 use quota_core::alerts::AlertEngine;
 use quota_core::config::Config;
@@ -35,12 +37,24 @@ pub struct MobileState {
 
 impl MobileState {
     fn provider_ctx(&self, config: Config) -> ProviderCtx {
+        let (ctx, _failed) = self.provider_ctx_and_failed_secrets(config);
+        ctx
+    }
+
+    /// Builds the refresh context plus the config keys whose stored
+    /// credential exists but could not be decrypted (Android Keystore only —
+    /// see `secrets.rs`). Those keys are deliberately left out of `ctx.secrets`
+    /// (an adapter must not be handed a truncated/garbage credential), and
+    /// `refresh_once` turns them into an explicit failed snapshot instead of
+    /// the generic "not configured" a merely-absent secret would produce.
+    fn provider_ctx_and_failed_secrets(&self, config: Config) -> (ProviderCtx, Vec<String>) {
         // No `dirs::home_dir()` on Android — nothing here reads it, since
         // Android's provider set is direct-HTTPS pasted-key only (no CLI
         // file, no SSH, no Tailscale), but ProviderCtx still needs a `home`
         // path; the config dir is as good a stand-in as any and is never
-        // dereferenced by this ticket's one provider.
-        let secrets = crate::secrets::load_all(&self.config_dir, &config);
+        // dereferenced by any provider Android exposes.
+        let (secrets, failed) =
+            crate::secrets::load_all_reporting_errors(&self.config_dir, &config);
         let mut ctx = ProviderCtx::new(
             self.config_dir.clone(),
             self.config_dir.clone(),
@@ -51,7 +65,7 @@ impl MobileState {
         ctx.on_secret_update = Some(std::sync::Arc::new(move |key: &str, value: &str| {
             crate::secrets::set(&dir, key, value)
         }));
-        ctx
+        (ctx, failed)
     }
 }
 
@@ -135,15 +149,49 @@ async fn refresh_now(
 
 async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
     let cfg = state.config.read().await.clone();
-    let ctx = state.provider_ctx(cfg.clone());
+    let (ctx, failed_secrets) = state.provider_ctx_and_failed_secrets(cfg.clone());
     let prior = state.snapshots.read().await.clone();
     let mut engine = state.alert_engine.lock().await;
-    let outcome = quota_core::refresh::refresh(&ctx, &prior, &mut engine).await;
+    let mut outcome = quota_core::refresh::refresh(&ctx, &prior, &mut engine).await;
     drop(engine);
 
     for write in &outcome.credential_writes {
         if let Err(e) = &write.result {
             eprintln!("failed to persist rotated secret {}: {e}", write.key);
+        }
+    }
+
+    // A stored credential that exists but could not be decrypted must not
+    // read as "no key was ever pasted" — `refresh` above already produced a
+    // generic `NotConfigured` for these (their secret was simply absent from
+    // `ctx.secrets`), so replace it with a snapshot that says what actually
+    // happened. Ciphertext itself was never touched — only the read failed.
+    if !failed_secrets.is_empty() {
+        for provider in providers_for(&cfg) {
+            if !failed_secrets.contains(&provider.id().to_string()) {
+                continue;
+            }
+            if !cfg
+                .providers
+                .get(provider.id())
+                .map(|p| p.enabled)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let failed = UsageSnapshot::failed(
+                provider.id(),
+                provider.name(),
+                quota_core::model::FetchError::NotConfigured(
+                    "stored credential could not be decrypted — remove and re-paste it in \
+                     Settings"
+                        .into(),
+                ),
+            );
+            outcome
+                .snapshots
+                .retain(|s| s.provider_id != failed.provider_id);
+            outcome.snapshots.push(failed);
         }
     }
 
@@ -205,7 +253,29 @@ pub fn run() {
                 .path()
                 .app_config_dir()
                 .unwrap_or_else(|_| std::env::temp_dir());
+            // A true first run — neither storage file exists yet — must start
+            // with an empty account list and provider onboarding (issue #109,
+            // docs/adr/0006-…), not desktop's `Config::default()`, which
+            // pre-enables Claude and Codex: Android has no CLI to discover
+            // credentials from, so those would only ever render as failed
+            // accounts before the user has even opened Settings. Checked
+            // before `Config::load` runs any one-time file migration, so a
+            // config directory carried over from an older build (which *did*
+            // once write a legacy `config.json`) is never mistaken for a
+            // first run.
+            // "shared-config.json" mirrors quota_core::shared_config's
+            // internal (crate-private) file name — see `Config::load`'s
+            // `migrate_if_needed`, which is the authoritative check this one
+            // stands in for.
+            let is_first_run = !config_dir.join("shared-config.json").exists()
+                && !config_dir.join("config.json").exists();
             let mut loaded = Config::load(&config_dir);
+            if is_first_run {
+                loaded.config = Config::mobile_first_run_default();
+                if let Err(e) = loaded.config.save(&config_dir) {
+                    eprintln!("[mobile] saving first-run default config failed: {e}");
+                }
+            }
             // CI-only OpenRouter seed for issue #108's emulator proof. Done
             // here in Rust — before the webview loads — rather than in the JS
             // onMount, because Tauri's Android webview reloads once during

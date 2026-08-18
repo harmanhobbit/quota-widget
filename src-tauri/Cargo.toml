@@ -30,6 +30,15 @@ ksni = "0.3"
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
 
+# keyring 3.x (pinned above for Windows) has no Android backend at all; 4.x
+# restructured around keyring-core "stores" and adds one
+# (`android-native-keyring-store`) reachable through the crate's `v1`
+# compatibility facade — a different major version of the same crate name,
+# which Cargo resolves independently since Windows and Android builds never
+# compile both. See `src-tauri/src/secrets.rs`.
+[target.'cfg(target_os = "android")'.dependencies]
+keyring = { version = "4", default-features = false, features = ["v1", "android-native-keyring-store"] }
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2.10.1"
 

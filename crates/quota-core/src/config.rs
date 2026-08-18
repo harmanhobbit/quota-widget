@@ -444,6 +444,19 @@ fn refuse_overwrite(recovery: &ConfigRecovery) -> std::io::Error {
 }
 
 impl Config {
+    /// Android's true first run: `Config::default()` pre-enables Claude and
+    /// Codex, which is right for desktop (CLI login may already be present)
+    /// but wrong for Android, which starts provider-onboarding empty (see
+    /// `docs/adr/0006-…`) — an out-of-the-box Claude/Codex account there has
+    /// no CLI to discover and no credential yet, so it would only ever show
+    /// as a failed account until the user has even opened Settings.
+    pub fn mobile_first_run_default() -> Config {
+        Config {
+            providers: IndexMap::new(),
+            ..Config::default()
+        }
+    }
+
     pub fn effective_thresholds(&self, provider_id: &str) -> Thresholds {
         self.providers
             .get(provider_id)
@@ -963,6 +976,16 @@ mod tests {
         assert_eq!(loaded, cfg);
         assert!(loaded.providers["openrouter"].enabled);
         assert_eq!(loaded.effective_thresholds("claude").warn_pct, 80.0);
+    }
+
+    #[test]
+    fn mobile_first_run_default_has_no_preset_accounts() {
+        let cfg = Config::mobile_first_run_default();
+        assert!(cfg.providers.is_empty());
+        // Everything else matches desktop's defaults — only the account
+        // presets differ.
+        assert_eq!(cfg.poll_interval_secs, Config::default().poll_interval_secs);
+        assert_eq!(cfg.thresholds, Config::default().thresholds);
     }
 
     #[test]
