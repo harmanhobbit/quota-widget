@@ -76,9 +76,17 @@ jobs:
       # number, which is monotonic) WITHOUT editing any committed file: Android
       # requires a higher versionCode to accept an update, and Obtainium uses
       # the change to detect a new build. `--apk` skips the unused AAB.
+      #
+      # OPENROUTER_CI_KEY is deliberately NOT passed here. It is the emulator
+      # test's auto-seed key (build.yml), read at compile time via option_env!
+      # and baked into the binary — fine for a throwaway emulator that is
+      # destroyed, but this APK is published to a PUBLIC prerelease, so baking a
+      # real API key into it would leak the secret to anyone who downloads it.
+      # Without the env var option_env! resolves to None, ci_test_key() returns
+      # None, and no key is embedded or seeded: the user adds their own
+      # OpenRouter key in the app's Settings instead.
       - name: Build debug arm64 APK
         env:
-          OPENROUTER_CI_KEY: ${{ secrets.OPENROUTER_CI_KEY }}
           QUOTA_WIDGET_MOBILE: '1'
         run: |
           set -euo pipefail
