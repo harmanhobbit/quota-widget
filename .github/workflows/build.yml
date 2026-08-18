@@ -200,21 +200,22 @@ jobs:
           # app, without depending on Tauri's env var alone. See vite.config.js.
           QUOTA_WIDGET_MOBILE: '1'
         run: npm run tauri android build -- --debug --target x86_64
-      # Uploaded regardless of what the emulator step below does, so a debug
-      # build is available for on-device testing even if emulator boot itself
-      # is flaky. Gradle's exact variant directory name isn't pinned here on
-      # purpose — glob it, rather than guess a path that silently drifts.
+      # Gradle's exact variant directory name isn't pinned here on purpose —
+      # glob it, rather than guess a path that silently drifts. The emulator
+      # step below installs this path directly off the runner.
+      #
+      # This APK is deliberately NOT uploaded as an artifact: it has
+      # OPENROUTER_CI_KEY baked in (above) for the auto-seed, and this repo is
+      # public, so a published artifact would leak the key to anyone. It exists
+      # only long enough for the throwaway emulator to install it. For a real
+      # on-device build, use the Obtainium preview channel
+      # (.github/workflows/android-preview.yml), which embeds no key.
       - name: Locate debug APK
         id: apk
         run: |
           apk=$(find src-tauri/gen/android -name '*.apk' -path '*debug*' | head -1)
           if [ -z "$apk" ]; then echo "no debug APK found under src-tauri/gen/android"; exit 1; fi
           echo "path=$apk" >> "$GITHUB_OUTPUT"
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v6
-        with:
-          name: quota-widget-android-debug
-          path: ${{ steps.apk.outputs.path }}
       - name: Boot emulator and run
         uses: reactivecircus/android-emulator-runner@v2
         with:

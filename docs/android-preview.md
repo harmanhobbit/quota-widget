@@ -49,6 +49,11 @@ gh workflow run android-preview.yml --ref main
      `quota-widget-android-arm64.apk`.
 4. **Add**, then install when Obtainium prompts. Android will warn about an app
    from an unknown source and about a debuggable build — expected.
+5. On first launch, open **Settings** (⚙) and enter **your own** OpenRouter API
+   key. The preview APK ships with **no** key baked in — embedding one would leak
+   it, since the prerelease is public. (The Claude/Codex cards you may see are
+   just the shared default config; the mobile shell only configures OpenRouter
+   for now — see issues #104/#110 for the rest.)
 
 ## Updating
 
