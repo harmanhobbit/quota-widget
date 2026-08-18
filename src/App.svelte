@@ -4,7 +4,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { LogicalSize } from '@tauri-apps/api/dpi';
-  import ProviderCard from './lib/ProviderCard.svelte';
+  import ProviderCard from './lib/shared/UsageCard.svelte';
   import Settings from './lib/Settings.svelte';
   import { resetOpacity, stepOpacity } from './lib/opacity.js';
 

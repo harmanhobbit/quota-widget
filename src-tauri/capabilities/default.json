@@ -3,6 +3,7 @@
   "identifier": "default",
   "description": "Main popup window capabilities",
   "windows": ["main"],
+  "platforms": ["linux", "windows"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

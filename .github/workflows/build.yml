@@ -14,6 +14,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      target:
+        description: Which dispatch-only job(s) to run
+        type: choice
+        default: both
+        options: [both, windows, android]
 
 # A newer push supersedes any in-flight run for the same branch — no more
 # hand-cancelling half-done Windows builds.
@@ -73,8 +79,10 @@ jobs:
     # Packaging here is dispatch-only. Ordinary branch and main pushes never
     # reach the Windows runner, which bills at a 2x multiplier against a
     # hand-budgeted quota. Tag builds belong to release.yml, which signs and
-    # publishes; this job exists to hand-test a branch on Windows.
-    if: github.event_name == 'workflow_dispatch' && needs.test.result == 'success' && needs.frontend.result == 'success'
+    # publishes; this job exists to hand-test a branch on Windows. `target`
+    # lets a dispatch run just this job or just `android` — useful while
+    # iterating on one platform without re-paying for the other every time.
+    if: github.event_name == 'workflow_dispatch' && inputs.target != 'android' && needs.test.result == 'success' && needs.frontend.result == 'success'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -126,3 +134,136 @@ jobs:
       # No release-publishing step here on purpose. release.yml is the single
       # source of published assets, and it publishes to the dist repo; a second
       # draft release on the source repo would compete with it.
+
+  android:
+    name: Android emulator proof (debug)
+    needs: [test, frontend]
+    # Dispatch-only, matching build-windows: an emulator runner is not cheap
+    # either, and this proves issue #108's foreground path rather than
+    # gating every push. `target` lets a dispatch run just this job or just
+    # `windows` — useful while iterating on one platform without re-paying
+    # for the other every time.
+    if: github.event_name == 'workflow_dispatch' && inputs.target != 'windows' && needs.test.result == 'success' && needs.frontend.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      # GitHub-hosted Linux runners DO expose /dev/kvm, but the runner user
+      # isn't in the `kvm` group, so without this the emulator logs
+      # "ProbeKVM: This user doesn't have permissions to use KVM" and falls back
+      # to pure software rendering — which made `adb install` take 8+ minutes
+      # and the system ANR continuously, so the app never got a responsive
+      # surface to render in. This udev rule opens /dev/kvm to all users,
+      # restoring hardware acceleration (the fix documented in
+      # android-emulator-runner's README). It's what makes an API-34 image
+      # boot in reasonable time below.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - uses: android-actions/setup-android@v3
+      - name: Install NDK 28
+        run: sdkmanager --install "ndk;28.0.13004108"
+      - run: npm ci
+      - run: npm run build
+      # `tauri android init` generates src-tauri/gen/android fresh every run
+      # (it is gitignored, like the rest of src-tauri/gen/) — this is also
+      # the step that proves the Android-specific identifier override in
+      # tauri.android.conf.json actually works, since a hyphenated
+      # identifier is an illegal Android package segment.
+      - name: tauri android init
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.0.13004108
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.0.13004108
+        run: npm run tauri android init
+      - name: Build debug APK
+        # OPENROUTER_CI_KEY is read via `option_env!` at compile time by the
+        # `#[cfg(debug_assertions)]` half of `ci_test_key()` in
+        # src-tauri/src/mobile.rs — baked into the binary here, so nothing
+        # downstream needs to patch the generated Gradle project or type the
+        # key in through UI automation.
+        env:
+          OPENROUTER_CI_KEY: ${{ secrets.OPENROUTER_CI_KEY }}
+          # Force the mobile shell at build time. `tauri android build` re-runs
+          # the frontend build (beforeBuildCommand) with TAURI_ENV_PLATFORM set,
+          # but this explicit flag guarantees main.js mounts MobileApp (the
+          # OpenRouter card the emulator step asserts on) rather than the desktop
+          # app, without depending on Tauri's env var alone. See vite.config.js.
+          QUOTA_WIDGET_MOBILE: '1'
+        run: npm run tauri android build -- --debug --target x86_64
+      # Uploaded regardless of what the emulator step below does, so a debug
+      # build is available for on-device testing even if emulator boot itself
+      # is flaky. Gradle's exact variant directory name isn't pinned here on
+      # purpose — glob it, rather than guess a path that silently drifts.
+      - name: Locate debug APK
+        id: apk
+        run: |
+          apk=$(find src-tauri/gen/android -name '*.apk' -path '*debug*' | head -1)
+          if [ -z "$apk" ]; then echo "no debug APK found under src-tauri/gen/android"; exit 1; fi
+          echo "path=$apk" >> "$GITHUB_OUTPUT"
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v6
+        with:
+          name: quota-widget-android-debug
+          path: ${{ steps.apk.outputs.path }}
+      - name: Boot emulator and run
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          # ADR 0006's eventual API 24 compatibility floor is a concern for
+          # the later signed-build ticket, which needs to validate against it
+          # specifically. This job only needs to prove the app launches and
+          # renders.
+          #
+          # google_apis (not "default" AOSP): the AOSP images ship no WebView
+          # package at all, and every Tauri app needs one
+          # (MissingWebViewPackageException on launch).
+          #
+          # API 34, not something older, on purpose: a system image's bundled
+          # System WebView is frozen at the image's release, and the frontend
+          # bundle (Svelte 5 runtime + our code) uses globalThis (Chrome 71),
+          # queueMicrotask (71), Object.fromEntries (73), String.replaceAll
+          # (85) and structuredClone (98). The old API-26 image's Chrome 69
+          # lacked all of these, so the app threw on the first line and rendered
+          # nothing — chasing them with polyfills one 20-minute run at a time is
+          # a losing game. API 34 ships Chrome ~114, which has them natively, so
+          # the app renders as it does on a real (updatable-WebView) device.
+          # This is only viable because the Enable KVM step above restores
+          # hardware acceleration; a heavy image under pure software emulation
+          # was impractically slow (8-minute installs, constant ANRs).
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          avd-name: quota-widget-ci
+          disable-animations: true
+          emulator-boot-timeout: 900
+          # android-emulator-runner executes `script` line-by-line, each line in
+          # its own `sh -c`, so a multi-line `if … fi` here is split apart and
+          # dies with "Syntax error: end of file unexpected" before any assertion
+          # runs (this bit three earlier iterations). Keep this a SINGLE line
+          # delegating to a checked-in script — which also polls generously for
+          # the slow software-emulated boot, dismisses transient ANR dialogs,
+          # captures diagnostics, and can be exercised locally with a mock adb.
+          # The script installs the APK, launches MainActivity, and asserts the
+          # OpenRouter card renders (proving the Svelte bundle mounts inside the
+          # Android WebView). The debug-only auto-seed in mobile.rs's
+          # ci_test_key pastes OPENROUTER_CI_KEY and refreshes on launch, so no
+          # UI typing is needed.
+          script: bash scripts/android-emulator-check.sh "${{ steps.apk.outputs.path }}"
+      - name: Upload screenshot and logcat
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-emulator-diagnostics
+          path: |
+            emulator-screenshot.png
+            logcat.txt
+            ui.xml
