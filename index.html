@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover is what populates the CSS `env(safe-area-inset-*)`
+         values the Android mobile shell uses to keep its header out from under
+         the status bar / display cutout (see src/mobile/mobile.css). Harmless
+         on desktop, where the insets are zero. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Quota Widget</title>
     <!--
       Defensive shims for older System WebViews. Tauri's Android shell uses
