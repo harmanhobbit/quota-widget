@@ -70,6 +70,12 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.0.13004108
         run: npm run tauri android init
 
+      # gen/android is regenerated above and gitignored, so backup exclusion
+      # (issue #109 — no application data may reach Android automatic backup)
+      # is reapplied here every run rather than committed once.
+      - name: Exclude app data from Android backup
+        run: node scripts/patch-android-manifest.mjs
+
       # arm64 debug APK. QUOTA_WIDGET_MOBILE=1 forces the mobile shell at build
       # time (same as build.yml). The --config override gives this build a
       # unique versionName and an incrementing versionCode (the workflow run

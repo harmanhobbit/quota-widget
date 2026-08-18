@@ -11,7 +11,7 @@
 //! not belong here — they emit a `UsageWindow` instead (see `elevenlabs.rs` and
 //! `firecrawl.rs`).
 
-use super::{network_err, Provider, ProviderCtx};
+use super::{network_err, require_https, Provider, ProviderCtx};
 use crate::model::{Credits, FetchError, UsageSnapshot};
 use serde_json::Value;
 
@@ -67,6 +67,7 @@ impl Provider for SimpleCredits {
             .provider_setting(&self.key, self.spec.url_setting)
             .and_then(|v| v.as_str().map(String::from))
             .unwrap_or_else(|| self.spec.default_url.to_string());
+        require_https(&url)?;
 
         let resp = ctx
             .http

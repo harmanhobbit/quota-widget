@@ -1232,12 +1232,12 @@ const CASES = [
     file: 'src/lib/shared/SimpleKeyAccount.svelte',
     props: () => ({
       id: 'openrouter',
-      account: { label: null, enabled: true, low_balance_warn: null, mini_summary_metrics: null, tray_metric: null },
+      kind: 'openrouter',
+      account: { label: null, enabled: true, low_balance_warn: null, mini_summary_metrics: null, tray_metric: null, settings: {} },
       providerName: 'OpenRouter',
       providerNote: 'Create a key at openrouter.ai/keys.',
       secretStored: false,
       secretInput: '',
-      lowBalanceWarn: true,
       headlineOptions: [{ id: 'credits', label: 'Credit balance' }],
       headlineOpen: false,
       onToggleHeadline() {},
@@ -1260,7 +1260,9 @@ const CASES = [
     },
   },
   // MobileApp: the Android shell. Opens directly to the usage list (no
-  // window/tray chrome), and Settings offers the one-provider onboarding flow.
+  // window/tray chrome); Settings doubles as onboarding when the account
+  // list is empty (issue #109 — a true first run has no accounts at all,
+  // see `Config::mobile_first_run_default`).
   {
     file: 'src/mobile/MobileApp.svelte',
     props: () => ({}),
@@ -1271,14 +1273,23 @@ const CASES = [
       }
       target.querySelector('button[title="Settings"]').click();
       flushSync();
-      const add = [...target.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Add OpenRouter account');
-      if (!add) throw new Error('Settings did not offer to add an OpenRouter account');
-      add.click();
+      if (!target.querySelector('.add-account-toggle')) {
+        throw new Error('an empty account list did not offer to add one (onboarding)');
+      }
+      target.querySelector('.add-account-toggle').click();
+      flushSync();
+      const kindSelect = target.querySelector('.add-account select');
+      if (!kindSelect || kindSelect.options.length < 5) {
+        throw new Error('the provider picker did not list the direct-HTTPS providers');
+      }
+      [...target.querySelectorAll('.add-account-actions button')]
+        .find((b) => b.textContent.trim() === 'Add account')
+        .click();
       await new Promise((resolve) => setTimeout(resolve, 0));
       flushSync();
       if (!target.querySelector('.provider')) throw new Error('adding an account did not render its row');
-      if (globalThis.__SMOKE_LAST_CONFIG__?.providers?.openrouter?.kind !== 'openrouter') {
-        throw new Error('adding an account did not persist an openrouter entry');
+      if (globalThis.__SMOKE_LAST_CONFIG__?.providers?.['openrouter#1']?.kind !== 'openrouter') {
+        throw new Error('adding an account did not persist an openrouter entry under an immutable key');
       }
     },
   },

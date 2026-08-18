@@ -1,25 +1,26 @@
 <script>
-  // Account management for a plain pasted-API-key provider — no OAuth, no CLI
-  // fallback, no admin-key or provider-specific extra fields. Covers
-  // OpenRouter, ElevenLabs, Firecrawl and DeepSeek's shape today. A provider
-  // with extra settings (Fireworks' account id, Venice's currency pick, …)
-  // isn't this component's job — it stays wherever the host composes its own
-  // fields alongside this one, or is left out of this component entirely.
+  // Account management for a pasted-API-key provider — no OAuth, no CLI
+  // fallback. Covers every direct-HTTPS pasted-key adapter Android exposes
+  // (issue #109): OpenRouter, ElevenLabs, Firecrawl, DeepSeek, Moonshot,
+  // Venice, OneHop, Fireworks, Anthropic Admin, OpenAI Admin. `kind` selects
+  // the small set of per-provider extra fields desktop's Settings.svelte
+  // renders inline for the same adapters — ported here verbatim rather than
+  // redesigned, so mobile and desktop agree on what each provider needs.
   //
   // `account` is mutated in place (label, enabled, tray/headline picks,
-  // low_balance_warn); secret storage and testing go through the caller's
-  // callbacks, since those are IPC calls the host owns.
+  // low_balance_warn, settings.*); secret storage and testing go through the
+  // caller's callbacks, since those are IPC calls the host owns.
   import HeadlineSelection from './HeadlineSelection.svelte';
 
   let {
     id,
+    kind,
     account = $bindable(),
     providerName,
     providerNote = '',
     secretLabel = 'API key',
     secretStored = false,
     secretInput = $bindable(''),
-    lowBalanceWarn = false,
     headlineOptions,
     headlineOpen = false,
     onToggleHeadline,
@@ -33,6 +34,20 @@
     canMoveUp = false,
     canMoveDown = false,
   } = $props();
+
+  // Mirrors Settings.svelte's inline `{#if p.id === '…'}` blocks exactly —
+  // see src/lib/Settings.svelte around the account row.
+  const showAccountId = $derived(kind === 'fireworks');
+  const showBalanceUrl = $derived(kind === 'moonshot');
+  const showCurrency = $derived(kind === 'venice');
+  const showBudget = $derived(
+    ['fireworks', 'anthropic_admin', 'openai_admin', 'openrouter'].includes(kind),
+  );
+  const showLowBalance = $derived(
+    ['openrouter', 'deepseek', 'moonshot', 'venice'].includes(kind),
+  );
+
+  account.settings ??= {};
 </script>
 
 <div class="provider">
@@ -68,7 +83,30 @@
         <button class="small" onclick={onClearSecret}>Clear</button>
       {/if}
     </div>
-    {#if lowBalanceWarn}
+    {#if showAccountId}
+      <label class="field">Account ID
+        <input type="text" placeholder="required — from your Fireworks account page" bind:value={account.settings.account_id} />
+      </label>
+    {/if}
+    {#if showBudget}
+      <label class="field">Monthly budget (optional)
+        <input type="number" step="any" placeholder="USD — set to see spend as a percentage" bind:value={account.settings.monthly_budget} />
+      </label>
+    {/if}
+    {#if showBalanceUrl}
+      <label class="field">Balance URL
+        <input type="text" placeholder="default: https://api.moonshot.ai/v1/users/me/balance" bind:value={account.settings.balance_url} />
+      </label>
+    {/if}
+    {#if showCurrency}
+      <label class="field">Headline balance
+        <select bind:value={account.settings.balance_currency}>
+          <option value="USD">USD</option>
+          <option value="DIEM">DIEM</option>
+        </select>
+      </label>
+    {/if}
+    {#if showLowBalance}
       <div class="row">
         <label class="inline">Low-balance warning at
           <input type="number" step="any" class="num" bind:value={account.low_balance_warn} placeholder="off" />
