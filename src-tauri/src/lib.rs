@@ -1,10 +1,8 @@
-#[cfg(not(mobile))]
 mod codex_oauth;
 #[cfg(not(mobile))]
 mod desktop;
 #[cfg(not(mobile))]
 mod grok_oauth;
-#[cfg(not(mobile))]
 mod oauth;
 #[cfg(not(mobile))]
 mod poller;
@@ -18,6 +16,8 @@ mod updates;
 
 #[cfg(mobile)]
 mod mobile;
+#[cfg(mobile)]
+mod mobile_signin;
 #[cfg(mobile)]
 pub use mobile::run;
 

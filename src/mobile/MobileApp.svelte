@@ -13,30 +13,53 @@
   import Ordering from '../lib/shared/Ordering.svelte';
   import Thresholds from '../lib/shared/Thresholds.svelte';
   import SimpleKeyAccount from '../lib/shared/SimpleKeyAccount.svelte';
-  import { getSnapshots, setConfig, setSecret, hasSecret, clearSecret, refreshNow, testProvider, listen } from '../lib/host.js';
+  import OAuthAccount from './OAuthAccount.svelte';
+  import {
+    getSnapshots,
+    setConfig,
+    setSecret,
+    hasSecret,
+    clearSecret,
+    refreshNow,
+    testProvider,
+    listen,
+    startClaudeSignin,
+    finishClaudeSignin,
+    startCodexSignin,
+    pollCodexSignin,
+    cancelSignin,
+    getPendingSignins,
+  } from '../lib/host.js';
 
-  // The direct-HTTPS pasted-key adapters Android exposes — a subset of
-  // desktop's provider list in src/lib/Settings.svelte, with the
-  // CLI/OAuth/SSH-only kinds (claude, codex, grok, hermes) left out. Notes
-  // are copied from there verbatim where they still apply.
+  // Every provider Android exposes after issue #110. Each carries a `mode`
+  // that decides which settings UI it gets:
+  //   - `oauth`: built-in sign-in (Claude PKCE, Codex device flow)
+  //   - `cookie`: pasted session cookie (Hermes)
+  //   - `key`: pasted API key (everything else)
+  // CLI files, local commands, SSH and Tailscale are intentionally absent.
   const PROVIDERS = [
-    { id: 'openrouter', name: 'OpenRouter', secretLabel: 'API key', note: 'Create a key at openrouter.ai/keys. Optional monthly budget tracks this month’s spend against your target.' },
-    { id: 'elevenlabs', name: 'ElevenLabs', secretLabel: 'API key', note: 'Create a key at elevenlabs.io/app/settings/api-keys.' },
-    { id: 'firecrawl', name: 'Firecrawl', secretLabel: 'API key', note: 'Create a key at firecrawl.dev/app/api-keys.' },
-    { id: 'deepseek', name: 'DeepSeek', secretLabel: 'API key', note: 'Create a key at platform.deepseek.com/api_keys.' },
-    { id: 'moonshot', name: 'Moonshot', secretLabel: 'API key', note: 'Create a key at platform.kimi.ai. Keys are platform-specific: a platform.kimi.com key needs its Balance URL changed to that host, or it returns 401.' },
-    { id: 'venice', name: 'Venice', secretLabel: 'API key', note: 'Create a key at venice.ai. Reports USD and DIEM balances; pick which one heads the card below.' },
-    { id: 'onehop', name: 'OneHop', secretLabel: 'API key', note: 'Create a key in the OneHop console. Gateway wallet balance.' },
-    { id: 'fireworks', name: 'Fireworks', secretLabel: 'API key', note: 'Create a key at fireworks.ai/account/api-keys. Needs the account ID too. Reports spend, not a balance: set a monthly budget to see it as a percentage.' },
-    { id: 'anthropic_admin', name: 'Anthropic Admin', secretLabel: 'Admin API key', note: 'Needs an sk-ant-admin key from Console → Settings → Admin keys, not a normal API key. Shows organization spend this month.' },
-    { id: 'openai_admin', name: 'OpenAI Admin', secretLabel: 'Admin API key', note: 'Needs an organization Admin key from platform.openai.com/settings/organization/admin-keys, not a normal API key. Shows organization spend this month.' },
+    { id: 'claude', name: 'Claude', mode: 'oauth', note: 'Built-in browser sign-in with your Anthropic account.' },
+    { id: 'codex', name: 'Codex', mode: 'oauth', note: 'Built-in device-flow sign-in with your OpenAI account.' },
+    { id: 'openrouter', name: 'OpenRouter', mode: 'key', secretLabel: 'API key', note: 'Create a key at openrouter.ai/keys. Optional monthly budget tracks this month’s spend against your target.' },
+    { id: 'elevenlabs', name: 'ElevenLabs', mode: 'key', secretLabel: 'API key', note: 'Create a key at elevenlabs.io/app/settings/api-keys.' },
+    { id: 'firecrawl', name: 'Firecrawl', mode: 'key', secretLabel: 'API key', note: 'Create a key at firecrawl.dev/app/api-keys.' },
+    { id: 'deepseek', name: 'DeepSeek', mode: 'key', secretLabel: 'API key', note: 'Create a key at platform.deepseek.com/api_keys.' },
+    { id: 'moonshot', name: 'Moonshot', mode: 'key', secretLabel: 'API key', note: 'Create a key at platform.kimi.ai. Keys are platform-specific: a platform.kimi.com key needs its Balance URL changed to that host, or it returns 401.' },
+    { id: 'venice', name: 'Venice', mode: 'key', secretLabel: 'API key', note: 'Create a key at venice.ai. Reports USD and DIEM balances; pick which one heads the card below.' },
+    { id: 'onehop', name: 'OneHop', mode: 'key', secretLabel: 'API key', note: 'Create a key in the OneHop console. Gateway wallet balance.' },
+    { id: 'fireworks', name: 'Fireworks', mode: 'key', secretLabel: 'API key', note: 'Create a key at fireworks.ai/account/api-keys. Needs the account ID too. Reports spend, not a balance: set a monthly budget to see it as a percentage.' },
+    { id: 'anthropic_admin', name: 'Anthropic Admin', mode: 'key', secretLabel: 'Admin API key', note: 'Needs an sk-ant-admin key from Console → Settings → Admin keys, not a normal API key. Shows organization spend this month.' },
+    { id: 'openai_admin', name: 'OpenAI Admin', mode: 'key', secretLabel: 'Admin API key', note: 'Needs an organization Admin key from platform.openai.com/settings/organization/admin-keys, not a normal API key. Shows organization spend this month.' },
+    { id: 'hermes', name: 'Hermes Portal', mode: 'cookie', secretLabel: 'Portal session cookie', note: 'Paste a portal.nousresearch.com session cookie. No local executable, SSH or Tailscale is used.' },
   ];
-  const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secretLabel: 'API key', note: '' };
+  const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, mode: 'key', secretLabel: 'API key', note: '' };
 
   // Static headline choices per kind, same source data as
   // Settings.svelte's `metricOptions` — kept in sync there and here since
   // mobile does not share that component.
   const KNOWN_HEADLINES = {
+    claude: [{ id: 'window:five_hour', label: '5-hour' }, { id: 'window:weekly', label: 'Weekly' }],
+    codex: [{ id: 'window:five_hour', label: '5-hour' }, { id: 'window:weekly', label: 'Weekly' }],
     openrouter: [{ id: 'credits', label: 'Credit balance' }, { id: 'window:monthly_spend', label: 'Monthly' }],
     elevenlabs: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
     firecrawl: [{ id: 'window:monthly_credits', label: 'Monthly credits' }],
@@ -47,6 +70,7 @@
     fireworks: [{ id: 'window:monthly_spend', label: 'Monthly' }, { id: 'credits', label: 'Spend this month' }],
     anthropic_admin: [{ id: 'window:monthly_spend', label: 'Monthly' }, { id: 'credits', label: 'Spend this month' }],
     openai_admin: [{ id: 'window:monthly_spend', label: 'Monthly' }, { id: 'credits', label: 'Spend this month' }],
+    hermes: [{ id: 'credits', label: 'Credit balance' }],
   };
 
   let view = $state('list'); // 'list' | 'settings'
@@ -61,6 +85,7 @@
   let addingAccount = $state(false);
   let newKind = $state('openrouter');
   let newName = $state('');
+  let pendingSignins = $state([]);
 
   function headlineOptionsFor(id, account) {
     const kind = account.kind ?? id;
@@ -77,6 +102,13 @@
   }
 
   function newAccount(kind, label) {
+    const info = providerInfo(kind);
+    const settings = {};
+    if (info.mode === 'oauth') {
+      settings.auth_mode = 'oauth';
+    } else if (info.mode === 'cookie') {
+      settings.source = 'cookie';
+    }
     return {
       kind,
       label: label || null,
@@ -88,7 +120,7 @@
       mini_summary_metric: null,
       mini_summary_metrics: null,
       tray_metric: null,
-      settings: {},
+      settings,
     };
   }
 
@@ -142,7 +174,10 @@
   }
 
   async function removeAccount(id) {
-    await clearSecret(id);
+    const info = providerInfo(config.providers[id].kind ?? id);
+    const secretKey = info.mode === 'oauth' ? `${id}_oauth` : id;
+    await clearSecret(secretKey);
+    await cancelSignin(id);
     delete secretStored[id];
     delete secretInputs[id];
     delete config.providers[id];
@@ -165,14 +200,61 @@
     setTimeout(() => (refreshing = false), 1200);
   }
 
+  async function loadPending() {
+    pendingSignins = await getPendingSignins().catch(() => []);
+  }
+
+  function pendingFor(id) {
+    return pendingSignins.find((p) => p.provider_key === id) ?? null;
+  }
+
+  async function startClaude(id) {
+    const url = await startClaudeSignin(id);
+    await loadPending();
+    if (window.__TAURI__?.opener?.openUrl) {
+      window.__TAURI__.opener.openUrl(url);
+    } else {
+      window.open(url, '_blank');
+    }
+  }
+
+  async function finishClaude(id, code) {
+    await finishClaudeSignin(id, code);
+    await loadPending();
+    secretStored[id] = true;
+    await refresh();
+  }
+
+  async function startCodex(id) {
+    await startCodexSignin(id);
+    await loadPending();
+  }
+
+  async function pollCodex(id) {
+    const result = await pollCodexSignin(id);
+    if (result === 'complete') {
+      await loadPending();
+      secretStored[id] = true;
+      await refresh();
+    }
+  }
+
+  async function cancelClaudeOrCodex(id) {
+    await cancelSignin(id);
+    await loadPending();
+  }
+
   onMount(() => {
     getSnapshots().then(async (initial) => {
       snapshots = initial.snapshots;
       config = initial.config;
       syncAccountState();
       for (const id of Object.keys(config.providers)) {
-        secretStored[id] = await hasSecret(id).catch(() => false);
+        const info = providerInfo(config.providers[id].kind ?? id);
+        const secretKey = info.mode === 'oauth' ? `${id}_oauth` : id;
+        secretStored[id] = await hasSecret(secretKey).catch(() => false);
       }
+      await loadPending();
       // The debug-only CI OpenRouter seed lives in Rust `setup()` (see
       // src-tauri/src/mobile.rs), not here: the Android webview reloads once
       // during startup and drops in-flight invoke callbacks, which repeatedly
@@ -241,28 +323,54 @@
         {/if}
         {#each Object.entries(config.providers) as [id, account], index (id)}
           {@const info = providerInfo(account.kind ?? id)}
-          <SimpleKeyAccount
-            {id}
-            kind={account.kind ?? id}
-            bind:account={config.providers[id]}
-            providerName={info.name}
-            providerNote={info.note}
-            secretLabel={info.secretLabel}
-            secretStored={secretStored[id] ?? false}
-            bind:secretInput={secretInputs[id]}
-            headlineOptions={headlineOptionsFor(id, account)}
-            headlineOpen={openHeadlineFor === id}
-            onToggleHeadline={() => (openHeadlineFor = openHeadlineFor === id ? '' : id)}
-            bind:expanded={expanded[id]}
-            testResult={testResults[id] ?? null}
-            onTest={() => test(id)}
-            onClearSecret={async () => { await clearSecret(id); secretStored[id] = false; }}
-            onRemove={() => removeAccount(id)}
-            onMoveUp={() => moveAccount(id, -1)}
-            onMoveDown={() => moveAccount(id, 1)}
-            canMoveUp={index > 0}
-            canMoveDown={index < Object.keys(config.providers).length - 1}
-          />
+          {@const pending = pendingFor(id)}
+          {#if info.mode === 'oauth'}
+            <OAuthAccount
+              {id}
+              kind={account.kind ?? id}
+              bind:account={config.providers[id]}
+              providerName={info.name}
+              providerNote={info.note}
+              {pending}
+              secretStored={secretStored[id] ?? false}
+              headlineOptions={headlineOptionsFor(id, account)}
+              headlineOpen={openHeadlineFor === id}
+              onToggleHeadline={() => (openHeadlineFor = openHeadlineFor === id ? '' : id)}
+              bind:expanded={expanded[id]}
+              onSignIn={() => kind === 'claude' ? startClaude(id) : startCodex(id)}
+              onCompleteClaude={(code) => finishClaude(id, code)}
+              onPollCodex={() => pollCodex(id)}
+              onCancel={() => cancelClaudeOrCodex(id)}
+              onRemove={() => removeAccount(id)}
+              onMoveUp={() => moveAccount(id, -1)}
+              onMoveDown={() => moveAccount(id, 1)}
+              canMoveUp={index > 0}
+              canMoveDown={index < Object.keys(config.providers).length - 1}
+            />
+          {:else}
+            <SimpleKeyAccount
+              {id}
+              kind={account.kind ?? id}
+              bind:account={config.providers[id]}
+              providerName={info.name}
+              providerNote={info.note}
+              secretLabel={info.secretLabel}
+              secretStored={secretStored[id] ?? false}
+              bind:secretInput={secretInputs[id]}
+              headlineOptions={headlineOptionsFor(id, account)}
+              headlineOpen={openHeadlineFor === id}
+              onToggleHeadline={() => (openHeadlineFor = openHeadlineFor === id ? '' : id)}
+              bind:expanded={expanded[id]}
+              testResult={testResults[id] ?? null}
+              onTest={() => test(id)}
+              onClearSecret={async () => { await clearSecret(id); secretStored[id] = false; }}
+              onRemove={() => removeAccount(id)}
+              onMoveUp={() => moveAccount(id, -1)}
+              onMoveDown={() => moveAccount(id, 1)}
+              canMoveUp={index > 0}
+              canMoveDown={index < Object.keys(config.providers).length - 1}
+            />
+          {/if}
         {/each}
       </section>
       <section>
