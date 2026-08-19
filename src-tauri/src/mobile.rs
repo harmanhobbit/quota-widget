@@ -13,10 +13,10 @@
 //! Issue #109 added Keystore-backed secret encryption (`secrets.rs`'s
 //! `target_os = "android"` backend), empty-first-run provider onboarding, and
 //! multi-account CRUD for every direct-HTTPS pasted-key provider — desktop's
-//! CLI/OAuth/SSH-only providers (Claude, Codex, Grok, Hermes) stay excluded.
-//! What is still deliberately absent, belonging to later tickets per
-//! `docs/adr/0006-…`: background scheduling (WorkManager), widgets, built-in
-//! sign-in (Claude/Codex/Grok OAuth), and Hermes cookie mode.
+//! CLI/OAuth/SSH-only providers (Claude, Codex, Grok, Hermes) stayed excluded.
+//! Issue #110 adds built-in Claude PKCE sign-in, Codex device-flow sign-in,
+//! and Hermes cookie mode, plus encrypted pending-sign-in persistence and
+//! honest handling when a rotated credential cannot be stored.
 
 use quota_core::alerts::AlertEngine;
 use quota_core::config::Config;
@@ -155,9 +155,42 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
     let mut outcome = quota_core::refresh::refresh(&ctx, &prior, &mut engine).await;
     drop(engine);
 
+    // A rotated credential that could not be persisted is an authentication/
+    // storage failure, not a healthy refresh. Keep any prior successful reading
+    // visible as stale and mark the affected provider so the user knows to
+    // reauthenticate rather than silently losing the rotation on process exit.
     for write in &outcome.credential_writes {
         if let Err(e) = &write.result {
-            eprintln!("failed to persist rotated secret {}: {e}", write.key);
+            if let Some(provider_id) =
+                crate::mobile_signin::provider_key_from_oauth_secret(&write.key)
+            {
+                let err = quota_core::model::FetchError::AuthExpired(format!(
+                    "rotated credential could not be stored: {e}. Sign in again."
+                ));
+                let replacement = match prior.get(provider_id) {
+                    Some(prev)
+                        if prev.error.is_none()
+                            && (!prev.windows.is_empty() || prev.credits.is_some()) =>
+                    {
+                        let mut merged = prev.clone();
+                        merged.error = Some(err);
+                        merged.fetched_at = chrono::Utc::now();
+                        merged
+                    }
+                    _ => {
+                        let name = providers_for(&cfg)
+                            .iter()
+                            .find(|p| p.id() == provider_id)
+                            .map(|p| p.name().to_string())
+                            .unwrap_or_else(|| provider_id.to_string());
+                        UsageSnapshot::failed(provider_id, &name, err)
+                    }
+                };
+                outcome.snapshots.retain(|s| s.provider_id != provider_id);
+                outcome.snapshots.push(replacement);
+            } else {
+                eprintln!("failed to persist rotated secret {}: {e}", write.key);
+            }
         }
     }
 
@@ -224,6 +257,56 @@ async fn test_provider(
         }
     }
     Err(format!("unknown provider: {provider}"))
+}
+
+// ---- Built-in sign-in commands (issue #110) --------------------------------
+
+#[tauri::command]
+async fn start_claude_signin(
+    state: tauri::State<'_, Arc<MobileState>>,
+    provider: String,
+) -> Result<String, String> {
+    crate::mobile_signin::start_claude(&state.config_dir, &provider).await
+}
+
+#[tauri::command]
+async fn finish_claude_signin(
+    state: tauri::State<'_, Arc<MobileState>>,
+    provider: String,
+    code: String,
+) -> Result<(), String> {
+    crate::mobile_signin::finish_claude(&state.config_dir, &provider, &code).await
+}
+
+#[tauri::command]
+async fn start_codex_signin(
+    state: tauri::State<'_, Arc<MobileState>>,
+    provider: String,
+) -> Result<crate::mobile_signin::CodexLoginInfo, String> {
+    crate::mobile_signin::start_codex(&state.config_dir, &provider).await
+}
+
+#[tauri::command]
+async fn poll_codex_signin(
+    state: tauri::State<'_, Arc<MobileState>>,
+    provider: String,
+) -> Result<crate::mobile_signin::CodexPollResult, String> {
+    crate::mobile_signin::poll_codex(&state.config_dir, &provider).await
+}
+
+#[tauri::command]
+fn cancel_signin(
+    state: tauri::State<'_, Arc<MobileState>>,
+    provider: String,
+) -> Result<(), String> {
+    crate::mobile_signin::cancel(&state.config_dir, &provider)
+}
+
+#[tauri::command]
+fn get_pending_signins(
+    state: tauri::State<'_, Arc<MobileState>>,
+) -> Result<Vec<crate::mobile_signin::PendingSignInView>, String> {
+    crate::mobile_signin::list(&state.config_dir)
 }
 
 /// CI-only seed path — see `.github/workflows/build.yml`'s `android` job.
@@ -334,6 +417,12 @@ pub fn run() {
             clear_secret,
             refresh_now,
             test_provider,
+            start_claude_signin,
+            finish_claude_signin,
+            start_codex_signin,
+            poll_codex_signin,
+            cancel_signin,
+            get_pending_signins,
             ci_test_key,
         ])
         .run(tauri::generate_context!())

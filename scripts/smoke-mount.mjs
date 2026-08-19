@@ -1259,6 +1259,37 @@ const CASES = [
       if (!globalThis.__SMOKE_REMOVED__) throw new Error('Remove did not reach onRemove');
     },
   },
+  // OAuthAccount: the Android built-in sign-in row for Claude/Codex.
+  // Renders the signed-out, pending and signed-in states without throwing.
+  {
+    file: 'src/mobile/OAuthAccount.svelte',
+    props: () => ({
+      id: 'claude',
+      kind: 'claude',
+      account: { label: null, enabled: true, low_balance_warn: null, mini_summary_metrics: null, tray_metric: null, settings: {} },
+      providerName: 'Claude',
+      providerNote: 'Built-in browser sign-in.',
+      pending: null,
+      secretStored: false,
+      headlineOptions: [{ id: 'window:five_hour', label: '5-hour' }],
+      headlineOpen: false,
+      onToggleHeadline() {},
+      expanded: true,
+      onSignIn() { globalThis.__SMOKE_OAUTH_SIGNIN__ = true; },
+      onCompleteClaude() { globalThis.__SMOKE_OAUTH_COMPLETE__ = true; },
+      onPollCodex() {},
+      onCancel() { globalThis.__SMOKE_OAUTH_CANCEL__ = true; },
+      onRemove() { globalThis.__SMOKE_OAUTH_REMOVE__ = true; },
+    }),
+    expect: ['Sign in with Claude', 'Remove account'],
+    verify: async ({ target, flushSync }) => {
+      const signIn = [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Sign in with Claude');
+      if (!signIn) throw new Error('Sign in button was not rendered');
+      signIn.click();
+      if (!globalThis.__SMOKE_OAUTH_SIGNIN__) throw new Error('Sign in did not reach onSignIn');
+    },
+  },
   // MobileApp: the Android shell. Opens directly to the usage list (no
   // window/tray chrome); Settings doubles as onboarding when the account
   // list is empty (issue #109 — a true first run has no accounts at all,
@@ -1331,6 +1362,15 @@ export async function invoke(cmd, args) {
     case 'mark_desktop_integration_prompted':
       globalThis.__SMOKE_DESKTOP_CALLS__.push('prompted'); return null;
     case 'restart_app': globalThis.__SMOKE_RESTARTED__ = true; return null;
+    // Mobile-only sign-in commands (issue #110). The smoke harness has no real
+    // browser or OAuth server, so start/finish/poll are no-ops that return the
+    // shapes the UI expects. A real Android build exercises the actual flows.
+    case 'get_pending_signins': return globalThis.__SMOKE_PENDING_SIGNINS__ ?? [];
+    case 'start_claude_signin': return 'https://claude.ai/oauth/authorize?smoke=1';
+    case 'finish_claude_signin': return null;
+    case 'start_codex_signin': return { user_code: 'SMOKE-CODE', verification_url: 'https://auth.openai.com/codex/device' };
+    case 'poll_codex_signin': return 'complete';
+    case 'cancel_signin': return null;
     default: return null;
   }
 }`);

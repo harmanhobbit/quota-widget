@@ -135,6 +135,11 @@ account name is shown everywhere; its internal key stays fixed so changing a
 name never loses its stored sign-in. New accounts copy an existing account's
 provider settings, while their API keys and OAuth sign-ins remain separate.
 Every account, including the original defaults, can be removed.
+
+**On Android**, the provider list is the same but the available credential sources
+are narrower: built-in sign-in for Claude and Codex, a pasted portal session cookie
+for Hermes, and pasted API keys for every direct-HTTPS provider. Desktop CLI files,
+local commands, SSH and Tailscale are not available on Android.
 Accounts can be moved up and down in Settings; that order is saved and is the
 order used in the full popup, mini summary, and tray tooltip. Each account can
 also choose its own mini-summary headline: Automatic picks the worst real quota

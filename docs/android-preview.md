@@ -49,11 +49,16 @@ gh workflow run android-preview.yml --ref main
      `quota-widget-android-arm64.apk`.
 4. **Add**, then install when Obtainium prompts. Android will warn about an app
    from an unknown source and about a debuggable build — expected.
-5. On first launch, open **Settings** (⚙) and enter **your own** OpenRouter API
-   key. The preview APK ships with **no** key baked in — embedding one would leak
-   it, since the prerelease is public. (The Claude/Codex cards you may see are
-   just the shared default config; the mobile shell only configures OpenRouter
-   for now — see issues #104/#110 for the rest.)
+5. On first launch, open **Settings** (⚙) and add an account. The preview APK
+   ships with **no** key baked in — embedding one would leak it, since the
+   prerelease is public. Supported providers on Android:
+   - **Claude** and **Codex** through built-in browser/device-flow sign-in.
+   - **Hermes Portal** by pasting a `portal.nousresearch.com` session cookie.
+   - Every direct-HTTPS provider by pasting its API key (OpenRouter, ElevenLabs,
+     Firecrawl, DeepSeek, Moonshot, Venice, OneHop, Fireworks, Anthropic Admin,
+     OpenAI Admin).
+   Desktop credential sources (CLI files, local commands, SSH, Tailscale) are
+   not exposed on Android.
 
 ## Updating
 
@@ -72,4 +77,4 @@ uninstall.
   Obtainium "update" here as trusted-origin. A real signed release channel is a
   later ticket (`docs/adr/0006-…`).
 - **No background refresh / notifications / widgets yet** — the Android build is
-  the foreground proof only (issue #108).
+  the foreground app only; background scheduling and widgets are later tickets.

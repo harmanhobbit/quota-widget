@@ -90,6 +90,51 @@ fn interval_from(v: &Value) -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Outcome of a single device-flow poll attempt. `Pending` is not an error —
+/// it just means the user has not yet authorized the code.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum PollOutcome {
+    Complete(Value),
+    Pending,
+}
+
+/// One non-blocking poll attempt. Suitable for mobile, where each tap of
+/// "Check again" makes one request and the pending state survives process death
+/// between attempts.
+pub async fn poll_once(http: &reqwest::Client, login: &DeviceLogin) -> Result<PollOutcome, String> {
+    let resp = http
+        .post(format!("{ISSUER}/api/accounts/deviceauth/token"))
+        .json(&serde_json::json!({
+            "device_auth_id": login.device_auth_id,
+            "user_code": login.user_code,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("sign-in poll failed: {e}"))?;
+
+    match resp.status().as_u16() {
+        403 | 404 => Ok(PollOutcome::Pending),
+        200..=299 => {
+            let body: Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("unexpected poll response: {e}"))?;
+            let code = body["authorization_code"]
+                .as_str()
+                .ok_or("poll response missing authorization_code")?;
+            // PKCE inverted: the *server* generates the verifier and we
+            // replay it. Nothing to compute or compare here.
+            let verifier = body["code_verifier"]
+                .as_str()
+                .ok_or("poll response missing code_verifier")?;
+            exchange(http, code, verifier)
+                .await
+                .map(PollOutcome::Complete)
+        }
+        s => Err(format!("sign-in failed (HTTP {s})")),
+    }
+}
+
 /// Steps 3–4: block until the user authorizes, then exchange for tokens.
 /// Returns the `tokens` object to persist, in the CLI's own shape.
 pub async fn poll_for_tokens(http: &reqwest::Client, login: &DeviceLogin) -> Result<Value, String> {
@@ -98,38 +143,9 @@ pub async fn poll_for_tokens(http: &reqwest::Client, login: &DeviceLogin) -> Res
         if std::time::Instant::now() >= deadline {
             return Err("sign-in timed out after 15 minutes — start again".into());
         }
-        let resp = http
-            .post(format!("{ISSUER}/api/accounts/deviceauth/token"))
-            .json(&serde_json::json!({
-                "device_auth_id": login.device_auth_id,
-                "user_code": login.user_code,
-            }))
-            .send()
-            .await
-            .map_err(|e| format!("sign-in poll failed: {e}"))?;
-
-        match resp.status().as_u16() {
-            // Not authorized yet — the only "keep waiting" signal there is.
-            403 | 404 => {
-                tokio::time::sleep(login.interval).await;
-                continue;
-            }
-            200..=299 => {
-                let body: Value = resp
-                    .json()
-                    .await
-                    .map_err(|e| format!("unexpected poll response: {e}"))?;
-                let code = body["authorization_code"]
-                    .as_str()
-                    .ok_or("poll response missing authorization_code")?;
-                // PKCE inverted: the *server* generates the verifier and we
-                // replay it. Nothing to compute or compare here.
-                let verifier = body["code_verifier"]
-                    .as_str()
-                    .ok_or("poll response missing code_verifier")?;
-                return exchange(http, code, verifier).await;
-            }
-            s => return Err(format!("sign-in failed (HTTP {s})")),
+        match poll_once(http, login).await? {
+            PollOutcome::Complete(tokens) => return Ok(tokens),
+            PollOutcome::Pending => tokio::time::sleep(login.interval).await,
         }
     }
 }
