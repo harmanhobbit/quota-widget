@@ -18,6 +18,7 @@
 //! Polling is status-driven, not error-code-driven: 403/404 mean "pending",
 //! anything else non-2xx is fatal. There is no `slow_down` back-off.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
