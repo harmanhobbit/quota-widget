@@ -201,6 +201,39 @@ impl Default for AlertToggles {
     }
 }
 
+/// The weekdays an account is expected to be used on. Every weekday defaults
+/// to active, so an account that has never opted in is paced across all seven
+/// days — byte-for-byte the behaviour of every build before the field existed.
+///
+/// The schedule is purely presentational (ADR-0007): it reshapes a weekly
+/// window's period marker to advance only on scheduled days, and never touches
+/// the usage a provider reports nor the status and alerts that key off it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct UsageSchedule {
+    pub monday: bool,
+    pub tuesday: bool,
+    pub wednesday: bool,
+    pub thursday: bool,
+    pub friday: bool,
+    pub saturday: bool,
+    pub sunday: bool,
+}
+
+impl Default for UsageSchedule {
+    fn default() -> Self {
+        Self {
+            monday: true,
+            tuesday: true,
+            wednesday: true,
+            thursday: true,
+            friday: true,
+            saturday: true,
+            sunday: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ProviderConfig {
@@ -231,6 +264,9 @@ pub struct ProviderConfig {
     /// the worst across every selected headline; `"none"` contributes nothing;
     /// otherwise the named metric alone.
     pub tray_metric: Option<String>,
+    /// The weekdays this account is expected to be used on. All seven by
+    /// default, which is indistinguishable from the field never existing.
+    pub usage_schedule: UsageSchedule,
     /// Provider-specific knobs (endpoint overrides, token price, …).
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
@@ -248,6 +284,7 @@ impl Default for ProviderConfig {
             mini_summary_metric: None,
             mini_summary_metrics: None,
             tray_metric: None,
+            usage_schedule: UsageSchedule::default(),
             settings: Default::default(),
         }
     }
@@ -1015,6 +1052,75 @@ mod tests {
         };
         cfg.save(dir.path()).unwrap();
         assert_eq!(load(dir.path()).mini_anchor, cfg.mini_anchor);
+    }
+
+    fn all_seven(schedule: &UsageSchedule) -> bool {
+        schedule.monday
+            && schedule.tuesday
+            && schedule.wednesday
+            && schedule.thursday
+            && schedule.friday
+            && schedule.saturday
+            && schedule.sunday
+    }
+
+    #[test]
+    fn usage_schedule_defaults_to_all_seven_days() {
+        assert!(all_seven(&UsageSchedule::default()));
+        // Every preset account carries the all-seven default, so a fresh
+        // config is indistinguishable from a build before the field existed.
+        for provider in Config::default().providers.values() {
+            assert!(all_seven(&provider.usage_schedule), "{provider:?}");
+        }
+    }
+
+    #[test]
+    fn config_without_usage_schedule_loads_all_seven_days() {
+        // A config.json written before the field existed must load with every
+        // day active — an absent schedule is "used all seven days", never an
+        // account that is suddenly paced across zero days.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"version":2,"providers":{"claude":{"enabled":true}}}"#,
+        )
+        .unwrap();
+        let loaded = load(dir.path());
+        assert!(all_seven(&loaded.providers["claude"].usage_schedule));
+    }
+
+    #[test]
+    fn usage_schedule_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        let schedule = UsageSchedule {
+            saturday: false,
+            sunday: false,
+            ..UsageSchedule::default()
+        };
+        cfg.providers.get_mut("claude").unwrap().usage_schedule = schedule;
+        cfg.save(dir.path()).unwrap();
+
+        let reloaded = load(dir.path()).providers["claude"].usage_schedule;
+        assert_eq!(reloaded, schedule);
+        assert!(!reloaded.saturday && !reloaded.sunday);
+        assert!(all_seven(&UsageSchedule::default()));
+    }
+
+    #[test]
+    fn a_partial_usage_schedule_keeps_unspecified_days_active() {
+        // A hand-edited schedule that names only the days it switches off must
+        // not silently turn the unmentioned days off — the all-seven default is
+        // the base, and an explicit `false` is the exception.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"version":2,"providers":{"claude":{"enabled":true,"usage_schedule":{"sunday":false}}}}"#,
+        )
+        .unwrap();
+        let schedule = load(dir.path()).providers["claude"].usage_schedule;
+        assert!(!schedule.sunday);
+        assert!(schedule.monday && schedule.saturday);
     }
 
     #[test]
