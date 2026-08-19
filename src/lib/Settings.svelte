@@ -13,7 +13,7 @@
     { id: 'elevenlabs', name: 'ElevenLabs', secret: 'API key', note: 'Create a key at elevenlabs.io/app/settings/api-keys.' },
     { id: 'firecrawl', name: 'Firecrawl', secret: 'API key', note: 'Create a key at firecrawl.dev/app/api-keys.' },
     { id: 'deepseek', name: 'DeepSeek', secret: 'API key', note: 'Create a key at platform.deepseek.com/api_keys.' },
-    { id: 'moonshot', name: 'Moonshot', secret: 'API key', note: 'Create a key at platform.kimi.ai. Keys are platform-specific: a platform.kimi.com key needs its Balance URL changed to that host, or it returns 401.' },
+    { id: 'moonshot', name: 'Moonshot', secret: 'API key', note: 'Use an Open Platform API key for monetary balance, or sign in with Kimi Code to show subscription quotas. Platform keys are host-specific: a platform.kimi.com key needs its Balance URL changed to that host.' },
     { id: 'venice', name: 'Venice', secret: 'API key', note: 'Create a key at venice.ai. Reports USD and DIEM balances; pick which one heads the card below. The other is shown for reference.' },
     { id: 'onehop', name: 'OneHop', secret: 'API key', note: 'Create a key in the OneHop console. Gateway wallet balance. The balance endpoint is undocumented, so it may change without notice.' },
     { id: 'fireworks', name: 'Fireworks', secret: 'API key', note: 'Create a key at fireworks.ai/account/api-keys. Needs the account ID too. Reports spend, not a balance: set a monthly budget to see it as a percentage.' },
@@ -44,6 +44,7 @@
   let codex = $state({});
   // Grok uses the same device flow as Codex; Rust emits `grok-oauth`.
   let grok = $state({});
+  let kimi = $state({});
   // Native Wayland can't honour always-on-top, so the popup sinks behind other
   // windows regardless of the click-away setting. Worth saying so in place.
   let onWayland = $state(false);
@@ -193,6 +194,7 @@
       if (kind === 'claude') oauthFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
       if (kind === 'codex') codexFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
       if (kind === 'grok') grokFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
+      if (kind === 'moonshot') kimiFor(id).signedIn = await invoke('has_secret', { provider: `${id}_oauth` });
     }
     onWayland = await invoke('on_wayland');
     await refreshDesktop();
@@ -267,6 +269,7 @@
     void initialiseSettings();
     let unlisten;
     let unlistenGrok;
+    let unlistenKimi;
     let unlistenUpdate;
     let unlistenAnchor;
     // Rust owns the anchor and writes it when the summary is dragged. This
@@ -302,6 +305,16 @@
         flow.status = e.payload.error;
       }
     }).then((stop) => (unlistenGrok = stop));
+    listen('kimi-oauth', (e) => {
+      const flow = kimiFor(e.payload.provider);
+      if (e.payload.ok) {
+        flow.signedIn = true;
+        flow.status = '';
+        flow.userCode = '';
+      } else {
+        flow.status = e.payload.error;
+      }
+    }).then((stop) => (unlistenKimi = stop));
     listen('update', (e) => setUpdateStatus(e.payload))
       .then((stop) => (unlistenUpdate = stop))
       .catch(() => {});
@@ -317,6 +330,7 @@
     return () => {
       unlisten?.();
       unlistenGrok?.();
+      unlistenKimi?.();
       unlistenUpdate?.();
       unlistenAnchor?.();
       window.removeEventListener('keydown', escape, true);
@@ -326,6 +340,7 @@
   const newOauthFlow = () => ({ url: '', code: '', status: '', signedIn: false });
   const newCodexFlow = () => ({ userCode: '', url: '', status: '', signedIn: false });
   const newGrokFlow = () => ({ userCode: '', url: '', status: '', signedIn: false });
+  const newKimiFlow = () => ({ userCode: '', url: '', status: '', signedIn: false });
 
   function oauthFor(provider) {
     return (oauth[provider] ??= newOauthFlow());
@@ -339,6 +354,10 @@
     return (grok[provider] ??= newGrokFlow());
   }
 
+  function kimiFor(provider) {
+    return (kimi[provider] ??= newKimiFlow());
+  }
+
   // The markup reads these from inside `{@const}`, which compiles to a derived.
   // Deriveds must not write to state, so these never create a missing entry —
   // they fall back to a throwaway blank flow. Entries are created eagerly by
@@ -346,6 +365,7 @@
   const oauthView = (provider) => oauth[provider] ?? newOauthFlow();
   const codexView = (provider) => codex[provider] ?? newCodexFlow();
   const grokView = (provider) => grok[provider] ?? newGrokFlow();
+  const kimiView = (provider) => kimi[provider] ?? newKimiFlow();
 
   function ensureFlows() {
     for (const [id, account] of Object.entries(config.providers)) {
@@ -353,6 +373,7 @@
       if (kind === 'claude') oauthFor(id);
       if (kind === 'codex') codexFor(id);
       if (kind === 'grok') grokFor(id);
+      if (kind === 'moonshot') kimiFor(id);
     }
   }
 
@@ -390,6 +411,24 @@
   async function grokClear(provider) {
     await invoke('clear_secret', { provider: `${provider}_oauth` });
     grokFor(provider).signedIn = false;
+  }
+
+  async function kimiStart(provider) {
+    const flow = kimiFor(provider);
+    flow.status = 'waiting';
+    try {
+      const r = await invoke('kimi_oauth_start', { provider });
+      flow.userCode = r.user_code;
+      flow.url = r.verification_url;
+    } catch (e) {
+      flow.status = String(e);
+      flow.userCode = '';
+    }
+  }
+
+  async function kimiClear(provider) {
+    await invoke('clear_secret', { provider: `${provider}_oauth` });
+    kimiFor(provider).signedIn = false;
   }
 
   async function oauthStart(provider) {
@@ -501,7 +540,7 @@
     const task = (async () => {
       const kind = config.providers[id].kind ?? id;
       await invoke('clear_secret', { provider: id });
-      if (kind === 'claude' || kind === 'codex' || kind === 'grok') await invoke('clear_secret', { provider: `${id}_oauth` });
+      if (kind === 'claude' || kind === 'codex' || kind === 'grok' || kind === 'moonshot') await invoke('clear_secret', { provider: `${id}_oauth` });
       delete config.providers[id];
     })();
     pendingRemovals.add(task);
@@ -706,7 +745,7 @@
               </select>
             </label>
           {/if}
-          {#if p.secret}
+          {#if p.secret && (p.id !== 'moonshot' || account.settings.auth_mode !== 'kimi_code')}
             <div class="row">
               <input
                 type="password"
@@ -717,6 +756,37 @@
                 <button class="small" onclick={() => clearSecret(id)}>Clear</button>
               {/if}
             </div>
+          {/if}
+          {#if p.id === 'moonshot'}
+            {@const kimiFlow = kimiView(id)}
+            <label class="field">Usage source
+              <select bind:value={account.settings.auth_mode}>
+                <option value={undefined}>Open Platform API key balance</option>
+                <option value="kimi_code">Kimi Code subscription usage</option>
+              </select>
+            </label>
+            {#if account.settings.auth_mode === 'kimi_code'}
+              <div class="row">
+                {#if kimiFlow.signedIn}
+                  <span class="test good">Kimi Code sign-in active ✓</span>
+                  <button class="small" onclick={() => kimiClear(id)}>Sign out</button>
+                {:else}
+                  <button class="small" onclick={() => kimiStart(id)}>Sign in with Kimi Code…</button>
+                {/if}
+              </div>
+              {#if kimiFlow.userCode}
+                <p class="note">
+                  A browser window opened (or open this link yourself):
+                  <span class="wrap">{kimiFlow.url}</span><br />
+                  Enter this code to authorize:
+                </p>
+                <p class="device-code">{kimiFlow.userCode}</p>
+                <p class="note">Waiting for authorization…</p>
+              {/if}
+              {#if kimiFlow.status && kimiFlow.status !== 'waiting'}
+                <p class="test bad">{kimiFlow.status}</p>
+              {/if}
+            {/if}
           {/if}
           {#if p.id === 'claude'}
             {@const claudeFlow = oauthView(id)}
@@ -879,7 +949,7 @@
               />
             </label>
           {/if}
-          {#if p.id === 'moonshot'}
+          {#if p.id === 'moonshot' && account.settings.auth_mode !== 'kimi_code'}
             <label class="field">Balance URL
               <input
                 type="text"
