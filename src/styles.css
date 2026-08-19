@@ -897,3 +897,44 @@ select option {
   gap: 8px;
   justify-content: flex-end;
 }
+
+/* Seven-weekday toggle editor for an account's usage schedule. A flat row of
+   compact day toggles rather than a menu: the whole schedule is visible at
+   once, so the working-days shape (Mon–Fri, weekends off, …) reads without
+   opening anything. */
+.schedule-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.schedule-label {
+  flex-shrink: 0;
+}
+
+.schedule-toggles {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.schedule-day {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.schedule-day input {
+  width: auto;
+  margin: 0;
+}
+
+.schedule-day span {
+  font-size: 12px;
+}

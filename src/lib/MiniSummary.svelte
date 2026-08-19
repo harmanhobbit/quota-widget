@@ -87,7 +87,7 @@
     return () => clearInterval(t);
   });
 
-  const periodProgress = (w) => fmtPeriodProgress(w, now);
+  const periodProgress = (w, schedule) => fmtPeriodProgress(w, now, schedule);
 
   // Horizontal distance from the pointer at which the period marker starts to
   // grow, and the distance within which its tooltip is armed. Pixels, not
@@ -142,12 +142,17 @@
   // `null` selection means automatic, which still resolves to a single row.
   function summarize(snap) {
     const selected = config?.providers?.[snap.provider_id]?.mini_summary_metrics;
+    // The account's usage schedule, looked up the same way as the metric
+    // selection above: the summary holds config alongside its snapshots, so a
+    // schedule edited in Settings reaches this surface through the `config`
+    // event without waiting for the next poll.
+    const schedule = config?.providers?.[snap.provider_id]?.usage_schedule;
     if (selected?.length === 0) return [];
     if (snap.error) return [{ text: 'unavailable', level: 'stale' }];
     if (selected) {
       // A selected informational allowance is still a valid headline; it
       // never changes the tray's separate status and alert calculations.
-      const rows = selected.map((metric) => metricSummary(snap, metric)).filter(Boolean);
+      const rows = selected.map((metric) => metricSummary(snap, metric, schedule)).filter(Boolean);
       // Every chosen metric having vanished from the snapshot is worth saying
       // out loud rather than silently dropping the account.
       return rows.length > 0 ? rows : [{ text: 'no data', level: 'stale' }];
@@ -155,32 +160,32 @@
     const gating = snap.windows.filter((w) => !w.informational);
     if (gating.length > 0) {
       const worst = gating.reduce((a, b) => (b.used_pct > a.used_pct ? b : a));
-      return [windowSummary(worst)];
+      return [windowSummary(worst, schedule)];
     }
     if (snap.credits) return [creditSummary(snap.credits)];
     return [{ text: 'no data', level: 'stale' }];
   }
 
-  function metricSummary(snap, metric) {
+  function metricSummary(snap, metric, schedule) {
     if (metric === 'credits') return snap.credits ? creditSummary(snap.credits) : null;
     if (!metric.startsWith('window:')) return null;
     const metricId = metric.slice('window:'.length);
     const window = snap.windows.find((candidate) => candidate.metric_id === metricId);
-    return window ? windowSummary(window) : null;
+    return window ? windowSummary(window, schedule) : null;
   }
 
   const CURRENCY_SYMBOLS = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
 
   // The number is its own right-aligned column so a "0%" lines up under a
   // "100%" and every label after it still starts in the same place.
-  const windowSummary = (window) => ({
+  const windowSummary = (window, schedule) => ({
     value: `${window.used_pct.toFixed(0)}%`,
     label: window.label,
     level: levelOf(window.used_pct),
     // Negative usage is a real rollover/bonus state, but CSS has no useful
     // negative bar width. Keep the signed number while drawing an empty bar.
     pct: Math.max(0, Math.min(window.used_pct, 100)),
-    progress: periodProgress(window),
+    progress: periodProgress(window, schedule),
     // Kept so the period marker's tooltip can read the reset time. The row
     // itself shows no countdown, which is what makes that tooltip worth having.
     window,

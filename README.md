@@ -148,6 +148,15 @@ compact row focused. Choose None to omit the account from the compact summary.
 The selected value can also contribute to the tray icon's status and gauge;
 this does not change alerts or card status.
 
+Each account can also set a **usage schedule** — the weekdays it's expected to
+be used on. A weekly window's period marker then paces across those days and
+holds flat on the others, so a Monday–Friday work account's marker advances
+about a fifth of the allowance per working day and freezes over the weekend.
+All seven days on (the default) is identical to the raw calendar marker, so
+nothing changes until you opt in. The schedule is purely visual: it never
+changes the usage fill, status colours, alerts, or tray gauge, and non-weekly
+windows (rolling 5-hour, monthly, credits) keep the raw calendar marker.
+
 Only the Settings fields scroll: **Save & close** sits in a fixed footer at the
 bottom of the window, with the app version beneath it, so the commit action is
 reachable from anywhere in the form. Save is the only thing that writes — if it
