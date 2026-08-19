@@ -189,11 +189,9 @@ pub fn providers_for(cfg: &Config) -> Vec<Box<dyn Provider>> {
                     label,
                     &deepseek::SPEC,
                 )) as Box<dyn Provider>),
-                "moonshot" => Some(Box::new(simple_credits::SimpleCredits::new(
-                    key.clone(),
-                    label,
-                    &moonshot::SPEC,
-                )) as Box<dyn Provider>),
+                "moonshot" => {
+                    Some(Box::new(moonshot::Moonshot::new(key.clone(), label)) as Box<dyn Provider>)
+                }
                 "venice" => {
                     Some(Box::new(venice::Venice::new(key.clone(), label)) as Box<dyn Provider>)
                 }
