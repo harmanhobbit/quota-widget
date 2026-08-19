@@ -63,6 +63,10 @@ jobs:
       # component that throws while rendering. That gap has shipped
       # user-visible breakage twice, so build alone is not the gate.
       - run: npm run build
+      # vitest scopes its suite to pure modules (period.js) under Node, via
+      # vitest.config.js. The repo's only JS test runner, introduced with the
+      # usage-schedule marker math (#120).
+      - run: npm test
       # smoke-mount mounts every top-level component under jsdom with the Tauri
       # IPC stubbed and fails if one throws or renders nothing — the Svelte 5
       # runtime failures the compiler and `vite build` both miss. jsdom is
