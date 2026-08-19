@@ -63,6 +63,10 @@ function provider(over) {
     mini_summary_metric: null,
     mini_summary_metrics: null,
     tray_metric: null,
+    // All seven active: identical to the field being absent, which is what a
+    // config predating the schedule serializes. Keep in sync with
+    // crates/quota-core/src/config.rs `UsageSchedule::default`.
+    usage_schedule: { monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, saturday: true, sunday: true },
     settings: {},
     ...over,
   };
@@ -142,6 +146,36 @@ async function settle(flushSync, turns = 5) {
 // Every component under test, with the props App would really pass. Settings
 // takes its config as a prop that has been through $state in App, so it
 // arrives as a proxy — mirror that exactly, since it is what broke it before.
+
+// A weekly window one day into a 7-day period, anchored to now so the calendar
+// marker sits at ~1/7 regardless of when the suite runs. Used by the
+// usage-schedule marker cases below.
+function weeklyWindowOneDayIn() {
+  const now = Date.now();
+  return {
+    metric_id: 'weekly',
+    label: 'Weekly',
+    used_pct: 50,
+    informational: false,
+    period_start: new Date(now - 24 * 60 * 60_000).toISOString(),
+    resets_at: new Date(now + 6 * 24 * 60 * 60_000).toISOString(),
+  };
+}
+// getDay() is Sunday 0 … Saturday 6; the schedule keys are weekday names.
+const SCHEDULE_DAY_KEYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+function allDaysSchedule() {
+  return Object.fromEntries(SCHEDULE_DAY_KEYS.map((k) => [k, true]));
+}
+// Deactivate the two weekdays the elapsed portion [start, now] falls across,
+// so no scheduled time has elapsed yet and the scheduled marker sits at 0%.
+function elapsedDaysOffSchedule() {
+  const s = allDaysSchedule();
+  const now = Date.now();
+  s[SCHEDULE_DAY_KEYS[new Date(now).getDay()]] = false;
+  s[SCHEDULE_DAY_KEYS[new Date(now - 24 * 60 * 60_000).getDay()]] = false;
+  return s;
+}
+
 const CASES = [
   {
     file: 'src/App.svelte',
@@ -850,6 +884,44 @@ const CASES = [
       if (!footer.querySelector('.version')) throw new Error('the version left the footer on a failed save');
     },
   },
+  // The per-account usage schedule editor: seven weekday toggles, all on by
+  // default, and unchecking one persists through Save. A config that predates
+  // the field (no usage_schedule at all) must load with all seven on rather
+  // than leaving the toggles unset, mirroring the Rust serde default.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => {
+      const cfg = structuredClone(CONFIG);
+      // Simulate an upgrade: the field is entirely absent from an old file.
+      delete cfg.providers.claude.usage_schedule;
+      return { initialConfig: $.proxy(cfg), snapshots: structuredClone(SNAPSHOTS), onclose() {} };
+    },
+    expect: ['Usage days'],
+    verify: async ({ target, flushSync }) => {
+      const card = (name) => [...target.querySelectorAll('.provider')]
+        .find((el) => el.querySelector('strong').textContent.trim() === name);
+      card('Claude').querySelector('.provider-disclosure').click();
+      flushSync();
+      const toggles = [...card('Claude').querySelectorAll('.schedule-day input')];
+      if (toggles.length !== 7) throw new Error(`schedule editor had ${toggles.length} toggles, expected 7`);
+      // An absent field loads as all-seven, not as seven unset checkboxes.
+      if (!toggles.every((t) => t.checked)) {
+        throw new Error('an absent usage_schedule did not default to all seven on');
+      }
+      toggles[0].click();
+      flushSync();
+      if (toggles[0].checked) throw new Error('clicking a schedule toggle did not uncheck it');
+      target.querySelector('.primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const saved = globalThis.__SMOKE_LAST_CONFIG__;
+      const keys = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+      const vals = keys.map((k) => saved?.providers?.claude?.usage_schedule?.[k]);
+      // The first toggle is Mon; the rest stay on. All seven keys must save.
+      if (vals.length !== 7 || vals[0] !== false || !vals.slice(1).every((v) => v === true)) {
+        throw new Error(`saved schedule was ${JSON.stringify(vals)}`);
+      }
+    },
+  },
   // Ordering: the basis select is inert while the order is Manual, both
   // selects reach Rust as the snake_case strings serde expects, and a config
   // predating the feature fills them in rather than saving nulls.
@@ -1164,6 +1236,38 @@ const CASES = [
       if (bars[1].querySelector('.period-mark')) {
         throw new Error('window without a period start still drew a marker');
       }
+    },
+  },
+  // The usage schedule reshapes a weekly window's marker. Two cases share one
+  // window anchored to now — a 7-day period one day in — so the calendar marker
+  // sits at ~1/7. With all seven days active the scheduled marker is the
+  // calendar marker (criterion: all-seven renders exactly as before). With the
+  // two weekdays the elapsed portion falls on deactivated, the scheduled
+  // marker freezes at 0% — proving the schedule reaches the computation and
+  // changes the result, without hardcoding a brittle fraction. The precise
+  // scheduled math is covered by period.test.js; this proves the wiring.
+  // getDay() is Sunday 0 … Saturday 6; the schedule keys are weekday names.
+  {
+    file: 'src/lib/shared/UsageCard.svelte',
+    props: () => ({ snap: { provider_name: 'Claude', fetched_at: new Date().toISOString(), error: null, credits: null, windows: [weeklyWindowOneDayIn()] }, schedule: allDaysSchedule() }),
+    verify: ({ target }) => {
+      const mark = target.querySelector('.bar .period-mark');
+      if (!mark) throw new Error('weekly window with an all-seven schedule drew no marker');
+      const pct = parseFloat(mark.style.left);
+      // 1 day into a 7-day window → ~14.3%. The marker is the calendar fraction.
+      if (!(pct > 13 && pct < 16)) throw new Error(`all-seven schedule marker sat at ${mark.style.left}, expected ~14%`);
+    },
+  },
+  {
+    file: 'src/lib/shared/UsageCard.svelte',
+    props: () => ({ snap: { provider_name: 'Claude', fetched_at: new Date().toISOString(), error: null, credits: null, windows: [weeklyWindowOneDayIn()] }, schedule: elapsedDaysOffSchedule() }),
+    verify: ({ target }) => {
+      const mark = target.querySelector('.bar .period-mark');
+      if (!mark) throw new Error('weekly window with a schedule drew no marker');
+      const pct = parseFloat(mark.style.left);
+      // The elapsed portion falls on deactivated days, so the scheduled marker
+      // is frozen at 0% where the calendar marker would sit at ~14%.
+      if (pct !== 0) throw new Error(`deactivated-elapsed schedule marker sat at ${mark.style.left}, expected 0%`);
     },
   },
   // Spend with no budget configured: the label must prefix the amount, so the

@@ -23,6 +23,23 @@
   ];
   const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secret: null, note: 'Unknown provider kind.' };
 
+  // The weekdays a usage schedule can toggle, in display order. The keys match
+  // quota-core's serialized `UsageSchedule` field names, so a checked set
+  // round-trips through Rust without translation. All seven on by default is
+  // indistinguishable from the field never existing — the raw calendar marker
+  // every build before the schedule drew. The editor is shown on every
+  // account: it is harmless where there is no weekly window to reshape.
+  const WEEKDAYS = [
+    { key: 'monday', label: 'Mon' },
+    { key: 'tuesday', label: 'Tue' },
+    { key: 'wednesday', label: 'Wed' },
+    { key: 'thursday', label: 'Thu' },
+    { key: 'friday', label: 'Fri' },
+    { key: 'saturday', label: 'Sat' },
+    { key: 'sunday', label: 'Sun' },
+  ];
+  const allDaysActive = () => Object.fromEntries(WEEKDAYS.map((d) => [d.key, true]));
+
   // `initialConfig` arrives as a Svelte state proxy, which structuredClone
   // rejects. $state.snapshot is the proxy-aware deep clone.
   const settingsConfig = () => $state.snapshot(initialConfig);
@@ -180,6 +197,9 @@
       // and `null` mean different things to the pickers.
       account.mini_summary_metrics ??= null;
       account.tray_metric ??= null;
+      // Same forward-compat guarantee as the fields above: an absent schedule
+      // means all-seven (the pre-schedule default), not "no schedule object".
+      account.usage_schedule ??= allDaysActive();
     }
     ensureFlows();
     invoke('app_version').then((version) => (appVersion = version)).catch(() => {});
@@ -487,7 +507,7 @@
     // Start extra accounts with the same provider configuration as the first
     // configured account of this kind. Credentials remain account-specific.
     const template = Object.entries(config.providers).find(([id, p]) => (p.kind ?? id) === newKind)?.[1];
-    config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, mini_summary_metric: null, mini_summary_metrics: null, tray_metric: null, settings: $state.snapshot(template?.settings ?? {}) };
+    config.providers[key] = { kind: newKind, label: newName.trim() || `${info.name} ${n}`, enabled: true, in_tray: true, thresholds: null, alerts: null, low_balance_warn: null, mini_summary_metric: null, mini_summary_metrics: null, tray_metric: null, usage_schedule: allDaysActive(), settings: $state.snapshot(template?.settings ?? {}) };
     ensureFlows();
     // A brand-new account needs configuring, so open it rather than leaving a
     // collapsed row that looks like nothing happened.
@@ -706,6 +726,23 @@
               </select>
             </label>
           {/if}
+          <div class="field schedule-picker">
+            <span class="schedule-label">Usage days</span>
+            <!-- Paces only a weekly window's period marker across the days this
+                 account is actually used (ADR-0007); every other window and
+                 the fill, status and alerts are untouched. All seven on is the
+                 default and is identical to the raw calendar marker, so this
+                 editor is shown on every account — harmless where there is no
+                 weekly window to reshape. -->
+            <div class="schedule-toggles">
+              {#each WEEKDAYS as day}
+                <label class="schedule-day" title={day.label}>
+                  <input type="checkbox" bind:checked={account.usage_schedule[day.key]} />
+                  <span>{day.label}</span>
+                </label>
+              {/each}
+            </div>
+          </div>
           {#if p.secret}
             <div class="row">
               <input

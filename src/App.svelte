@@ -261,7 +261,7 @@
         </p>
       {:else}
         {#each snapshots as snap (snap.provider_id)}
-          <ProviderCard {snap} />
+          <ProviderCard {snap} schedule={appConfig?.providers?.[snap.provider_id]?.usage_schedule} />
         {/each}
       {/if}
     </div>

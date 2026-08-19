@@ -120,6 +120,12 @@
       mini_summary_metric: null,
       mini_summary_metrics: null,
       tray_metric: null,
+      // All seven on: identical to the field being absent, which is what
+      // quota-core's `UsageSchedule::default` reproduces on load. The mobile
+      // schedule editor is issue #123; this keeps the account shape consistent
+      // with desktop so a config written on either side loads the same on the
+      // other.
+      usage_schedule: { monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, saturday: true, sunday: true },
       settings,
     };
   }
@@ -294,7 +300,7 @@
         </p>
       {:else}
         {#each snapshots as snap (snap.provider_id)}
-          <UsageCard {snap} />
+          <UsageCard {snap} schedule={config?.providers?.[snap.provider_id]?.usage_schedule} />
         {/each}
       {/if}
     </div>

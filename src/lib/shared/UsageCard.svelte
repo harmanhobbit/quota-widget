@@ -2,7 +2,12 @@
   import { onMount } from 'svelte';
   import { resetsIn as fmtResetsIn, periodProgress as fmtPeriodProgress } from '../period.js';
 
-  let { snap } = $props();
+  // `schedule` is the account's `usage_schedule` (serialized quota-core
+  // `UsageSchedule`), looked up from config by the parent that owns this card.
+  // Omitted by callers that predate the schedule (e.g. a snapshot with no
+  // matching config entry), which `period.js` treats as the raw calendar marker
+  // — so a card with no schedule renders exactly as it always did.
+  let { snap, schedule } = $props();
 
   // Ticks once a minute so "resets in …" countdowns stay fresh between polls.
   let now = $state(Date.now());
@@ -12,7 +17,7 @@
   });
 
   const resetsIn = (iso) => fmtResetsIn(iso, now);
-  const periodProgress = (w) => fmtPeriodProgress(w, now);
+  const periodProgress = (w) => fmtPeriodProgress(w, now, schedule);
 
   function barClass(pct) {
     if (pct >= 95) return 'critical';
