@@ -44,6 +44,16 @@ keyring = { version = "3", features = ["windows-native"] }
 keyring-core = "1"
 android-native-keyring-store = "1"
 
+# Used directly on Linux so the alert path can call notify-rust's `show_async`,
+# which speaks zbus over the existing tokio runtime. Going through
+# tauri-plugin-notification's `show()` instead wraps notify-rust's *sync*
+# `show()` in `tauri::async_runtime::spawn`, and that sync path calls
+# `zbus::block_on` — which, with zbus's `tokio` feature (pulled in by ksni),
+# builds a nested multi-thread runtime and panics from inside a tokio worker
+# ("Cannot start a runtime from within a runtime"). See `poller::poll_once`.
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4"
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2.10.1"
 

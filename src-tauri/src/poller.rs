@@ -11,6 +11,7 @@ use quota_core::model::UsageSnapshot;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::AppHandle;
+#[cfg(not(target_os = "linux"))]
 use tauri_plugin_notification::NotificationExt;
 
 pub fn spawn(app: AppHandle, state: Arc<AppState>) {
@@ -84,12 +85,32 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
             _ => format!("{} — warning", event.provider_name),
         };
         if how.notify {
-            let _ = app
-                .notification()
-                .builder()
-                .title(&title)
-                .body(&event.message)
-                .show();
+            // On Linux, tauri-plugin-notification's `show()` wraps notify-rust's
+            // *sync* `show()` in `tauri::async_runtime::spawn`. That sync path
+            // calls `zbus::block_on`, which — with zbus's `tokio` feature
+            // (enabled by ksni) — builds a nested multi-thread runtime and
+            // panics from inside a tokio worker ("Cannot start a runtime from
+            // within a runtime"). notify-rust's `show_async()` instead speaks
+            // zbus over the runtime already driving this task, so it is safe
+            // to await here. Windows and macOS don't go through zbus, so the
+            // plugin's path is fine there.
+            #[cfg(target_os = "linux")]
+            {
+                let _ = notify_rust::Notification::new()
+                    .summary(&title)
+                    .body(&event.message)
+                    .show_async()
+                    .await;
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = app
+                    .notification()
+                    .builder()
+                    .title(&title)
+                    .body(&event.message)
+                    .show();
+            }
         }
         if how.open_window {
             tray::show_popup(app, None);
