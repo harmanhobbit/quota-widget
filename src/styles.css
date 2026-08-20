@@ -258,6 +258,10 @@ button.primary {
   overflow: hidden;
   /* Anchors the period marker; overflow above clips it at both ends. */
   position: relative;
+  /* The press-and-hold peek needs the pointer events to itself: without this,
+     a touch that starts on the bar is claimed by the card list's scroll and
+     cancelled before a hold can register. */
+  touch-action: none;
 }
 
 /* How far through the window's period we are. It has to stay legible over the
@@ -407,6 +411,8 @@ button.primary {
 .hover-bar-target {
   position: absolute;
   inset: calc(var(--hover-bar-h) * -1) 0;
+  /* Holds the press-and-hold peek for the same reason as `.bar` above. */
+  touch-action: none;
 }
 
 /* The armed tooltip. Drawn in-window rather than as a native `title`, whose
