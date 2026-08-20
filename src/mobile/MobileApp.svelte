@@ -343,7 +343,7 @@
               headlineOpen={openHeadlineFor === id}
               onToggleHeadline={() => (openHeadlineFor = openHeadlineFor === id ? '' : id)}
               bind:expanded={expanded[id]}
-              onSignIn={() => kind === 'claude' ? startClaude(id) : startCodex(id)}
+              onSignIn={() => (account.kind ?? id) === 'claude' ? startClaude(id) : startCodex(id)}
               onCompleteClaude={(code) => finishClaude(id, code)}
               onPollCodex={() => pollCodex(id)}
               onCancel={() => cancelClaudeOrCodex(id)}
