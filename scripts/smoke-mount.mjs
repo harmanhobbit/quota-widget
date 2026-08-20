@@ -1474,6 +1474,77 @@ const CASES = [
       }
     },
   },
+  // MobileApp OAuth sign-in through the *parent* callback path (issue #134).
+  // The child-component OAuthAccount case above mounts OAuthAccount directly
+  // with its own working `onSignIn`, so it never exercises MobileApp's own
+  // dispatch arrow — which referenced a `kind` that is out of scope inside the
+  // provider `{#each}` and threw `kind is not defined` the instant Sign in was
+  // pressed. This mounts the whole shell with a Claude and a Codex OAuth
+  // account and drives both flows end to end: Sign in must reach the *right*
+  // start command (proving the selected provider was dispatched, not a crash),
+  // the pending state that comes back must switch the row into its
+  // paste/poll UI, and completing must reach finish/poll for that provider.
+  {
+    file: 'src/mobile/MobileApp.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, providers: { claude: provider({ enabled: true }), codex: provider({ enabled: true }) } },
+    verify: async ({ target, flushSync, signinCalls }) => {
+      // startClaude opens the authorize URL; jsdom's window.open is a noisy
+      // no-op, so stub it out rather than let it warn mid-run.
+      window.open = () => null;
+      const card = (name) => [...target.querySelectorAll('.provider')]
+        .find((el) => el.querySelector('strong')?.textContent.trim() === name);
+      const button = (root, text) => [...root.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === text);
+
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+
+      // Claude: expand, Sign in → the parent must dispatch start_claude_signin
+      // for *this* provider. Before the fix this line threw before any command
+      // was sent, so the assertion is both "no crash" and "right provider".
+      const claude = card('Claude');
+      if (!claude) throw new Error('the Claude OAuth row did not render');
+      claude.querySelector('.provider-disclosure').click();
+      flushSync();
+      button(claude, 'Sign in with Claude').click();
+      await settle(flushSync);
+      if (!signinCalls().includes('start_claude_signin:claude')) {
+        throw new Error(`Sign in did not dispatch the Claude start command: ${signinCalls().join(',') || 'nothing'}`);
+      }
+      // The pending state that came back must switch the row to paste-back.
+      const codeInput = card('Claude').querySelector('input[placeholder="code#state"]');
+      if (!codeInput) throw new Error('a pending Claude sign-in did not reveal the code paste field');
+      codeInput.value = 'the-code#the-state';
+      codeInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+      flushSync();
+      button(card('Claude'), 'Complete sign-in').click();
+      await settle(flushSync);
+      if (!signinCalls().includes('finish_claude_signin:claude#the-code#the-state')) {
+        throw new Error(`Complete sign-in did not reach finish_claude_signin: ${signinCalls().join(',')}`);
+      }
+
+      // Codex: the other branch of the same dispatch arrow must reach the Codex
+      // start command, and its pending state polls rather than pastes.
+      const codex = card('Codex');
+      if (!codex) throw new Error('the Codex OAuth row did not render');
+      codex.querySelector('.provider-disclosure').click();
+      flushSync();
+      button(codex, 'Sign in with Codex').click();
+      await settle(flushSync);
+      if (!signinCalls().includes('start_codex_signin:codex')) {
+        throw new Error(`Sign in did not dispatch the Codex start command: ${signinCalls().join(',') || 'nothing'}`);
+      }
+      if (!card('Codex').textContent.includes('SMOKE-CODE')) {
+        throw new Error('a pending Codex sign-in did not show the device user code');
+      }
+      button(card('Codex'), 'I entered the code — check').click();
+      await settle(flushSync);
+      if (!signinCalls().includes('poll_codex_signin:codex')) {
+        throw new Error(`the Codex check did not reach poll_codex_signin: ${signinCalls().join(',')}`);
+      }
+    },
+  },
 ];
 
 function stubTauri() {
@@ -1512,15 +1583,42 @@ export async function invoke(cmd, args) {
     case 'mark_desktop_integration_prompted':
       globalThis.__SMOKE_DESKTOP_CALLS__.push('prompted'); return null;
     case 'restart_app': globalThis.__SMOKE_RESTARTED__ = true; return null;
-    // Mobile-only sign-in commands (issue #110). The smoke harness has no real
-    // browser or OAuth server, so start/finish/poll are no-ops that return the
-    // shapes the UI expects. A real Android build exercises the actual flows.
+    // Mobile-only sign-in commands (issue #110/#134). The smoke harness has no
+    // real browser or OAuth server, so start/finish/poll stand in for the Rust
+    // host — but they are stateful over the pending list and record which
+    // command the *parent* dispatched, so a case can prove MobileApp's callback
+    // selected the right provider (the "kind is not defined" defect, #134) and
+    // drove the pending -> signed-in transition. A real Android build exercises
+    // the actual OAuth flows.
     case 'get_pending_signins': return globalThis.__SMOKE_PENDING_SIGNINS__ ?? [];
-    case 'start_claude_signin': return 'https://claude.ai/oauth/authorize?smoke=1';
-    case 'finish_claude_signin': return null;
-    case 'start_codex_signin': return { user_code: 'SMOKE-CODE', verification_url: 'https://auth.openai.com/codex/device' };
-    case 'poll_codex_signin': return 'complete';
-    case 'cancel_signin': return null;
+    case 'start_claude_signin':
+      (globalThis.__SMOKE_SIGNIN_CALLS__ ??= []).push(\`start_claude_signin:\${args.provider}\`);
+      (globalThis.__SMOKE_PENDING_SIGNINS__ ??= []).push({
+        provider_key: args.provider, kind: 'claude_pkce',
+        user_code: null, verification_url: null,
+        expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+      });
+      return 'https://claude.ai/oauth/authorize?smoke=1';
+    case 'finish_claude_signin':
+      (globalThis.__SMOKE_SIGNIN_CALLS__ ??= []).push(\`finish_claude_signin:\${args.provider}#\${args.code}\`);
+      globalThis.__SMOKE_PENDING_SIGNINS__ = (globalThis.__SMOKE_PENDING_SIGNINS__ ?? []).filter((p) => p.provider_key !== args.provider);
+      return null;
+    case 'start_codex_signin':
+      (globalThis.__SMOKE_SIGNIN_CALLS__ ??= []).push(\`start_codex_signin:\${args.provider}\`);
+      (globalThis.__SMOKE_PENDING_SIGNINS__ ??= []).push({
+        provider_key: args.provider, kind: 'codex_device',
+        user_code: 'SMOKE-CODE', verification_url: 'https://auth.openai.com/codex/device',
+        expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+      });
+      return { user_code: 'SMOKE-CODE', verification_url: 'https://auth.openai.com/codex/device' };
+    case 'poll_codex_signin':
+      (globalThis.__SMOKE_SIGNIN_CALLS__ ??= []).push(\`poll_codex_signin:\${args.provider}\`);
+      globalThis.__SMOKE_PENDING_SIGNINS__ = (globalThis.__SMOKE_PENDING_SIGNINS__ ?? []).filter((p) => p.provider_key !== args.provider);
+      return 'complete';
+    case 'cancel_signin':
+      (globalThis.__SMOKE_SIGNIN_CALLS__ ??= []).push(\`cancel_signin:\${args.provider}\`);
+      globalThis.__SMOKE_PENDING_SIGNINS__ = (globalThis.__SMOKE_PENDING_SIGNINS__ ?? []).filter((p) => p.provider_key !== args.provider);
+      return null;
     default: return null;
   }
 }`);
@@ -1679,6 +1777,8 @@ for (const c of CASES) {
     globalThis.__SMOKE_INSTALLING_TEXT__ = '';
     globalThis.__SMOKE_SHELL_CALLS__ = [];
     globalThis.__SMOKE_SIZES__ = [];
+    globalThis.__SMOKE_PENDING_SIGNINS__ = c.pendingSignins ?? [];
+    globalThis.__SMOKE_SIGNIN_CALLS__ = [];
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle
@@ -1688,7 +1788,8 @@ for (const c of CASES) {
     // seam in both directions without reaching into component internals.
     const shellCalls = () => globalThis.__SMOKE_SHELL_CALLS__;
     const sizes = () => globalThis.__SMOKE_SIZES__;
-    await c.verify?.({ target, flushSync, emit, shellCalls, sizes });
+    const signinCalls = () => globalThis.__SMOKE_SIGNIN_CALLS__;
+    await c.verify?.({ target, flushSync, emit, shellCalls, sizes, signinCalls });
   } catch (e) {
     console.error(`FAIL ${c.file}\n      ${String(e.message).split('\n')[0]}`);
     failed++;
