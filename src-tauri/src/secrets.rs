@@ -266,25 +266,16 @@ pub fn load_all_reporting_errors(
     })
 }
 
-/// The pure classification `load_all_reporting_errors` is built from,
-/// factored out so it can be unit-tested against a fake backend — a real
-/// Android Keystore decrypt failure can't be produced in this test suite.
+/// The pure classification `load_all_reporting_errors` is built from. The
+/// absent/present/unavailable contract itself lives in
+/// `quota_core::secret_store::classify` (and is unit-tested there, by the cheap
+/// Linux CI that never compiles this platform crate); this is the thin adapter
+/// that runs the real per-platform backend through it.
 fn classify_secrets(
     keys: Vec<String>,
-    mut lookup: impl FnMut(&str) -> Result<Option<String>, String>,
+    lookup: impl FnMut(&str) -> Result<Option<String>, String>,
 ) -> (HashMap<String, String>, Vec<String>) {
-    let mut values = HashMap::new();
-    let mut failed = Vec::new();
-    for key in keys {
-        match lookup(&key) {
-            Ok(Some(value)) => {
-                values.insert(key, value);
-            }
-            Ok(None) => {}
-            Err(_) => failed.push(key),
-        }
-    }
-    (values, failed)
+    quota_core::secret_store::classify(keys, lookup)
 }
 
 #[cfg(test)]

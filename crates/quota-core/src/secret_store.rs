@@ -205,6 +205,65 @@ pub fn get(dir: &Path, key: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// The three end-to-end states a configured secret can be in. Keeping them
+/// distinct is the whole point of issue #133: a secure-storage failure must
+/// never be collapsed into "nothing was ever stored", because the two call for
+/// opposite fixes (re-paste vs. paste-for-the-first-time) and because silently
+/// treating a decrypt failure as absent would invite overwriting ciphertext
+/// that a later, healthy read could have recovered.
+///
+/// A backend read is `Result<Option<String>, String>`: `Ok(Some)` /`Ok(None)` /
+/// `Err` map one-to-one onto these. Only a `set`/`clear` ever changes what is
+/// stored — classifying a read can never mutate the ciphertext.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretState {
+    /// Nothing is stored under this key.
+    Absent,
+    /// Stored and successfully read back.
+    Present(String),
+    /// Ciphertext exists but the backend could not return it (e.g. an Android
+    /// Keystore decrypt failure). The wrapped string is the backend's error,
+    /// kept for logging only — the ciphertext itself is untouched.
+    Unavailable(String),
+}
+
+impl SecretState {
+    /// Classify one backend read. `Err` becomes [`SecretState::Unavailable`]
+    /// rather than being folded into [`SecretState::Absent`].
+    pub fn from_read(read: Result<Option<String>, String>) -> Self {
+        match read {
+            Ok(Some(value)) => SecretState::Present(value),
+            Ok(None) => SecretState::Absent,
+            Err(e) => SecretState::Unavailable(e),
+        }
+    }
+}
+
+/// Read every key through `lookup` and split the results into the decryptable
+/// values and the keys whose stored secret was *present but unavailable* — a
+/// storage failure, distinct from simply absent. This is the shared seam the
+/// Android host classifies secrets through (`secrets::load_all_reporting_errors`
+/// wraps it), lifted into `quota-core` so the absent/present/unavailable
+/// contract is unit-tested by the cheap Linux CI rather than only inside the
+/// platform crate. The `failed` list preserves `keys` order.
+pub fn classify(
+    keys: Vec<String>,
+    mut lookup: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> (std::collections::HashMap<String, String>, Vec<String>) {
+    let mut values = std::collections::HashMap::new();
+    let mut failed = Vec::new();
+    for key in keys {
+        match SecretState::from_read(lookup(&key)) {
+            SecretState::Present(value) => {
+                values.insert(key, value);
+            }
+            SecretState::Absent => {}
+            SecretState::Unavailable(_) => failed.push(key),
+        }
+    }
+    (values, failed)
+}
+
 pub fn set(dir: &Path, key: &str, value: &str) -> Result<(), String> {
     let mut map = read_map(dir)?.unwrap_or_default();
     map.insert(key.into(), value.into());
@@ -449,6 +508,95 @@ mod tests {
         set(dir.path(), &oauth_key("claude_work"), "token-work").unwrap();
         assert_eq!(get(dir.path(), "claude_oauth").unwrap(), "token-personal");
         assert_eq!(get(dir.path(), "claude_work_oauth").unwrap(), "token-work");
+    }
+
+    /// The seam the Android host reports storage failures through, exercised
+    /// against a fake backend since a real Keystore decrypt failure can't be
+    /// produced in this suite. Absent, decryptable, and decrypt-failure must
+    /// land in three distinct buckets (issue #133).
+    #[test]
+    fn classify_separates_absent_present_and_unavailable() {
+        let keys = vec![
+            "present".to_string(),
+            "absent".to_string(),
+            "broken".to_string(),
+        ];
+        let (values, failed) = classify(keys, |key| match key {
+            "present" => Ok(Some("sk-live".to_string())),
+            "absent" => Ok(None),
+            "broken" => Err("Keystore key unusable after key rotation".to_string()),
+            other => panic!("unexpected key {other}"),
+        });
+        assert_eq!(values.get("present").map(String::as_str), Some("sk-live"));
+        assert!(!values.contains_key("absent"));
+        assert!(!values.contains_key("broken"));
+        assert_eq!(failed, vec!["broken".to_string()]);
+    }
+
+    /// A single shared storage failure (one service-level key) must surface for
+    /// *every* affected account, not just the first — the shared blast radius
+    /// the UI relies on to report the problem consistently.
+    #[test]
+    fn classify_reports_every_key_hit_by_a_shared_failure() {
+        let keys = vec!["openrouter".to_string(), "anthropic".to_string()];
+        let (values, mut failed) = classify(keys, |_| Err("Keystore unavailable".to_string()));
+        failed.sort();
+        assert!(values.is_empty());
+        assert_eq!(
+            failed,
+            vec!["anthropic".to_string(), "openrouter".to_string()]
+        );
+    }
+
+    #[test]
+    fn secret_state_maps_each_read_outcome() {
+        assert_eq!(
+            SecretState::from_read(Ok(Some("v".into()))),
+            SecretState::Present("v".into())
+        );
+        assert_eq!(SecretState::from_read(Ok(None)), SecretState::Absent);
+        assert_eq!(
+            SecretState::from_read(Err("boom".into())),
+            SecretState::Unavailable("boom".into())
+        );
+    }
+
+    /// A value written by one call must read back from an independent later
+    /// call — the file store reopens `secrets.json` on every `get`, so this is
+    /// the restart-equivalent read (a fresh process reads exactly the same way).
+    #[test]
+    fn a_stored_secret_survives_a_restart_equivalent_reread() {
+        let dir = tempfile::tempdir().unwrap();
+        set(dir.path(), "openrouter", "sk-or-persisted").unwrap();
+        // Nothing cached in-process: `get` goes back to disk, as a relaunched
+        // process would.
+        assert_eq!(
+            get(dir.path(), "openrouter"),
+            Some("sk-or-persisted".to_string())
+        );
+    }
+
+    /// The recovery path from an unusable credential: clear it, then re-paste a
+    /// working one and read it back — leaving any sibling secrets untouched.
+    #[test]
+    fn clearing_then_repasting_recovers_a_working_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        set(dir.path(), "openrouter", "sk-broken").unwrap();
+        set(dir.path(), "anthropic", "sk-ant-keep").unwrap();
+
+        clear(dir.path(), "openrouter").unwrap();
+        assert_eq!(get(dir.path(), "openrouter"), None);
+
+        set(dir.path(), "openrouter", "sk-or-fresh").unwrap();
+        assert_eq!(
+            get(dir.path(), "openrouter"),
+            Some("sk-or-fresh".to_string())
+        );
+        // The sibling secret was never disturbed by the recovery.
+        assert_eq!(
+            get(dir.path(), "anthropic"),
+            Some("sk-ant-keep".to_string())
+        );
     }
 
     #[test]
