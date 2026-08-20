@@ -2,11 +2,14 @@
 //!
 //! On Windows the Credential Manager is used (via the `keyring` crate), so the
 //! portable EXE leaves no plaintext secrets on disk. On Android, an app-only
-//! Android Keystore key is used instead (also via `keyring`, a different
-//! major version — see the `target_os = "android"` `backend` module below).
-//! Elsewhere (Linux dev runs) secrets fall back to an owner-only, atomically
-//! replaced JSON file in the config dir — `quota_core::secret_store`, which is
-//! where the permission and atomicity rules and their tests live.
+//! Android Keystore key is used instead via `keyring-core` plus
+//! `android-native-keyring-store`, with the store registered as keyring-core's
+//! default once at startup by `init_store` (the `keyring` crate's `v1`
+//! facade can't be used on Android — see the `target_os = "android"` `backend`
+//! module below). Elsewhere (Linux dev runs) secrets fall back to an
+//! owner-only, atomically replaced JSON file in the config dir —
+//! `quota_core::secret_store`, which is where the permission and atomicity
+//! rules and their tests live.
 
 use quota_core::config::Config;
 use std::collections::HashMap;
@@ -149,20 +152,23 @@ mod backend {
 /// Android Keystore-backed secret storage. An app-only, non-exportable AES
 /// key generated in `AndroidKeyStore` (no `setUserAuthenticationRequired`,
 /// matching the ADR's "usable by background work without biometric
-/// confirmation") encrypts each entry; see
-/// docs/adr/0006-…md.
+/// confirmation") encrypts each entry; see docs/adr/0006-…md.
 ///
-/// `keyring` 3.x — pinned above for Windows — has no Android backend at all
-/// (checked against its published Cargo.toml: no `target_os = "android"`
-/// section exists before v4). v4 restructured the crate around
-/// `keyring-core` "stores" and ships `android-native-keyring-store` as an
-/// Android-only optional dependency, exposed through the crate's `v1`
-/// feature as a facade documented to match the same `Entry::new(service,
-/// user).get_password()/.set_password()/.delete_credential()` shape v3 used
-/// — so this arm mirrors the Windows arm above call-for-call rather than
-/// sharing code with it, despite depending on a different major version of
-/// the same crate name (fine: Cargo resolves them independently since no
-/// single compiled target pulls in both).
+/// This arm talks to `keyring_core::Entry` directly rather than through the
+/// `keyring` crate's `v1` compatibility facade. The facade's one-time
+/// `set_credential_store` initializer (`keyring-4`'s `src/v1.rs`) has arms
+/// only for macOS, Windows, and non-Android *nix — on `target_os =
+/// "android"` it returns `Err(Invalid("platform", …))`, so
+/// `keyring::Entry::new` short-circuits to `NoDefaultStore` before ever
+/// touching the Keystore, and the facade simply cannot be used on Android.
+/// `init_store` (below) registers `android-native-keyring-store`'s `Store`
+/// as keyring-core's default once at startup instead, and this arm mirrors
+/// the Windows arm above call-for-call against the same `Entry::new(service,
+/// user).get_password()/.set_password()/.delete_credential()` shape — just
+/// on `keyring_core::Entry` rather than `keyring::Entry`. The two crate
+/// names never collide in one compiled target (Windows pins `keyring` 3,
+/// Android pulls `keyring-core` + the store directly), so Cargo resolves
+/// them independently.
 ///
 /// Unlike Windows, a failure here is a real, expected outcome — a corrupted
 /// or hardware-rotated Keystore key leaves old ciphertext undecryptable — so
@@ -174,23 +180,23 @@ mod backend {
     const SERVICE: &str = "quota-widget";
 
     pub fn get_result(_dir: &std::path::Path, provider: &str) -> Result<Option<String>, String> {
-        let entry = keyring::Entry::new(SERVICE, provider).map_err(|e| e.to_string())?;
+        let entry = keyring_core::Entry::new(SERVICE, provider).map_err(|e| e.to_string())?;
         match entry.get_password() {
             Ok(value) => Ok(Some(value)),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
             Err(e) => Err(e.to_string()),
         }
     }
 
     pub fn set(_dir: &std::path::Path, provider: &str, value: &str) -> Result<(), String> {
-        keyring::Entry::new(SERVICE, provider)
+        keyring_core::Entry::new(SERVICE, provider)
             .and_then(|e| e.set_password(value))
             .map_err(|e| e.to_string())
     }
 
     pub fn clear(_dir: &std::path::Path, provider: &str) -> Result<(), String> {
-        match keyring::Entry::new(SERVICE, provider).and_then(|e| e.delete_credential()) {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        match keyring_core::Entry::new(SERVICE, provider).and_then(|e| e.delete_credential()) {
+            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
             Err(e) => Err(e.to_string()),
         }
     }
@@ -209,6 +215,38 @@ mod backend {
     pub fn get_result(dir: &std::path::Path, provider: &str) -> Result<Option<String>, String> {
         Ok(quota_core::secret_store::get(dir, provider))
     }
+}
+
+/// Register the platform's credential store as keyring-core's default, once
+/// at startup before any secret access. On Android this is
+/// `android-native-keyring-store`'s Keystore-backed `Store`; `Store::new()`
+/// reads the app context through `ndk-context`, which Tauri has already
+/// initialized by the time the setup closure runs, so no manual JNI
+/// companion is wired up here (Tauri does that init; the crate's
+/// `initializeNdkContext` companion is only for frameworks that don't). On
+/// every other target this is a no-op: Windows uses `keyring` 3, which
+/// manages its own platform store, and the Linux/dev fallback uses
+/// `quota_core::secret_store`'s plaintext file — neither routes through
+/// keyring-core's default-store slot.
+///
+/// This call is load-bearing on Android because the `keyring` crate's `v1`
+/// compatibility facade — the obvious thing to reach for, since its `Entry`
+/// matches v3's shape — has a one-time `set_credential_store` initializer
+/// with arms only for macOS, Windows, and non-Android *nix. On `target_os =
+/// "android"` it returns `Err(Invalid("platform", …))`, so the facade's
+/// `Entry::new` short-circuits to `NoDefaultStore` before ever touching the
+/// Keystore — which is why secret storage on Android has never worked until
+/// this call existed. Registering the store ourselves and using
+/// `keyring_core::Entry` directly (see the `target_os = "android"` `backend`
+/// above) is the fix. Called from `mobile.rs::run`'s setup closure before
+/// the CI-seed block issues the first `secrets::set`.
+pub fn init_store() -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let store = android_native_keyring_store::Store::new().map_err(|e| e.to_string())?;
+        keyring_core::set_default_store(store);
+    }
+    Ok(())
 }
 
 pub fn get(dir: &Path, provider: &str) -> Option<String> {
