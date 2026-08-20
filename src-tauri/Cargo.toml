@@ -39,10 +39,15 @@ keyring = { version = "3", features = ["windows-native"] }
 # on Android. Depend on the store directly and register it ourselves at
 # startup (`secrets::init_store`); the Windows `keyring` 3 and this
 # `keyring-core` 1 path never collide in one compiled target, so Cargo
-# resolves them independently. See `src-tauri/src/secrets.rs`.
+# resolves them independently. `ndk-context` is a direct dependency (not
+# merely transitive via the store) because `init_store` must initialize it
+# from tao's activity context before `Store::new()` — nothing in the
+# tauri/tao/wry stack does that, and `ndk_context::android_context()`
+# panics when uninitialized. See `src-tauri/src/secrets.rs`.
 [target.'cfg(target_os = "android")'.dependencies]
 keyring-core = "1"
 android-native-keyring-store = "1"
+ndk-context = "0.1"
 
 # Used directly on Linux so the alert path can call notify-rust's `show_async`,
 # which speaks zbus over the existing tokio runtime. Going through
