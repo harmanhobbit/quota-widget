@@ -1726,13 +1726,17 @@ globalThis.__QUOTA_WIDGET_BRANCH__ = '';
 rmSync(WORK, { recursive: true, force: true });
 stubTauri();
 mkdirSync(join(WORK, 'src/lib'), { recursive: true });
-// Every plain module in src/lib, not a named list: a component importing a
+mkdirSync(join(WORK, 'src/mobile'), { recursive: true });
+// Every plain module in these dirs, not a named list: a component importing a
 // helper this harness forgot to stage fails to render for a reason that has
-// nothing to do with the component.
-for (const f of readdirSync(join(ROOT, 'src/lib')).filter((f) => f.endsWith('.js'))) {
-  const rel = `src/lib/${f}`;
-  const code = rewriteTauriImports(readFileSync(join(ROOT, rel), 'utf8'), rel);
-  writeFileSync(join(WORK, rel), code);
+// nothing to do with the component. `src/mobile` carries the mobile shell's
+// own helpers (e.g. the credential-test lifecycle MobileApp imports).
+for (const dir of ['src/lib', 'src/mobile']) {
+  for (const f of readdirSync(join(ROOT, dir)).filter((f) => f.endsWith('.js') && !f.endsWith('.test.js'))) {
+    const rel = `${dir}/${f}`;
+    const code = rewriteTauriImports(readFileSync(join(ROOT, rel), 'utf8'), rel);
+    writeFileSync(join(WORK, rel), code);
+  }
 }
 
 const { mount, unmount, flushSync } = await import('svelte');

@@ -30,14 +30,29 @@ ksni = "0.3"
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
 
-# keyring 3.x (pinned above for Windows) has no Android backend at all; 4.x
-# restructured around keyring-core "stores" and adds one
-# (`android-native-keyring-store`) reachable through the crate's `v1`
-# compatibility facade — a different major version of the same crate name,
-# which Cargo resolves independently since Windows and Android builds never
-# compile both. See `src-tauri/src/secrets.rs`.
+# Android Keystore-backed secret storage. `keyring` 3.x (pinned above for
+# Windows) has no Android backend; 4.x restructured around `keyring-core`
+# "stores" and ships `android-native-keyring-store`, but its `v1`
+# compatibility facade — the obvious `keyring::Entry` to reach for — has no
+# `target_os = "android"` arm in its one-time store initializer
+# (`keyring-4`/src/v1.rs), so the facade short-circuits to `NoDefaultStore`
+# on Android. Depend on the store directly and register it ourselves at
+# startup (`secrets::init_store`); the Windows `keyring` 3 and this
+# `keyring-core` 1 path never collide in one compiled target, so Cargo
+# resolves them independently. See `src-tauri/src/secrets.rs`.
 [target.'cfg(target_os = "android")'.dependencies]
-keyring = { version = "4", default-features = false, features = ["v1", "android-native-keyring-store"] }
+keyring-core = "1"
+android-native-keyring-store = "1"
+
+# Used directly on Linux so the alert path can call notify-rust's `show_async`,
+# which speaks zbus over the existing tokio runtime. Going through
+# tauri-plugin-notification's `show()` instead wraps notify-rust's *sync*
+# `show()` in `tauri::async_runtime::spawn`, and that sync path calls
+# `zbus::block_on` — which, with zbus's `tokio` feature (pulled in by ksni),
+# builds a nested multi-thread runtime and panics from inside a tokio worker
+# ("Cannot start a runtime from within a runtime"). See `poller::poll_once`.
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2.10.1"
