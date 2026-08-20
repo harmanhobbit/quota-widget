@@ -3132,6 +3132,7 @@ dependencies = [
  "keyring 3.6.3",
  "keyring 4.1.6",
  "ksni",
+ "notify-rust",
  "quota-core",
  "rand 0.8.7",
  "reqwest 0.12.28",
