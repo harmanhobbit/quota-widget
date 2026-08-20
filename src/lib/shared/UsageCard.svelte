@@ -61,6 +61,7 @@
     <p class="error">
       {#if snap.error.kind === 'NotConfigured'}⚪ {snap.error.detail}
       {:else if snap.error.kind === 'AuthExpired'}🔑 {snap.error.detail}
+      {:else if snap.error.kind === 'Unavailable'}🔒 {snap.error.detail}
       {:else}⚠ {snap.error.detail}{/if}
     </p>
   {/if}

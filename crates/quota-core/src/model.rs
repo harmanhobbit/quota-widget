@@ -78,6 +78,14 @@ pub enum FetchError {
     /// Credentials exist but were rejected. Detail is a fix hint.
     #[error("auth expired: {0}")]
     AuthExpired(String),
+    /// A credential is stored but secure storage could not return it — e.g. an
+    /// Android Keystore decrypt failure after a key rotation. Kept distinct from
+    /// `NotConfigured` (nothing is stored) and from a provider/credential
+    /// rejection (`AuthExpired`/`Network`/`Parse`): the ciphertext is intact and
+    /// the fix is to remove and re-paste the credential, not to sign in again or
+    /// wait out a provider outage. Detail is a fix hint. (issue #133)
+    #[error("unavailable: {0}")]
+    Unavailable(String),
     #[error("network error: {0}")]
     Network(String),
     #[error("unexpected response: {0}")]

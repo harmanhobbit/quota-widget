@@ -87,11 +87,42 @@ struct PendingSignIns {
 }
 
 impl PendingSignIns {
+    /// Strict load. A secure-storage failure surfaces as `Err` instead of being
+    /// folded into "no pending sign-ins" — the whole point of issue #133 for the
+    /// OAuth pending-state path: the generic `secrets::get` returns `None` for
+    /// both "nothing stored" and "Keystore couldn't decrypt", so the completion
+    /// and listing paths use `get_reporting_errors` to keep the distinction.
+    /// Reading the pending blob when it can't be decrypted must not report a
+    /// broken store as empty, nor let `finish`/`poll` proceed on a verifier they
+    /// never actually recovered.
     fn load(dir: &Path) -> Result<Self, String> {
-        match crate::secrets::get(dir, PENDING_SIGNINS_SECRET_KEY) {
-            Some(raw) => serde_json::from_str(&raw).map_err(|e| e.to_string()),
-            None => Ok(Self::default()),
+        Self::parse(crate::secrets::get_reporting_errors(
+            dir,
+            PENDING_SIGNINS_SECRET_KEY,
+        ))
+    }
+
+    /// Interpret one backend read of the pending blob. Kept pure so the
+    /// storage-error-vs-absent behaviour is unit-testable without a real
+    /// Keystore.
+    fn parse(read: Result<Option<String>, String>) -> Result<Self, String> {
+        match read {
+            Ok(Some(raw)) => serde_json::from_str(&raw).map_err(|e| e.to_string()),
+            Ok(None) => Ok(Self::default()),
+            Err(e) => Err(format!("pending sign-in storage unavailable: {e}")),
         }
+    }
+
+    /// Load for a path that is about to fully rewrite the blob (starting a new
+    /// sign-in). An existing blob left undecryptable by a Keystore rotation must
+    /// not permanently block starting a fresh sign-in — otherwise an OAuth
+    /// account could never be recovered. Starting overwrites that provider's
+    /// pending entry anyway, and the subsequent `save` is an explicit `set`
+    /// (the only thing besides `clear` allowed to touch the ciphertext), so on
+    /// an unreadable blob we begin from empty. A *write* failure still surfaces
+    /// from `save`.
+    fn load_for_replace(dir: &Path) -> Self {
+        Self::load(dir).unwrap_or_default()
     }
 
     fn save(&self, dir: &Path) -> Result<(), String> {
@@ -142,7 +173,7 @@ fn http_client() -> Result<reqwest::Client, String> {
 /// browser; the matching PKCE verifier/state are encrypted and stored pending.
 pub async fn start_claude(dir: &Path, provider_key: &str) -> Result<String, String> {
     let (url, pending) = crate::oauth::start();
-    let mut signins = PendingSignIns::load(dir)?;
+    let mut signins = PendingSignIns::load_for_replace(dir);
     signins.cleanup_expired();
     signins.insert(PendingSignIn {
         provider_key: provider_key.to_string(),
@@ -204,7 +235,7 @@ pub async fn start_codex(dir: &Path, provider_key: &str) -> Result<CodexLoginInf
         user_code: login.user_code.clone(),
         verification_url: login.verification_url.clone(),
     };
-    let mut signins = PendingSignIns::load(dir)?;
+    let mut signins = PendingSignIns::load_for_replace(dir);
     signins.cleanup_expired();
     signins.insert(PendingSignIn {
         provider_key: provider_key.to_string(),
@@ -263,12 +294,19 @@ pub async fn poll_codex(dir: &Path, provider_key: &str) -> Result<CodexPollResul
     }
 }
 
-/// Cancel and drop any pending sign-in for the given provider.
+/// Cancel and drop any pending sign-in for the given provider. Must succeed
+/// even when the blob can't be decrypted (a Keystore rotation), so the user is
+/// never stuck unable to clear a broken pending state: if the read fails, clear
+/// the whole pending key outright — an explicit removal, the recovery path.
 pub fn cancel(dir: &Path, provider_key: &str) -> Result<(), String> {
-    let mut signins = PendingSignIns::load(dir)?;
-    signins.cleanup_expired();
-    signins.remove(provider_key);
-    signins.save(dir)
+    match PendingSignIns::load(dir) {
+        Ok(mut signins) => {
+            signins.cleanup_expired();
+            signins.remove(provider_key);
+            signins.save(dir)
+        }
+        Err(_) => crate::secrets::clear(dir, PENDING_SIGNINS_SECRET_KEY),
+    }
 }
 
 /// Return every non-expired pending sign-in for UI resume. Expired records are
@@ -320,6 +358,35 @@ mod tests {
         assert_eq!(signins.cleanup_expired(), 1);
         assert_eq!(signins.pending.len(), 1);
         assert_eq!(signins.pending[0].provider_key, "codex");
+    }
+
+    #[test]
+    fn parse_surfaces_a_storage_failure_instead_of_reading_as_empty() {
+        // The criterion #133 guards: a Keystore read error must NOT look like
+        // "no pending sign-ins".
+        let err = PendingSignIns::parse(Err("Keystore decrypt failed".into())).unwrap_err();
+        assert!(err.contains("unavailable"), "{err}");
+        assert!(err.contains("Keystore decrypt failed"), "{err}");
+    }
+
+    #[test]
+    fn parse_treats_absent_and_stored_blobs_normally() {
+        assert_eq!(
+            PendingSignIns::parse(Ok(None)).unwrap(),
+            PendingSignIns::default()
+        );
+
+        let mut stored = PendingSignIns::default();
+        stored.insert(PendingSignIn {
+            provider_key: "claude".into(),
+            kind: PendingKind::ClaudePkce {
+                verifier: "v".into(),
+                state: "s".into(),
+            },
+            expires_at: Utc::now() + Duration::minutes(10),
+        });
+        let json = serde_json::to_string(&stored).unwrap();
+        assert_eq!(PendingSignIns::parse(Ok(Some(json))).unwrap(), stored);
     }
 
     #[test]

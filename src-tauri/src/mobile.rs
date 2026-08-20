@@ -197,11 +197,22 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
     // A stored credential that exists but could not be decrypted must not
     // read as "no key was ever pasted" — `refresh` above already produced a
     // generic `NotConfigured` for these (their secret was simply absent from
-    // `ctx.secrets`), so replace it with a snapshot that says what actually
-    // happened. Ciphertext itself was never touched — only the read failed.
+    // `ctx.secrets`), so replace it with the distinct `Unavailable` state so
+    // the card says a storage failure happened, not that nothing was ever
+    // configured. Ciphertext itself was never touched — only the read failed,
+    // and the fix is to remove and re-paste (issue #133).
     if !failed_secrets.is_empty() {
+        // A failed key is either the account's own key (a pasted-key provider)
+        // or its `{id}_oauth` token entry (Claude/Codex sign-in). Match both, so
+        // an undecryptable OAuth *token* is reported as unavailable rather than
+        // slipping through as the generic "not configured" `refresh` produced.
+        let affected = |pid: &str| {
+            failed_secrets.iter().any(|k| {
+                k == pid || crate::mobile_signin::provider_key_from_oauth_secret(k) == Some(pid)
+            })
+        };
         for provider in providers_for(&cfg) {
-            if !failed_secrets.contains(&provider.id().to_string()) {
+            if !affected(provider.id()) {
                 continue;
             }
             if !cfg
@@ -215,7 +226,7 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
             let failed = UsageSnapshot::failed(
                 provider.id(),
                 provider.name(),
-                quota_core::model::FetchError::NotConfigured(
+                quota_core::model::FetchError::Unavailable(
                     "stored credential could not be decrypted — remove and re-paste it in \
                      Settings"
                         .into(),
