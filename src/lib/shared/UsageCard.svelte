@@ -16,8 +16,20 @@
     return () => clearInterval(t);
   });
 
+  // The window label whose bar is pressed and held, or null when none is. A
+  // momentary peek, never persisted: holding a bar shows the calendar marker —
+  // where the marker would sit with no schedule applied — and releasing reverts
+  // to the scheduled marker. Omitted here for the peek, `schedule` is treated
+  // by `period.js` as the raw calendar fraction, so the two markers coincide on
+  // a non-weekly window or an all-seven schedule.
+  let peek = $state(null);
+
   const resetsIn = (iso) => fmtResetsIn(iso, now);
-  const periodProgress = (w) => fmtPeriodProgress(w, now, schedule);
+  const periodProgress = (w) => fmtPeriodProgress(w, now, peek === w.label ? undefined : schedule);
+
+  function releasePeek() {
+    peek = null;
+  }
 
   function barClass(pct) {
     if (pct >= 95) return 'critical';
@@ -60,7 +72,18 @@
           <span>{w.label}</span>
           <span class="pct">{w.used_pct.toFixed(0)}% · {resetsIn(w.resets_at)}</span>
         </div>
-        <div class="bar">
+        <!-- Deliberately pointer-only and out of the tab order: the peek is a
+             redundant enhancement, and the marker it moves is aria-hidden, so
+             there is no semantics a keyboard user would be missing. -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="bar"
+          onpointerdown={() => (peek = w.label)}
+          onpointerup={releasePeek}
+          onpointercancel={releasePeek}
+          onpointerleave={releasePeek}
+          oncontextmenu={(e) => e.preventDefault()}
+        >
           <!-- Informational windows never colour by threshold: they don't
                gate anything, so red would be misleading. -->
           <div

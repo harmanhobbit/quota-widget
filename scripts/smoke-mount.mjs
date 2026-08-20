@@ -1270,6 +1270,52 @@ const CASES = [
       if (pct !== 0) throw new Error(`deactivated-elapsed schedule marker sat at ${mark.style.left}, expected 0%`);
     },
   },
+  // Press-and-hold peek (shared card, so desktop and Android at once): holding
+  // the bar swaps the frozen scheduled marker (0%) for the calendar marker
+  // (~14%), and releasing reverts. Both surfaces implement the same transient,
+  // unpersisted state.
+  {
+    file: 'src/lib/shared/UsageCard.svelte',
+    props: () => ({ snap: { provider_name: 'Claude', fetched_at: new Date().toISOString(), error: null, credits: null, windows: [weeklyWindowOneDayIn()] }, schedule: elapsedDaysOffSchedule() }),
+    verify: async ({ target, flushSync }) => {
+      const bar = target.querySelector('.bar');
+      const mark = bar.querySelector('.period-mark');
+      if (!mark) throw new Error('weekly window with a schedule drew no marker');
+      if (parseFloat(mark.style.left) !== 0) throw new Error(`scheduled marker sat at ${mark.style.left}, expected 0%`);
+      bar.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }));
+      flushSync();
+      const peek = parseFloat(mark.style.left);
+      if (!(peek > 13 && peek < 16)) throw new Error(`held marker sat at ${mark.style.left}, expected ~14%`);
+      bar.dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true }));
+      flushSync();
+      if (parseFloat(mark.style.left) !== 0) throw new Error(`released marker did not revert: ${mark.style.left}`);
+    },
+  },
+  // The same peek on the mini summary: a weekly headline one day in, with the
+  // elapsed days off, so the scheduled marker freezes at 0% and the calendar
+  // marker sits at ~14%. Holding the row's bar swaps, releasing reverts. The
+  // mini summary looks the schedule up from config by provider id, so the case
+  // supplies both a custom snapshot (a weekly window with a bounded period) and
+  // a config whose claude entry carries the deactivating schedule.
+  {
+    file: 'src/lib/MiniSummary.svelte',
+    props: () => ({}),
+    snapshots: [{ provider_id: 'claude', provider_name: 'Claude', error: null, credits: null, windows: [weeklyWindowOneDayIn()] }],
+    config: { ...CONFIG, providers: { claude: provider({ enabled: true, mini_summary_metrics: ['window:weekly'], usage_schedule: elapsedDaysOffSchedule() }) } },
+    verify: async ({ target, flushSync }) => {
+      const mark = target.querySelector('.hover-bar-cell .period-mark');
+      if (!mark) throw new Error('scheduled weekly row drew no marker');
+      if (parseFloat(mark.style.left) !== 0) throw new Error(`scheduled marker sat at ${mark.style.left}, expected 0%`);
+      const targetEl = target.querySelector('.hover-bar-target');
+      targetEl.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }));
+      flushSync();
+      const peek = parseFloat(mark.style.left);
+      if (!(peek > 13 && peek < 16)) throw new Error(`held marker sat at ${mark.style.left}, expected ~14%`);
+      targetEl.dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true }));
+      flushSync();
+      if (parseFloat(mark.style.left) !== 0) throw new Error(`released marker did not revert: ${mark.style.left}`);
+    },
+  },
   // Spend with no budget configured: the label must prefix the amount, so the
   // figure cannot be misread as money remaining. The unlabelled balance above
   // it must stay bare.
@@ -1616,7 +1662,7 @@ for (const c of CASES) {
   let app;
   try {
     globalThis.__SMOKE_SNAPSHOTS_ERROR__ = Boolean(c.snapshotsError);
-    globalThis.__SMOKE_CONFIG__ = c.config ? { snapshots: SNAPSHOTS, config: c.config } : undefined;
+    globalThis.__SMOKE_CONFIG__ = c.config ? { snapshots: c.snapshots ?? SNAPSHOTS, config: c.config } : undefined;
     globalThis.__QUOTA_WIDGET_BRANCH__ = c.buildBranch ?? '';
     globalThis.__SMOKE_UPDATE__ = c.update ?? null;
     globalThis.__SMOKE_SAVE_ERROR__ = c.saveError ?? '';

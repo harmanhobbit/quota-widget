@@ -89,6 +89,14 @@
 
   const periodProgress = (w, schedule) => fmtPeriodProgress(w, now, schedule);
 
+  // Which row's bar is pressed and held, or null when none is. The press-and-
+  // hold peek is transient view state for the running process, never persisted:
+  // while a bar is held it shows the calendar marker — where the marker would
+  // sit with no schedule applied — and releasing reverts to the scheduled
+  // marker. The two markers coincide on a non-weekly window or an all-seven
+  // schedule, so the peek is invisible there by construction.
+  let peek = $state(null);
+
   // Horizontal distance from the pointer at which the period marker starts to
   // grow, and the distance within which its tooltip is armed. Pixels, not
   // percent: the bar is only ~60–90px wide here, so a percentage-based zone
@@ -186,6 +194,9 @@
     // negative bar width. Keep the signed number while drawing an empty bar.
     pct: Math.max(0, Math.min(window.used_pct, 100)),
     progress: periodProgress(window, schedule),
+    // The same window with no schedule applied: the calendar marker shown
+    // while the bar is pressed and held.
+    calendar: periodProgress(window),
     // Kept so the period marker's tooltip can read the reset time. The row
     // itself shows no countdown, which is what makes that tooltip worth having.
     window,
@@ -278,6 +289,7 @@
                  is a sibling laid over the bar, spanning the full row height
                  rather than the bar's 5px. -->
             {@const key = `${snap.provider_id}:${row}`}
+            {@const shown = peek === key ? s.calendar : s.progress}
             <span class="hover-bar-cell">
               <span class="hover-bar" class:empty={!(showBars && s.pct != null)}>
                 {#if showBars && s.pct != null}
@@ -295,7 +307,7 @@
               {#if showBars && s.pct != null && s.progress != null}
                 <i
                   class="period-mark"
-                  style="left: {s.progress * 100}%; height: calc(var(--hover-bar-h) + {approach(key) * 10}px); opacity: {0.8 + approach(key) * 0.2}"
+                  style="left: {shown * 100}%; height: calc(var(--hover-bar-h) + {approach(key) * 10}px); opacity: {0.8 + approach(key) * 0.2}"
                   aria-hidden="true"
                 ></i>
                 <!-- Deliberately pointer-only and out of the tab order. This
@@ -308,9 +320,15 @@
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <span
                   class="hover-bar-target"
-                  onpointermove={(e) => trackPointer(e, key, s.progress)}
-                  onpointerleave={() => (nearest = null)}
-                  data-tip={periodTooltip(s.window, s.progress, now)}
+                  onpointermove={(e) => trackPointer(e, key, shown)}
+                  onpointerleave={() => {
+                    nearest = null;
+                    peek = null;
+                  }}
+                  onpointerdown={() => (peek = key)}
+                  onpointerup={() => (peek = null)}
+                  onpointercancel={() => (peek = null)}
+                  data-tip={periodTooltip(s.window, shown, now)}
                   data-armed={armed(key) ? '' : null}
                 ></span>
               {/if}
