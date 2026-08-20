@@ -156,6 +156,9 @@ All seven days on (the default) is identical to the raw calendar marker, so
 nothing changes until you opt in. The schedule is purely visual: it never
 changes the usage fill, status colours, alerts, or tray gauge, and non-weekly
 windows (rolling 5-hour, monthly, credits) keep the raw calendar marker.
+Press and hold a bar (mouse or touch) to peek at the **calendar marker** — where
+the marker would sit with no schedule applied; releasing reverts to the
+scheduled marker. The peek is momentary and is never saved.
 
 Only the Settings fields scroll: **Save & close** sits in a fixed footer at the
 bottom of the window, with the app version beneath it, so the commit action is

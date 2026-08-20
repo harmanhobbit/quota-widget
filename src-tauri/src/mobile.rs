@@ -343,6 +343,19 @@ fn ci_test_key() -> Option<&'static str> {
 pub fn run() {
     tauri::Builder::default()
         .setup(move |app| {
+            // Register the Android Keystore-backed credential store as
+            // keyring-core's default before any secret access. The `keyring`
+            // crate's `v1` facade has no `target_os = "android"` arm in its
+            // one-time store initializer, so without this every `secrets::set`
+            // / `get` / `clear` short-circuits to `NoDefaultStore` before
+            // touching the Keystore (which is why pasting an OpenRouter key
+            // on Android failed with "No default storage has been set"). See
+            // `secrets::init_store`. A no-op on every non-Android target
+            // `mobile.rs` is compiled for, so the iOS build calls it too
+            // without effect.
+            if let Err(e) = crate::secrets::init_store() {
+                eprintln!("[mobile] keystore init failed: {e}");
+            }
             let config_dir = app
                 .path()
                 .app_config_dir()

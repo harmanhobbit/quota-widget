@@ -30,6 +30,7 @@
     cancelSignin,
     getPendingSignins,
   } from '../lib/host.js';
+  import { runCredentialTest } from './credentialTest.js';
 
   // Every provider Android exposes after issue #110. Each carries a `mode`
   // that decides which settings UI it gets:
@@ -170,13 +171,28 @@
     await setConfig($state.snapshot(config));
   }
 
+  // Every key-mode provider tests through this one lifecycle (issue #135), so
+  // pending/error cleanup cannot diverge per provider. The heavy lifting —
+  // store-before-request, bounded wait, failure categorization, always-
+  // terminal result — lives in `runCredentialTest`; here we only translate its
+  // outcome into the per-account UI state the row is bound to.
   async function test(id) {
     testResults[id] = { pending: true };
-    await persist();
-    const snap = await testProvider(id);
-    testResults[id] = snap.error
-      ? { ok: false, msg: snap.error.detail }
-      : { ok: true, msg: 'ok' };
+    const info = providerInfo(config.providers[id]?.kind ?? id);
+    const result = await runCredentialTest({
+      id,
+      pastedSecret: secretInputs[id],
+      snapshotConfig: $state.snapshot(config),
+      secretLabel: info.secretLabel ?? 'API key',
+      host: { setConfig, setSecret, testProvider },
+    });
+    // A stored key is stored whether or not the provider accepted it; only a
+    // fully successful test consumes the pasted value from the form.
+    if (result.storedSecret) secretStored[id] = true;
+    if (result.clearInput) secretInputs[id] = '';
+    testResults[id] = result.ok
+      ? { ok: true, msg: 'ok' }
+      : { ok: false, msg: result.msg, category: result.category };
   }
 
   async function removeAccount(id) {
@@ -343,7 +359,7 @@
               headlineOpen={openHeadlineFor === id}
               onToggleHeadline={() => (openHeadlineFor = openHeadlineFor === id ? '' : id)}
               bind:expanded={expanded[id]}
-              onSignIn={() => kind === 'claude' ? startClaude(id) : startCodex(id)}
+              onSignIn={() => (account.kind ?? id) === 'claude' ? startClaude(id) : startCodex(id)}
               onCompleteClaude={(code) => finishClaude(id, code)}
               onPollCodex={() => pollCodex(id)}
               onCancel={() => cancelClaudeOrCodex(id)}
