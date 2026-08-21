@@ -9,6 +9,7 @@ pub mod refresh;
 pub mod secret_store;
 pub mod settings_return;
 pub mod shared_config;
+pub mod snapshots;
 pub mod spend_baseline;
 pub mod update;
 

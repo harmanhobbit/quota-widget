@@ -31,6 +31,7 @@
     getPendingSignins,
   } from '../lib/host.js';
   import { runCredentialTest } from './credentialTest.js';
+  import { foregroundRefresh } from './foregroundRefresh.js';
 
   // Every provider Android exposes after issue #110. Each carries a `mode`
   // that decides which settings UI it gets:
@@ -266,6 +267,22 @@
     await loadPending();
   }
 
+  // Foreground refresh (issue #111): refresh once on entry, repeat at the
+  // configured interval while visible, and stop when the app is backgrounded.
+  // The cadence lives in `foregroundRefresh` so it is unit-tested; here we only
+  // bind it to the document's visibility. Background refresh while the app is
+  // hidden is the OS's job (the best-effort background refresh target), never
+  // this loop's.
+  const fg = foregroundRefresh({
+    refresh: () => refreshNow(),
+    intervalSecs: () => config?.poll_interval_secs ?? 60,
+  });
+
+  function onVisibilityChange() {
+    if (document.visibilityState === 'visible') fg.enter();
+    else fg.leave();
+  }
+
   onMount(() => {
     getSnapshots().then(async (initial) => {
       snapshots = initial.snapshots;
@@ -290,7 +307,19 @@
       config = e.payload;
       syncAccountState();
     }).then((u) => unlisten.push(u));
-    return () => unlisten.forEach((u) => u());
+
+    // Start the foreground loop if we launched visible (the usual case), and
+    // follow the app in and out of the foreground thereafter. Rust already ran
+    // one refresh at setup before the webview loaded, but entering here gives
+    // the webview its own immediate refresh and establishes the repeat.
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    if (document.visibilityState !== 'hidden') fg.enter();
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      fg.leave();
+      unlisten.forEach((u) => u());
+    };
   });
 </script>
 
@@ -402,6 +431,16 @@
       <section>
         <h2>Thresholds</h2>
         <Thresholds bind:thresholds={config.thresholds} />
+      </section>
+      <section>
+        <h2>Background refresh</h2>
+        <p class="note">
+          While open, Quota Widget refreshes as soon as you switch to it and
+          then every {Math.max(15, config.poll_interval_secs ?? 60)} seconds until
+          you leave. In the background it aims to refresh roughly every 15
+          minutes — a best-effort target, not a guarantee: Android decides when
+          background work actually runs, so figures can be older than that.
+        </p>
       </section>
       <div class="settings-footer">
         <button class="primary" onclick={async () => { await persist(); view = 'list'; }}>Save</button>
