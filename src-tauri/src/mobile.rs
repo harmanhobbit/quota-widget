@@ -239,11 +239,30 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
         }
     }
 
+    // Re-establish display order after the post-refresh replacements above,
+    // which `retain`+`push` any failed provider to the end of what `refresh`
+    // had already sorted. The persisted read model and the webview event both
+    // want the list render-ready.
+    cfg.sort_snapshots(&mut outcome.snapshots);
+
     {
         let mut map = state.snapshots.write().await;
         for s in &outcome.snapshots {
             map.insert(s.provider_id.clone(), s.clone());
         }
+    }
+
+    // Persist the read model so a cold process — the Activity relaunched, or
+    // later a home-screen widget with no app running — renders this exact
+    // last-known state without a live Tauri process. The aggregate is
+    // recomputed over the final list (the replacements above can raise a
+    // provider to a stale/unavailable failure the pre-replacement fold missed),
+    // so the stored widget colour matches the stored cards.
+    let aggregate = quota_core::refresh::aggregate_status(&outcome.snapshots, &cfg);
+    let store =
+        quota_core::snapshots::SnapshotStore::from_snapshots(outcome.snapshots.clone(), aggregate);
+    if let Err(e) = store.save(&state.config_dir) {
+        eprintln!("[mobile] persisting snapshot read model failed: {e}");
     }
 
     let _ = app.emit("snapshots", &outcome.snapshots);
@@ -418,10 +437,20 @@ pub fn run() {
                     eprintln!("[ci-seed] no OPENROUTER_CI_KEY baked in (ci_test_key() == None)")
                 }
             }
+            // Seed the in-memory snapshots from the persisted read model so the
+            // very first `get_snapshots` (the webview mounting) renders the
+            // last-known state a previous process left behind — before this
+            // launch's own refresh has completed — and so that refresh receives
+            // those figures as `prior` and can keep them visibly stale if its
+            // first fetch fails, rather than blanking a card on every cold
+            // start. A missing or corrupt file loads as an empty read model
+            // (derived data is discarded, not recovered — see
+            // `quota_core::snapshots`).
+            let persisted = quota_core::snapshots::SnapshotStore::load(&config_dir);
             let state = Arc::new(MobileState {
                 config_dir,
                 config: RwLock::new(loaded.config),
-                snapshots: RwLock::new(HashMap::new()),
+                snapshots: RwLock::new(persisted.prior_map()),
                 alert_engine: Mutex::new(AlertEngine::default()),
             });
             app.manage(state.clone());
