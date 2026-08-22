@@ -433,6 +433,23 @@
         <Thresholds bind:thresholds={config.thresholds} />
       </section>
       <section>
+        <h2>Notifications</h2>
+        <label class="inline">
+          <input type="checkbox" bind:checked={config.alerts.toast} />
+          Notify me when an account crosses a threshold
+        </label>
+        <p class="note">
+          Alerts arrive as Android notifications. On Android 13 and later, Quota
+          Widget asks for notification permission once — after your first account
+          reads successfully, so the request has context. Declining is fine:
+          refresh and widgets keep working, and you won't be asked again.
+          Notifications are private, so the lock screen shows only generic text;
+          the account and the figures appear once you unlock. To turn them back
+          on later, open Android Settings → Apps → Quota&nbsp;Widget →
+          Notifications.
+        </p>
+      </section>
+      <section>
         <h2>Background refresh</h2>
         <p class="note">
           While open, Quota Widget refreshes as soon as you switch to it and

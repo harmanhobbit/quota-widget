@@ -108,6 +108,24 @@ async fn set_config(
     config: Config,
 ) -> Result<(), String> {
     config.save(&state.config_dir).map_err(|e| e.to_string())?;
+    // Clear the alert memory of any account this config no longer enables, and
+    // persist it immediately (issue #112): disabling or deleting an account
+    // must start a fresh baseline when it returns, and a background worker could
+    // fire before the next foreground refresh's own prune. `refresh` prunes too,
+    // so this only brings that guarantee forward to the moment of the change.
+    {
+        let enabled: std::collections::HashSet<String> = config
+            .providers
+            .iter()
+            .filter(|(_, p)| p.enabled)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut engine = state.alert_engine.lock().await;
+        engine.retain_accounts(&enabled);
+        if let Err(e) = engine.save(&state.config_dir) {
+            eprintln!("[mobile] pruning alert memory failed: {e}");
+        }
+    }
     *state.config.write().await = config.clone();
     let _ = app.emit("config", &config);
     Ok(())
@@ -153,6 +171,15 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
     let prior = state.snapshots.read().await.clone();
     let mut engine = state.alert_engine.lock().await;
     let mut outcome = quota_core::refresh::refresh(&ctx, &prior, &mut engine).await;
+    // Persist the alert memory this pass produced (edge-triggered levels,
+    // baselines, and the prune to still-enabled accounts `refresh` applied) so
+    // the next background worker or cold start measures crossings against it
+    // rather than re-baselining and re-firing an unchanged state (issue #112).
+    // The intact file is what survives process death, reboot and upgrade per
+    // ADR-0006; a corrupt one is discarded and simply re-baselines.
+    if let Err(e) = engine.save(&state.config_dir) {
+        eprintln!("[mobile] persisting alert memory failed: {e}");
+    }
     drop(engine);
 
     // A rotated credential that could not be persisted is an authentication/
@@ -447,11 +474,18 @@ pub fn run() {
             // (derived data is discarded, not recovered — see
             // `quota_core::snapshots`).
             let persisted = quota_core::snapshots::SnapshotStore::load(&config_dir);
+            // Seed the alert memory from disk too, so this process measures
+            // crossings against what earlier processes (a background worker, the
+            // previous app launch) already saw rather than re-baselining and
+            // re-firing an unchanged warning/critical (issue #112). A missing or
+            // corrupt file loads as the empty memory — derived data, re-baselined
+            // safely (see `quota_core::alerts::AlertEngine::load`).
+            let alert_engine = AlertEngine::load(&config_dir);
             let state = Arc::new(MobileState {
                 config_dir,
                 config: RwLock::new(loaded.config),
                 snapshots: RwLock::new(persisted.prior_map()),
-                alert_engine: Mutex::new(AlertEngine::default()),
+                alert_engine: Mutex::new(alert_engine),
             });
             app.manage(state.clone());
             // Opens directly to the usage list, so the first thing on screen
