@@ -4,6 +4,7 @@
   // sign-in state; the UI just drives the user through the browser and pastes
   // or polls until the host reports the tokens are stored.
   import HeadlineSelection from '../lib/shared/HeadlineSelection.svelte';
+  import ScheduleSelection from '../lib/shared/ScheduleSelection.svelte';
 
   let {
     id,
@@ -97,6 +98,7 @@
     {#if providerNote}<p class="note">{providerNote}</p>{/if}
     <label class="field">Account name <input maxlength="40" bind:value={account.label} placeholder={providerName} /></label>
     <HeadlineSelection bind:account options={headlineOptions} open={headlineOpen} onToggle={onToggleHeadline} />
+    <ScheduleSelection bind:account />
 
     {#if secretStored}
       <p class="note good">Signed in.</p>
