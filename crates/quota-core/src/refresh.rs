@@ -19,7 +19,7 @@ use crate::model::{Status, UsageSnapshot};
 use crate::providers::{providers_for, CredentialWrite, ProviderCtx};
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 /// The [`Background refresh target`](../../CONTEXT.md) — the interval Android
@@ -144,6 +144,20 @@ fn compose(
 
     // Aggregate compact-surface status folded from the ordered snapshots.
     let aggregate = aggregate_status(&fresh, cfg);
+
+    // Alert memory belongs only to accounts that still exist and are enabled.
+    // An account disabled or deleted since the last pass must not keep a
+    // remembered level that would suppress a genuine crossing when it returns —
+    // re-enabling or recreating starts a fresh baseline (issue #112). Pruning
+    // here, in the one place with tests, gives every host that guarantee for
+    // free rather than trusting each to forget on every config mutation.
+    let enabled: HashSet<String> = cfg
+        .providers
+        .iter()
+        .filter(|(_, p)| p.enabled)
+        .map(|(id, _)| id.clone())
+        .collect();
+    engine.retain_accounts(&enabled);
 
     // Alerts: edge-triggered in the engine, so this pass only ever reports
     // genuine crossings (or the process's baseline) — never a re-fire for an
@@ -384,6 +398,45 @@ mod tests {
         );
         assert_eq!(outcome.aggregate.status, Status::Ok);
         assert_eq!(outcome.aggregate.pct, 0.0);
+    }
+
+    /// Acceptance #4 through the refresh seam: an account disabled between
+    /// passes has its alert memory pruned by `compose`, so when it is
+    /// re-enabled its first reading is a fresh baseline rather than a silent
+    /// "unchanged" that would swallow a genuine crossing.
+    #[test]
+    fn disabling_an_account_prunes_its_alert_memory() {
+        let mut cfg = cfg_with(crate::config::SortOrder::Manual);
+        let mut engine = AlertEngine::default();
+
+        // Pass 1: claude baselines at warn while enabled.
+        let out = compose(
+            vec![ok("claude", 85.0)],
+            &cfg,
+            &HashMap::new(),
+            &mut engine,
+            vec![],
+        );
+        assert_eq!(out.alerts.len(), 1);
+        assert_eq!(out.alerts[0].kind, crate::alerts::AlertKind::Baseline);
+
+        // Pass 2: claude is now disabled (and so not fetched). The prune forgets
+        // it even though nothing evaluated it this pass.
+        cfg.providers.get_mut("claude").unwrap().enabled = false;
+        let out = compose(vec![], &cfg, &HashMap::new(), &mut engine, vec![]);
+        assert!(out.alerts.is_empty());
+
+        // Pass 3: re-enabled and read again — a fresh baseline, not silence.
+        cfg.providers.get_mut("claude").unwrap().enabled = true;
+        let out = compose(
+            vec![ok("claude", 85.0)],
+            &cfg,
+            &HashMap::new(),
+            &mut engine,
+            vec![],
+        );
+        assert_eq!(out.alerts.len(), 1);
+        assert_eq!(out.alerts[0].kind, crate::alerts::AlertKind::Baseline);
     }
 
     /// `refresh` itself (the async wrapper) with no enabled providers is a
