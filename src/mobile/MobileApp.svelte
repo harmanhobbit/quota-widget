@@ -123,10 +123,9 @@
       mini_summary_metrics: null,
       tray_metric: null,
       // All seven on: identical to the field being absent, which is what
-      // quota-core's `UsageSchedule::default` reproduces on load. The mobile
-      // schedule editor is issue #123; this keeps the account shape consistent
-      // with desktop so a config written on either side loads the same on the
-      // other.
+      // quota-core's `UsageSchedule::default` reproduces on load. Editable per
+      // account via ScheduleSelection; the shape is kept consistent with
+      // desktop so a config written on either side loads the same on the other.
       usage_schedule: { monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, saturday: true, sunday: true },
       settings,
     };
@@ -157,6 +156,15 @@
     for (const id of Object.keys(config.providers)) {
       if (secretInputs[id] === undefined) secretInputs[id] = '';
       if (expanded[id] === undefined) expanded[id] = false;
+      // Forward-compat: a config written by a pre-schedule build (or by a
+      // desktop that has never touched this account) loads with the field
+      // absent. All-seven is the pre-schedule default and what quota-core's
+      // `UsageSchedule::default` reproduces, so seed it before the schedule
+      // editor binds `usage_schedule[day]` — an undefined object would throw.
+      config.providers[id].usage_schedule ??= {
+        monday: true, tuesday: true, wednesday: true, thursday: true,
+        friday: true, saturday: true, sunday: true,
+      };
     }
   }
 

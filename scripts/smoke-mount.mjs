@@ -1383,7 +1383,7 @@ const CASES = [
     props: () => ({
       id: 'openrouter',
       kind: 'openrouter',
-      account: { label: null, enabled: true, low_balance_warn: null, mini_summary_metrics: null, tray_metric: null, settings: {} },
+      account: { label: null, enabled: true, low_balance_warn: null, mini_summary_metrics: null, tray_metric: null, usage_schedule: { monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, saturday: true, sunday: true }, settings: {} },
       providerName: 'OpenRouter',
       providerNote: 'Create a key at openrouter.ai/keys.',
       secretStored: false,
@@ -1403,6 +1403,14 @@ const CASES = [
       flushSync();
       if (!target.querySelector('.metric-picker')) throw new Error('expanding did not reveal the headline picker');
       if (!target.querySelector('input[type="password"]')) throw new Error('no secret input was rendered');
+      // The usage-schedule editor rides alongside the headline picker: seven
+      // weekday toggles, all on by default, and clicking one must uncheck it.
+      const sched = [...target.querySelectorAll('.schedule-day input')];
+      if (sched.length !== 7) throw new Error(`schedule editor had ${sched.length} toggles, expected 7`);
+      if (!sched.every((t) => t.checked)) throw new Error('the default schedule did not render all seven on');
+      sched[5].click();
+      flushSync();
+      if (sched[5].checked) throw new Error('clicking a schedule toggle did not uncheck it');
       [...target.querySelectorAll('.provider-footer button')].find((b) => b.textContent.trim() === 'Test').click();
       if (!globalThis.__SMOKE_TESTED__) throw new Error('Test did not reach onTest');
       [...target.querySelectorAll('.provider-footer button')].find((b) => b.textContent.trim() === 'Remove account').click();
@@ -1416,7 +1424,7 @@ const CASES = [
     props: () => ({
       id: 'claude',
       kind: 'claude',
-      account: { label: null, enabled: true, low_balance_warn: null, mini_summary_metrics: null, tray_metric: null, settings: {} },
+      account: { label: null, enabled: true, low_balance_warn: null, mini_summary_metrics: null, tray_metric: null, usage_schedule: { monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, saturday: true, sunday: true }, settings: {} },
       providerName: 'Claude',
       providerNote: 'Built-in browser sign-in.',
       pending: null,
@@ -1431,11 +1439,16 @@ const CASES = [
       onCancel() { globalThis.__SMOKE_OAUTH_CANCEL__ = true; },
       onRemove() { globalThis.__SMOKE_OAUTH_REMOVE__ = true; },
     }),
-    expect: ['Sign in with Claude', 'Remove account'],
+    expect: ['Sign in with Claude', 'Remove account', 'Usage days'],
     verify: async ({ target, flushSync }) => {
       const signIn = [...target.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === 'Sign in with Claude');
       if (!signIn) throw new Error('Sign in button was not rendered');
+      // The schedule editor renders on the OAuth row too (it is shown on every
+      // account), seven toggles all on by default.
+      const sched = [...target.querySelectorAll('.schedule-day input')];
+      if (sched.length !== 7) throw new Error(`schedule editor had ${sched.length} toggles, expected 7`);
+      if (!sched.every((t) => t.checked)) throw new Error('the default schedule did not render all seven on');
       signIn.click();
       if (!globalThis.__SMOKE_OAUTH_SIGNIN__) throw new Error('Sign in did not reach onSignIn');
     },
@@ -1471,6 +1484,46 @@ const CASES = [
       if (!target.querySelector('.provider')) throw new Error('adding an account did not render its row');
       if (globalThis.__SMOKE_LAST_CONFIG__?.providers?.['openrouter#1']?.kind !== 'openrouter') {
         throw new Error('adding an account did not persist an openrouter entry under an immutable key');
+      }
+    },
+  },
+  // Mobile usage-schedule editor (issue #123), end to end through the shell: a
+  // config that predates the field (no usage_schedule at all) must load with
+  // all seven days on — MobileApp.syncAccountState backfills it the way
+  // quota-core's serde default does — and editing a day then Saving must
+  // persist through set_config. This is the mobile mirror of the desktop
+  // Settings schedule case above.
+  {
+    file: 'src/mobile/MobileApp.svelte',
+    props: () => ({}),
+    config: (() => {
+      // Simulate an upgrade: openrouter's schedule field is entirely absent.
+      const { usage_schedule, ...openrouter } = provider({});
+      return { ...CONFIG, providers: { ...CONFIG.providers, openrouter } };
+    })(),
+    verify: async ({ target, flushSync }) => {
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+      const card = [...target.querySelectorAll('.provider')]
+        .find((el) => el.querySelector('strong').textContent.trim() === 'OpenRouter');
+      if (!card) throw new Error('the OpenRouter account row did not render in mobile settings');
+      card.querySelector('.provider-disclosure').click();
+      flushSync();
+      const sched = [...card.querySelectorAll('.schedule-day input')];
+      if (sched.length !== 7) throw new Error(`mobile schedule editor had ${sched.length} toggles, expected 7`);
+      // An absent field loads as all-seven, not as seven unset checkboxes.
+      if (!sched.every((t) => t.checked)) {
+        throw new Error('an absent usage_schedule did not default to all seven on in mobile settings');
+      }
+      sched[6].click(); // turn Sunday off
+      flushSync();
+      if (sched[6].checked) throw new Error('clicking a mobile schedule toggle did not uncheck it');
+      [...target.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Save').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const saved = globalThis.__SMOKE_LAST_CONFIG__?.providers?.openrouter?.usage_schedule;
+      const weekdays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      if (!saved || weekdays.some((k) => saved[k] !== true) || saved.sunday !== false) {
+        throw new Error(`saved mobile schedule was ${JSON.stringify(saved)}`);
       }
     },
   },

@@ -11,6 +11,7 @@
   // low_balance_warn, settings.*); secret storage and testing go through the
   // caller's callbacks, since those are IPC calls the host owns.
   import HeadlineSelection from './HeadlineSelection.svelte';
+  import ScheduleSelection from './ScheduleSelection.svelte';
 
   let {
     id,
@@ -73,6 +74,7 @@
     {#if providerNote}<p class="note">{providerNote}</p>{/if}
     <label class="field">Account name <input maxlength="40" bind:value={account.label} placeholder={providerName} /></label>
     <HeadlineSelection bind:account options={headlineOptions} open={headlineOpen} onToggle={onToggleHeadline} />
+    <ScheduleSelection bind:account />
     <div class="row">
       <input
         type="password"
