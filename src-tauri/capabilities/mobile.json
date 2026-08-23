@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile",
-  "description": "Android usage-list window capabilities. Mobile registers one plugin, opener (issue #159): built-in sign-in hands the Claude authorize URL and Codex verification URL to the device's external default browser instead of loading them in the app's own WebView, so this grants only the \"open URL\" permission that flow needs — no tray, no autostart, no updater, no notifications (all later tickets per ADR 0006). Every other command it calls (get_snapshots, set_config, ...) is an app-defined command, not a plugin one, and app-defined commands aren't ACL-gated.",
+  "description": "Android usage-list window capabilities. Mobile registers one plugin, opener (issue #159): built-in sign-in hands the Claude authorize URL and Codex verification URL to the device's external default browser instead of loading them in the app's own WebView, so this grants only the \"open URL\" permission that flow needs — no tray, no autostart, no updater, no notifications (all later tickets per ADR 0006). Every other command it calls (get_snapshots, set_config, ...) is an app-defined command, not a plugin one, and app-defined commands aren't ACL-gated. The opener grant needs BOTH permissions below: allow-open-url only enables the open_url command and ships no URL scope (its manifest says \"without any pre-configured scope\"), and the plugin enforces that scope on top of the command check — with no allowed URL entry, Scope::is_url_allowed rejects every URL with \"Not allowed to open url …\" and the browser never opens (issue #134). allow-default-urls supplies the missing scope (mailto/tel/http/https via the default app), making the grant exactly the plugin's default set minus allow-reveal-item-in-dir, which Android has no use for.",
   "windows": ["main"],
   "platforms": ["android"],
-  "permissions": ["core:default", "opener:allow-open-url"]
+  "permissions": ["core:default", "opener:allow-open-url", "opener:allow-default-urls"]
 }
