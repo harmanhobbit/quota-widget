@@ -108,6 +108,24 @@ async fn set_config(
     config: Config,
 ) -> Result<(), String> {
     config.save(&state.config_dir).map_err(|e| e.to_string())?;
+    // Clear the alert memory of any account this config no longer enables, and
+    // persist it immediately (issue #112): disabling or deleting an account
+    // must start a fresh baseline when it returns, and a background worker could
+    // fire before the next foreground refresh's own prune. `refresh` prunes too,
+    // so this only brings that guarantee forward to the moment of the change.
+    {
+        let enabled: std::collections::HashSet<String> = config
+            .providers
+            .iter()
+            .filter(|(_, p)| p.enabled)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut engine = state.alert_engine.lock().await;
+        engine.retain_accounts(&enabled);
+        if let Err(e) = engine.save(&state.config_dir) {
+            eprintln!("[mobile] pruning alert memory failed: {e}");
+        }
+    }
     *state.config.write().await = config.clone();
     let _ = app.emit("config", &config);
     Ok(())
@@ -153,6 +171,15 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
     let prior = state.snapshots.read().await.clone();
     let mut engine = state.alert_engine.lock().await;
     let mut outcome = quota_core::refresh::refresh(&ctx, &prior, &mut engine).await;
+    // Persist the alert memory this pass produced (edge-triggered levels,
+    // baselines, and the prune to still-enabled accounts `refresh` applied) so
+    // the next background worker or cold start measures crossings against it
+    // rather than re-baselining and re-firing an unchanged state (issue #112).
+    // The intact file is what survives process death, reboot and upgrade per
+    // ADR-0006; a corrupt one is discarded and simply re-baselines.
+    if let Err(e) = engine.save(&state.config_dir) {
+        eprintln!("[mobile] persisting alert memory failed: {e}");
+    }
     drop(engine);
 
     // A rotated credential that could not be persisted is an authentication/
@@ -239,11 +266,30 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
         }
     }
 
+    // Re-establish display order after the post-refresh replacements above,
+    // which `retain`+`push` any failed provider to the end of what `refresh`
+    // had already sorted. The persisted read model and the webview event both
+    // want the list render-ready.
+    cfg.sort_snapshots(&mut outcome.snapshots);
+
     {
         let mut map = state.snapshots.write().await;
         for s in &outcome.snapshots {
             map.insert(s.provider_id.clone(), s.clone());
         }
+    }
+
+    // Persist the read model so a cold process — the Activity relaunched, or
+    // later a home-screen widget with no app running — renders this exact
+    // last-known state without a live Tauri process. The aggregate is
+    // recomputed over the final list (the replacements above can raise a
+    // provider to a stale/unavailable failure the pre-replacement fold missed),
+    // so the stored widget colour matches the stored cards.
+    let aggregate = quota_core::refresh::aggregate_status(&outcome.snapshots, &cfg);
+    let store =
+        quota_core::snapshots::SnapshotStore::from_snapshots(outcome.snapshots.clone(), aggregate);
+    if let Err(e) = store.save(&state.config_dir) {
+        eprintln!("[mobile] persisting snapshot read model failed: {e}");
     }
 
     let _ = app.emit("snapshots", &outcome.snapshots);
@@ -342,6 +388,13 @@ fn ci_test_key() -> Option<&'static str> {
 #[tauri::mobile_entry_point]
 pub fn run() {
     tauri::Builder::default()
+        // First registered plugin on the mobile host (issue #159): built-in
+        // sign-in hands the authorize/verification URL to `opener::open_url`
+        // via the injected JS API, which on Android resolves to a new-task
+        // `ACTION_VIEW` intent (the external default browser) rather than the
+        // in-app WebView — see the mobile capability's `opener:allow-open-url`
+        // permission grant below.
+        .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
             // Register the Android Keystore-backed credential store as
             // keyring-core's default before any secret access. The `keyring`
@@ -418,11 +471,28 @@ pub fn run() {
                     eprintln!("[ci-seed] no OPENROUTER_CI_KEY baked in (ci_test_key() == None)")
                 }
             }
+            // Seed the in-memory snapshots from the persisted read model so the
+            // very first `get_snapshots` (the webview mounting) renders the
+            // last-known state a previous process left behind — before this
+            // launch's own refresh has completed — and so that refresh receives
+            // those figures as `prior` and can keep them visibly stale if its
+            // first fetch fails, rather than blanking a card on every cold
+            // start. A missing or corrupt file loads as an empty read model
+            // (derived data is discarded, not recovered — see
+            // `quota_core::snapshots`).
+            let persisted = quota_core::snapshots::SnapshotStore::load(&config_dir);
+            // Seed the alert memory from disk too, so this process measures
+            // crossings against what earlier processes (a background worker, the
+            // previous app launch) already saw rather than re-baselining and
+            // re-firing an unchanged warning/critical (issue #112). A missing or
+            // corrupt file loads as the empty memory — derived data, re-baselined
+            // safely (see `quota_core::alerts::AlertEngine::load`).
+            let alert_engine = AlertEngine::load(&config_dir);
             let state = Arc::new(MobileState {
                 config_dir,
                 config: RwLock::new(loaded.config),
-                snapshots: RwLock::new(HashMap::new()),
-                alert_engine: Mutex::new(AlertEngine::default()),
+                snapshots: RwLock::new(persisted.prior_map()),
+                alert_engine: Mutex::new(alert_engine),
             });
             app.manage(state.clone());
             // Opens directly to the usage list, so the first thing on screen
