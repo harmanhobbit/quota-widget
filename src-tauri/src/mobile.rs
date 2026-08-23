@@ -388,6 +388,13 @@ fn ci_test_key() -> Option<&'static str> {
 #[tauri::mobile_entry_point]
 pub fn run() {
     tauri::Builder::default()
+        // First registered plugin on the mobile host (issue #159): built-in
+        // sign-in hands the authorize/verification URL to `opener::open_url`
+        // via the injected JS API, which on Android resolves to a new-task
+        // `ACTION_VIEW` intent (the external default browser) rather than the
+        // in-app WebView — see the mobile capability's `opener:allow-open-url`
+        // permission grant below.
+        .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
             // Register the Android Keystore-backed credential store as
             // keyring-core's default before any secret access. The `keyring`
