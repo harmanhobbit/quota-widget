@@ -5,6 +5,8 @@
   // or polls until the host reports the tokens are stored.
   import HeadlineSelection from '../lib/shared/HeadlineSelection.svelte';
   import ScheduleSelection from '../lib/shared/ScheduleSelection.svelte';
+  import { openExternal } from './browserHandoff.js';
+  import { getOpener } from '../lib/host.js';
 
   let {
     id,
@@ -13,6 +15,7 @@
     providerName,
     providerNote = '',
     pending = null,
+    claudeUrl = null,
     secretStored = false,
     headlineOptions,
     headlineOpen = false,
@@ -64,11 +67,12 @@
     }
   }
 
-  function openBrowser(url) {
-    if (window.__TAURI__?.opener?.openUrl) {
-      window.__TAURI__.opener.openUrl(url);
-    } else {
-      window.open(url, '_blank');
+  async function openBrowser(url) {
+    lastError = '';
+    try {
+      await openExternal(url, { opener: getOpener() });
+    } catch (e) {
+      lastError = e?.message ?? String(e);
     }
   }
 
@@ -110,6 +114,10 @@
         <p class="note">
           Authorize in the browser, then paste the <code>code#state</code> string shown on the confirmation page.
         </p>
+        {#if claudeUrl}
+          <p class="note">If the browser didn't open, copy this link:</p>
+          <div class="code-box url-box">{claudeUrl}</div>
+        {/if}
         <div class="row">
           <input placeholder="code#state" bind:value={claudeCode} />
           <button onclick={completeClaude}>Complete sign-in</button>
@@ -155,5 +163,13 @@
     text-align: center;
     margin: 0.5rem 0;
     user-select: all;
+  }
+
+  .url-box {
+    font-size: 0.85rem;
+    font-weight: normal;
+    letter-spacing: normal;
+    text-align: left;
+    word-break: break-all;
   }
 </style>

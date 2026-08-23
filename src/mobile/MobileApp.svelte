@@ -29,9 +29,11 @@
     pollCodexSignin,
     cancelSignin,
     getPendingSignins,
+    getOpener,
   } from '../lib/host.js';
   import { runCredentialTest } from './credentialTest.js';
   import { foregroundRefresh } from './foregroundRefresh.js';
+  import { openExternal } from './browserHandoff.js';
 
   // Every provider Android exposes after issue #110. Each carries a `mode`
   // that decides which settings UI it gets:
@@ -88,6 +90,12 @@
   let newKind = $state('openrouter');
   let newName = $state('');
   let pendingSignins = $state([]);
+  // Authorize URL for a Claude sign-in started *this session* — kept only in
+  // JS memory, never persisted (issue #160). A sign-in resumed after process
+  // death has no entry here, since the one-time PKCE challenge behind the
+  // URL is regenerated on every start; that's the case the paste-only UI
+  // stays for.
+  let claudeUrls = $state({});
 
   function headlineOptionsFor(id, account) {
     const kind = account.kind ?? id;
@@ -210,6 +218,7 @@
     await clearSecret(secretKey);
     await cancelSignin(id);
     delete secretStored[id];
+    delete claudeUrls[id];
     delete secretInputs[id];
     delete config.providers[id];
     await persist();
@@ -241,18 +250,19 @@
 
   async function startClaude(id) {
     const url = await startClaudeSignin(id);
+    claudeUrls[id] = url;
     await loadPending();
-    if (window.__TAURI__?.opener?.openUrl) {
-      window.__TAURI__.opener.openUrl(url);
-    } else {
-      window.open(url, '_blank');
-    }
+    // No window.open fallback: a launch failure must surface as an error,
+    // not disappear silently (issue #160). The URL is already stored above
+    // so the pending UI can still show it as a copyable manual path.
+    await openExternal(url, { opener: getOpener() });
   }
 
   async function finishClaude(id, code) {
     await finishClaudeSignin(id, code);
     await loadPending();
     secretStored[id] = true;
+    delete claudeUrls[id];
     await refresh();
   }
 
@@ -273,6 +283,7 @@
   async function cancelClaudeOrCodex(id) {
     await cancelSignin(id);
     await loadPending();
+    delete claudeUrls[id];
   }
 
   // Foreground refresh (issue #111): refresh once on entry, repeat at the
@@ -391,6 +402,7 @@
               providerName={info.name}
               providerNote={info.note}
               {pending}
+              claudeUrl={claudeUrls[id] ?? null}
               secretStored={secretStored[id] ?? false}
               headlineOptions={headlineOptionsFor(id, account)}
               headlineOpen={openHeadlineFor === id}
