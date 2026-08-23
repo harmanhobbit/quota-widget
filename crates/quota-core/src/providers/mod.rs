@@ -261,8 +261,20 @@ pub(crate) fn calendar_month_start(resets_at: DateTime<Utc>) -> Option<DateTime<
     resets_at.checked_sub_months(chrono::Months::new(1))
 }
 
+/// `reqwest::Error`'s Display is only the top layer — always "error sending
+/// request for url (…)" for send/connect failures — while the cause that
+/// actually distinguishes a DNS failure from a refused or reset connection
+/// lives in the source chain. Keep the chain: without it a transient failure
+/// is undiagnosable from the error the UI shows.
 pub(crate) fn network_err(e: reqwest::Error) -> FetchError {
-    FetchError::Network(e.to_string())
+    let mut msg = e.to_string();
+    let mut src = std::error::Error::source(&e);
+    while let Some(s) = src {
+        msg.push_str(": ");
+        msg.push_str(&s.to_string());
+        src = s.source();
+    }
+    FetchError::Network(msg)
 }
 
 /// Guards the one user-editable endpoint among the direct-HTTPS providers
@@ -287,6 +299,30 @@ pub(crate) fn require_https(url: &str) -> Result<(), FetchError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn network_err_keeps_the_cause_chain() {
+        // A guaranteed-closed port: bound, then released, so connecting
+        // refuses rather than hanging.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let err = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .unwrap_err();
+        let top = err.to_string();
+        let FetchError::Network(msg) = network_err(err) else {
+            panic!("expected FetchError::Network");
+        };
+        assert!(msg.starts_with(&top), "{msg} should keep the top layer");
+        // The layer that says *why* — "client error (Connect)" / "Connection
+        // refused" — must survive into the message.
+        assert!(msg.len() > top.len(), "{msg} should append the causes");
+        assert!(msg.contains("Connect"), "{msg}");
+    }
 
     #[test]
     fn require_https_accepts_only_https_urls() {
