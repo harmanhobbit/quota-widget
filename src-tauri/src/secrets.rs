@@ -263,6 +263,7 @@ mod backend {
 /// (logged at the call site) rather than risk the panic path: the app opens
 /// without a credential store, which is the pre-registration behavior,
 /// instead of not opening at all.
+#[cfg(any(test, mobile))]
 pub fn init_store() -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
@@ -337,6 +338,7 @@ pub fn load_all(dir: &Path, config: &Config) -> HashMap<String, String> {
 /// `target_os = "android"` `backend` module's doc comment above. Desktop
 /// keeps using the simpler `load_all`, since its backends never populate the
 /// `failed` list (see `get_reporting_errors`).
+#[cfg(any(test, mobile))]
 pub fn load_all_reporting_errors(
     dir: &Path,
     config: &Config,
@@ -351,6 +353,7 @@ pub fn load_all_reporting_errors(
 /// `quota_core::secret_store::classify` (and is unit-tested there, by the cheap
 /// Linux CI that never compiles this platform crate); this is the thin adapter
 /// that runs the real per-platform backend through it.
+#[cfg(any(test, mobile))]
 fn classify_secrets(
     keys: Vec<String>,
     lookup: impl FnMut(&str) -> Result<Option<String>, String>,
