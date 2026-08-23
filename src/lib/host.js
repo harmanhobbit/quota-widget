@@ -6,6 +6,7 @@
 // for platform detection.
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { openUrl } from '@tauri-apps/plugin-opener';
 
 export { listen };
 
@@ -23,9 +24,11 @@ export const pollCodexSignin = (provider) => invoke('poll_codex_signin', { provi
 export const cancelSignin = (provider) => invoke('cancel_signin', { provider });
 export const getPendingSignins = () => invoke('get_pending_signins');
 
-// The external-browser opener plugin (issue #159), read lazily so callers
-// always see its current availability rather than a value captured at
-// import time. Undefined when the plugin isn't registered — the caller (see
-// `browserHandoff.js`'s `openExternal`) treats that as "no opener" and fails
-// loudly instead of falling back to an in-WebView `window.open`.
-export const getOpener = () => window.__TAURI__?.opener?.openUrl;
+// The external-browser opener plugin (issue #159), through its proper JS
+// binding rather than the `window.__TAURI__` global — that global is only
+// injected when `app.withGlobalTauri` is set in tauri.conf.json, which this
+// app does not set, so `window.__TAURI__?.opener?.openUrl` was always
+// `undefined` and every mobile sign-in silently fell through to (and, after
+// issue #160 removed that fallback, threw past) a dead branch. Bundler
+// imports work regardless of that setting, matching `invoke`/`listen` above.
+export const getOpener = () => openUrl;
