@@ -263,6 +263,7 @@ mod backend {
 /// (logged at the call site) rather than risk the panic path: the app opens
 /// without a credential store, which is the pre-registration behavior,
 /// instead of not opening at all.
+#[cfg(any(test, mobile))]
 pub fn init_store() -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
