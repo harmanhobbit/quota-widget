@@ -219,13 +219,9 @@ mod backend {
 
 /// Register the platform's credential store as keyring-core's default, once
 /// at startup before any secret access. On Android this is
-/// `android-native-keyring-store`'s Keystore-backed `Store`; `Store::new()`
-/// reads the app context through `ndk-context`, which Tauri has already
-/// initialized by the time the setup closure runs, so no manual JNI
-/// companion is wired up here (Tauri does that init; the crate's
-/// `initializeNdkContext` companion is only for frameworks that don't). On
-/// every other target this is a no-op: Windows uses `keyring` 3, which
-/// manages its own platform store, and the Linux/dev fallback uses
+/// `android-native-keyring-store`'s Keystore-backed `Store`. On every other
+/// target this is a no-op: Windows uses `keyring` 3, which manages its own
+/// platform store, and the Linux/dev fallback uses
 /// `quota_core::secret_store`'s plaintext file — neither routes through
 /// keyring-core's default-store slot.
 ///
@@ -240,9 +236,56 @@ mod backend {
 /// `keyring_core::Entry` directly (see the `target_os = "android"` `backend`
 /// above) is the fix. Called from `mobile.rs::run`'s setup closure before
 /// the CI-seed block issues the first `secrets::set`.
+///
+/// The `ndk_context::initialize_android_context` call is equally
+/// load-bearing, and its absence was the launch crash that followed the
+/// registration fix. `Store::new()` reads the app context through
+/// `ndk-context`, whose `android_context()` is
+/// `ANDROID_CONTEXT.expect("android context was not initialized")` — a
+/// *panic*, not an `Err`, when the context was never set. Nothing in the
+/// tauri 2.11 / tao 0.35 / wry 0.55 stack sets it: their Android context
+/// plumbing lives in tao's own `ndk_glue` module, and the only crates in
+/// the tree that even reference `initialize_android_context` are
+/// `ndk-context` itself and the store's Kotlin companion (which this app
+/// does not wire up — it would mean hand-maintaining a Kotlin class against
+/// Tauri's generated MainActivity). So the very first `Store::new()`
+/// panicked inside the setup closure and took the process down before the
+/// webview loaded. The store crate's README claims "Tauri Mobile" does this
+/// initialization, but that is not true of the versions pinned here.
+///
+/// The fix is to copy tao's already-populated activity context across. tao
+/// registers the activity (and holds its `GlobalRef`) in its `CONTEXTS` map
+/// from the activity's creation until its destroy, and the setup closure
+/// runs at the event loop's `Ready` event — strictly after creation — so
+/// `main_android_context()` is populated by the time this runs. The store
+/// only uses the context for `getSharedPreferences`, for which an Activity
+/// context is correct. If no activity context exists yet we return `Err`
+/// (logged at the call site) rather than risk the panic path: the app opens
+/// without a credential store, which is the pre-registration behavior,
+/// instead of not opening at all.
+#[cfg(any(test, mobile))]
 pub fn init_store() -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
+        // `initialize_android_context` asserts on re-entry
+        // (`assert!(previous.is_none())` — "must be called exactly once"),
+        // and a panic here is the very launch crash this function exists to
+        // prevent, so make the call idempotent. The flag is set only after
+        // the init succeeds, so an early `Err` return leaves a retry free
+        // to attempt the init again.
+        static NDK_CONTEXT_INIT: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !NDK_CONTEXT_INIT.load(std::sync::atomic::Ordering::SeqCst) {
+            let ctx = tauri::tao::platform::android::prelude::main_android_context()
+                .ok_or_else(|| "no Android activity context available at startup".to_string())?;
+            // Safety: tao's CONTEXTS map holds the activity's GlobalRef for
+            // the activity's whole lifetime, so both raw pointers are valid
+            // here and stay valid for as long as the store can use them.
+            unsafe {
+                ndk_context::initialize_android_context(ctx.java_vm, ctx.context_jobject);
+            }
+            NDK_CONTEXT_INIT.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         let store = android_native_keyring_store::Store::new().map_err(|e| e.to_string())?;
         keyring_core::set_default_store(store);
     }
@@ -295,6 +338,7 @@ pub fn load_all(dir: &Path, config: &Config) -> HashMap<String, String> {
 /// `target_os = "android"` `backend` module's doc comment above. Desktop
 /// keeps using the simpler `load_all`, since its backends never populate the
 /// `failed` list (see `get_reporting_errors`).
+#[cfg(any(test, mobile))]
 pub fn load_all_reporting_errors(
     dir: &Path,
     config: &Config,
@@ -309,6 +353,7 @@ pub fn load_all_reporting_errors(
 /// `quota_core::secret_store::classify` (and is unit-tested there, by the cheap
 /// Linux CI that never compiles this platform crate); this is the thin adapter
 /// that runs the real per-platform backend through it.
+#[cfg(any(test, mobile))]
 fn classify_secrets(
     keys: Vec<String>,
     lookup: impl FnMut(&str) -> Result<Option<String>, String>,

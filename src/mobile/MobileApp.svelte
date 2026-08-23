@@ -29,8 +29,11 @@
     pollCodexSignin,
     cancelSignin,
     getPendingSignins,
+    getOpener,
   } from '../lib/host.js';
   import { runCredentialTest } from './credentialTest.js';
+  import { foregroundRefresh } from './foregroundRefresh.js';
+  import { openExternal } from './browserHandoff.js';
 
   // Every provider Android exposes after issue #110. Each carries a `mode`
   // that decides which settings UI it gets:
@@ -87,6 +90,12 @@
   let newKind = $state('openrouter');
   let newName = $state('');
   let pendingSignins = $state([]);
+  // Authorize URL for a Claude sign-in started *this session* — kept only in
+  // JS memory, never persisted (issue #160). A sign-in resumed after process
+  // death has no entry here, since the one-time PKCE challenge behind the
+  // URL is regenerated on every start; that's the case the paste-only UI
+  // stays for.
+  let claudeUrls = $state({});
 
   function headlineOptionsFor(id, account) {
     const kind = account.kind ?? id;
@@ -122,10 +131,9 @@
       mini_summary_metrics: null,
       tray_metric: null,
       // All seven on: identical to the field being absent, which is what
-      // quota-core's `UsageSchedule::default` reproduces on load. The mobile
-      // schedule editor is issue #123; this keeps the account shape consistent
-      // with desktop so a config written on either side loads the same on the
-      // other.
+      // quota-core's `UsageSchedule::default` reproduces on load. Editable per
+      // account via ScheduleSelection; the shape is kept consistent with
+      // desktop so a config written on either side loads the same on the other.
       usage_schedule: { monday: true, tuesday: true, wednesday: true, thursday: true, friday: true, saturday: true, sunday: true },
       settings,
     };
@@ -156,6 +164,15 @@
     for (const id of Object.keys(config.providers)) {
       if (secretInputs[id] === undefined) secretInputs[id] = '';
       if (expanded[id] === undefined) expanded[id] = false;
+      // Forward-compat: a config written by a pre-schedule build (or by a
+      // desktop that has never touched this account) loads with the field
+      // absent. All-seven is the pre-schedule default and what quota-core's
+      // `UsageSchedule::default` reproduces, so seed it before the schedule
+      // editor binds `usage_schedule[day]` — an undefined object would throw.
+      config.providers[id].usage_schedule ??= {
+        monday: true, tuesday: true, wednesday: true, thursday: true,
+        friday: true, saturday: true, sunday: true,
+      };
     }
   }
 
@@ -201,6 +218,7 @@
     await clearSecret(secretKey);
     await cancelSignin(id);
     delete secretStored[id];
+    delete claudeUrls[id];
     delete secretInputs[id];
     delete config.providers[id];
     await persist();
@@ -232,18 +250,19 @@
 
   async function startClaude(id) {
     const url = await startClaudeSignin(id);
+    claudeUrls[id] = url;
     await loadPending();
-    if (window.__TAURI__?.opener?.openUrl) {
-      window.__TAURI__.opener.openUrl(url);
-    } else {
-      window.open(url, '_blank');
-    }
+    // No window.open fallback: a launch failure must surface as an error,
+    // not disappear silently (issue #160). The URL is already stored above
+    // so the pending UI can still show it as a copyable manual path.
+    await openExternal(url, { opener: getOpener() });
   }
 
   async function finishClaude(id, code) {
     await finishClaudeSignin(id, code);
     await loadPending();
     secretStored[id] = true;
+    delete claudeUrls[id];
     await refresh();
   }
 
@@ -264,6 +283,23 @@
   async function cancelClaudeOrCodex(id) {
     await cancelSignin(id);
     await loadPending();
+    delete claudeUrls[id];
+  }
+
+  // Foreground refresh (issue #111): refresh once on entry, repeat at the
+  // configured interval while visible, and stop when the app is backgrounded.
+  // The cadence lives in `foregroundRefresh` so it is unit-tested; here we only
+  // bind it to the document's visibility. Background refresh while the app is
+  // hidden is the OS's job (the best-effort background refresh target), never
+  // this loop's.
+  const fg = foregroundRefresh({
+    refresh: () => refreshNow(),
+    intervalSecs: () => config?.poll_interval_secs ?? 60,
+  });
+
+  function onVisibilityChange() {
+    if (document.visibilityState === 'visible') fg.enter();
+    else fg.leave();
   }
 
   onMount(() => {
@@ -290,7 +326,19 @@
       config = e.payload;
       syncAccountState();
     }).then((u) => unlisten.push(u));
-    return () => unlisten.forEach((u) => u());
+
+    // Start the foreground loop if we launched visible (the usual case), and
+    // follow the app in and out of the foreground thereafter. Rust already ran
+    // one refresh at setup before the webview loaded, but entering here gives
+    // the webview its own immediate refresh and establishes the repeat.
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    if (document.visibilityState !== 'hidden') fg.enter();
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      fg.leave();
+      unlisten.forEach((u) => u());
+    };
   });
 </script>
 
@@ -354,6 +402,7 @@
               providerName={info.name}
               providerNote={info.note}
               {pending}
+              claudeUrl={claudeUrls[id] ?? null}
               secretStored={secretStored[id] ?? false}
               headlineOptions={headlineOptionsFor(id, account)}
               headlineOpen={openHeadlineFor === id}
@@ -402,6 +451,33 @@
       <section>
         <h2>Thresholds</h2>
         <Thresholds bind:thresholds={config.thresholds} />
+      </section>
+      <section>
+        <h2>Notifications</h2>
+        <label class="inline">
+          <input type="checkbox" bind:checked={config.alerts.toast} />
+          Notify me when an account crosses a threshold
+        </label>
+        <p class="note">
+          Alerts arrive as Android notifications. On Android 13 and later, Quota
+          Widget asks for notification permission once — after your first account
+          reads successfully, so the request has context. Declining is fine:
+          refresh and widgets keep working, and you won't be asked again.
+          Notifications are private, so the lock screen shows only generic text;
+          the account and the figures appear once you unlock. To turn them back
+          on later, open Android Settings → Apps → Quota&nbsp;Widget →
+          Notifications.
+        </p>
+      </section>
+      <section>
+        <h2>Background refresh</h2>
+        <p class="note">
+          While open, Quota Widget refreshes as soon as you switch to it and
+          then every {Math.max(15, config.poll_interval_secs ?? 60)} seconds until
+          you leave. In the background it aims to refresh roughly every 15
+          minutes — a best-effort target, not a guarantee: Android decides when
+          background work actually runs, so figures can be older than that.
+        </p>
       </section>
       <div class="settings-footer">
         <button class="primary" onclick={async () => { await persist(); view = 'list'; }}>Save</button>

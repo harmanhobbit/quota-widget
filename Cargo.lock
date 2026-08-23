@@ -2978,6 +2978,7 @@ dependencies = [
  "keyring",
  "keyring-core",
  "ksni",
+ "ndk-context",
  "notify-rust",
  "quota-core",
  "rand 0.8.7",

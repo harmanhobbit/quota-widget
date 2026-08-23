@@ -18,12 +18,28 @@ use crate::config::Config;
 use crate::model::{Status, UsageSnapshot};
 use crate::providers::{providers_for, CredentialWrite, ProviderCtx};
 use futures_util::future::join_all;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+
+/// The [`Background refresh target`](../../CONTEXT.md) — the interval Android
+/// asks the operating system to schedule refresh opportunities at while the app
+/// is not in use. It is a best-effort *request*, never a promise a refresh runs
+/// at this cadence (WorkManager coalesces, defers under Doze, and honours no
+/// exact time), which is why every surface built on it must frame the number as
+/// a target, not an "every 15 minutes". The scheduler that actually enqueues
+/// the periodic work lives in the host; this constant is the one value it and
+/// any copy describing it must agree on.
+pub const BACKGROUND_REFRESH_TARGET: Duration = Duration::from_secs(15 * 60);
 
 /// The aggregate contribution every enabled, tray-eligible account folds into:
 /// the worst status among them, and the loudest percentage behind it. Compact
 /// surfaces (desktop tray icon, Android widget colour) render this directly.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// Serializable because the persisted [`crate::snapshots::SnapshotStore`]
+/// carries it alongside the ordered snapshots, so a cold widget can colour
+/// itself from the last refresh without recomputing the fold.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AggregateStatus {
     pub status: Status,
     pub pct: f64,
@@ -126,24 +142,22 @@ fn compose(
     // Display order, applied once so every compact surface agrees.
     cfg.sort_snapshots(&mut fresh);
 
-    // Aggregate compact-surface status: each account contributes the status
-    // its tray picker names, unless the account opted its icon contribution
-    // out via `tray_color`.
-    let mut aggregate = AggregateStatus::default();
-    for s in &fresh {
-        let low = cfg
-            .providers
-            .get(&s.provider_id)
-            .and_then(|p| p.low_balance_warn);
-        if cfg.effective_alerts(&s.provider_id).tray_color {
-            if let Some((status, pct)) = cfg.mini_tray_status(s, low) {
-                aggregate.status = aggregate.status.max(status);
-                if let Some(pct) = pct {
-                    aggregate.pct = aggregate.pct.max(pct);
-                }
-            }
-        }
-    }
+    // Aggregate compact-surface status folded from the ordered snapshots.
+    let aggregate = aggregate_status(&fresh, cfg);
+
+    // Alert memory belongs only to accounts that still exist and are enabled.
+    // An account disabled or deleted since the last pass must not keep a
+    // remembered level that would suppress a genuine crossing when it returns —
+    // re-enabling or recreating starts a fresh baseline (issue #112). Pruning
+    // here, in the one place with tests, gives every host that guarantee for
+    // free rather than trusting each to forget on every config mutation.
+    let enabled: HashSet<String> = cfg
+        .providers
+        .iter()
+        .filter(|(_, p)| p.enabled)
+        .map(|(id, _)| id.clone())
+        .collect();
+    engine.retain_accounts(&enabled);
 
     // Alerts: edge-triggered in the engine, so this pass only ever reports
     // genuine crossings (or the process's baseline) — never a re-fire for an
@@ -159,6 +173,35 @@ fn compose(
         alerts: events,
         credential_writes,
     }
+}
+
+/// Fold a set of snapshots into the one compact-surface [`AggregateStatus`]:
+/// the worst status among tray-eligible accounts and the loudest percentage
+/// behind it. Each account contributes the status its tray picker names, unless
+/// it opted its icon contribution out via `tray_color`.
+///
+/// Extracted from [`compose`] so a host that mutates the snapshot list *after*
+/// a refresh — Android replaces a lost-rotation or undecryptable-credential
+/// snapshot with an explicit failure before persisting (`mobile.rs`) — can
+/// recompute the aggregate over the list it is actually about to store, rather
+/// than persisting a colour that predates its own replacements.
+pub fn aggregate_status(snapshots: &[UsageSnapshot], cfg: &Config) -> AggregateStatus {
+    let mut aggregate = AggregateStatus::default();
+    for s in snapshots {
+        let low = cfg
+            .providers
+            .get(&s.provider_id)
+            .and_then(|p| p.low_balance_warn);
+        if cfg.effective_alerts(&s.provider_id).tray_color {
+            if let Some((status, pct)) = cfg.mini_tray_status(s, low) {
+                aggregate.status = aggregate.status.max(status);
+                if let Some(pct) = pct {
+                    aggregate.pct = aggregate.pct.max(pct);
+                }
+            }
+        }
+    }
+    aggregate
 }
 
 #[cfg(test)]
@@ -265,6 +308,64 @@ mod tests {
         assert_eq!(outcome.credential_writes, credential_writes);
     }
 
+    /// Acceptance #5, through the refresh seam *and* the persistence seam
+    /// together: a success is persisted, the process dies, a cold process
+    /// reloads it as `prior`, and the next refresh's failed fetch keeps the
+    /// persisted figures with the new error attached — marked stale, aged by
+    /// the original `fetched_at`, never shown as current. A provider with no
+    /// prior success invents nothing on that same cold pass.
+    #[test]
+    fn stale_reading_survives_a_cold_start_through_the_snapshot_store() {
+        use crate::snapshots::SnapshotStore;
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg_with(crate::config::SortOrder::Manual);
+
+        // A live process succeeds for codex and persists the read model.
+        let first = compose(
+            vec![ok("codex", 20.0)],
+            &cfg,
+            &HashMap::new(),
+            &mut AlertEngine::default(),
+            vec![],
+        );
+        SnapshotStore::from_outcome(&first)
+            .save(dir.path())
+            .unwrap();
+        let persisted_fetched_at = first.snapshots[0].fetched_at;
+
+        // The process dies. A cold process reloads the store and refreshes;
+        // codex's fetch now fails and claude has never succeeded.
+        let reloaded = SnapshotStore::load(dir.path());
+        let prior = reloaded.prior_map();
+        let second = compose(
+            vec![failed("codex"), failed("claude")],
+            &cfg,
+            &prior,
+            &mut AlertEngine::default(),
+            vec![],
+        );
+
+        let codex = second
+            .snapshots
+            .iter()
+            .find(|s| s.provider_id == "codex")
+            .unwrap();
+        assert_eq!(codex.windows[0].used_pct, 20.0, "kept the persisted figure");
+        assert!(codex.error.is_some(), "carries the new failure");
+        assert_eq!(
+            codex.fetched_at, persisted_fetched_at,
+            "aged by the original success, not re-stamped as current",
+        );
+
+        let claude = second
+            .snapshots
+            .iter()
+            .find(|s| s.provider_id == "claude")
+            .unwrap();
+        assert!(claude.windows.is_empty(), "a first failure invents no data");
+        assert!(claude.error.is_some());
+    }
+
     /// A snapshot with no prior successful reading has nothing to preserve, so
     /// a failed first fetch stays visibly failed rather than fabricating data.
     #[test]
@@ -297,6 +398,45 @@ mod tests {
         );
         assert_eq!(outcome.aggregate.status, Status::Ok);
         assert_eq!(outcome.aggregate.pct, 0.0);
+    }
+
+    /// Acceptance #4 through the refresh seam: an account disabled between
+    /// passes has its alert memory pruned by `compose`, so when it is
+    /// re-enabled its first reading is a fresh baseline rather than a silent
+    /// "unchanged" that would swallow a genuine crossing.
+    #[test]
+    fn disabling_an_account_prunes_its_alert_memory() {
+        let mut cfg = cfg_with(crate::config::SortOrder::Manual);
+        let mut engine = AlertEngine::default();
+
+        // Pass 1: claude baselines at warn while enabled.
+        let out = compose(
+            vec![ok("claude", 85.0)],
+            &cfg,
+            &HashMap::new(),
+            &mut engine,
+            vec![],
+        );
+        assert_eq!(out.alerts.len(), 1);
+        assert_eq!(out.alerts[0].kind, crate::alerts::AlertKind::Baseline);
+
+        // Pass 2: claude is now disabled (and so not fetched). The prune forgets
+        // it even though nothing evaluated it this pass.
+        cfg.providers.get_mut("claude").unwrap().enabled = false;
+        let out = compose(vec![], &cfg, &HashMap::new(), &mut engine, vec![]);
+        assert!(out.alerts.is_empty());
+
+        // Pass 3: re-enabled and read again — a fresh baseline, not silence.
+        cfg.providers.get_mut("claude").unwrap().enabled = true;
+        let out = compose(
+            vec![ok("claude", 85.0)],
+            &cfg,
+            &HashMap::new(),
+            &mut engine,
+            vec![],
+        );
+        assert_eq!(out.alerts.len(), 1);
+        assert_eq!(out.alerts[0].kind, crate::alerts::AlertKind::Baseline);
     }
 
     /// `refresh` itself (the async wrapper) with no enabled providers is a

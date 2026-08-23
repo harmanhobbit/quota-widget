@@ -299,3 +299,29 @@ two exits honour it: Save & close and Esc. ✕ is an explicit hide and ignores
 it, and ← Back is navigation within the window rather than an exit at all — it
 shows the usage list, ends the visit, and leaves the window on screen.
 _Avoid_: Previous view, back target, exit destination, saved view
+
+**Credential bundle**:
+What actually crosses between devices when credentials are transferred: each
+[[account]]'s entry together with its pasted API key. An OAuth or cookie
+account travels as its entry alone — never its session — and signs in again on
+arrival, so a transferred OAuth account lands in [[provider onboarding]], not as
+a [[pending sign-in]]. It is the concrete thing that moves, as opposed to
+[[shared configuration]], whose meaning is aligned across platforms but which is
+still entered independently on each.
+_Avoid_: Secret export, key blob, sync payload
+
+**Device pairing**:
+The live, on-demand transfer of a [[credential bundle]] from one device to
+another with no server between them — over the local network for any pair of
+devices, or by a code scanned from a desktop screen to a phone. It is a one-shot
+copy that provisions a second or replacement device, never a standing link that
+keeps devices in step afterwards.
+_Avoid_: Sync, device linking, continuous sync
+
+**Credential export**:
+A [[credential bundle]] written to an encrypted file, unreadable on any device
+without the passphrase that protects it — and unrecoverable if that passphrase
+is lost, because nothing else holds the key. It is the backup and
+disaster-recovery form of a transfer, and doubles as an offline way to provision
+a device that cannot [[device pairing|pair]] live.
+_Avoid_: Backup file, key dump, plaintext export
