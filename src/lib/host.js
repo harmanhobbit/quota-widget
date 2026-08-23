@@ -22,3 +22,10 @@ export const startCodexSignin = (provider) => invoke('start_codex_signin', { pro
 export const pollCodexSignin = (provider) => invoke('poll_codex_signin', { provider });
 export const cancelSignin = (provider) => invoke('cancel_signin', { provider });
 export const getPendingSignins = () => invoke('get_pending_signins');
+
+// The external-browser opener plugin (issue #159), read lazily so callers
+// always see its current availability rather than a value captured at
+// import time. Undefined when the plugin isn't registered — the caller (see
+// `browserHandoff.js`'s `openExternal`) treats that as "no opener" and fails
+// loudly instead of falling back to an in-WebView `window.open`.
+export const getOpener = () => window.__TAURI__?.opener?.openUrl;
