@@ -6,6 +6,7 @@ pub mod model;
 pub mod platform_preferences;
 pub mod providers;
 pub mod refresh;
+pub mod seal;
 pub mod secret_store;
 pub mod settings_return;
 pub mod shared_config;
