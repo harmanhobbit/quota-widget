@@ -70,6 +70,11 @@ notify-rust = "4"
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+# Desktop→phone QR transfer (issue #156): the official Tauri camera-scanning
+# plugin, same maturity tier as `dialog`/`fs` above. The webview drives
+# `scan()`/`cancel()` from its own JS API directly, so mobile.rs only ever
+# registers the plugin — no app-defined command wraps it.
+tauri-plugin-barcode-scanner = "2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2.10.1"

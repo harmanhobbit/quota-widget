@@ -6,6 +6,7 @@ pub mod model;
 pub mod pake;
 pub mod platform_preferences;
 pub mod providers;
+pub mod qr_transfer;
 pub mod refresh;
 pub mod seal;
 pub mod secret_store;

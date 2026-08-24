@@ -8,6 +8,8 @@ mod grok_oauth;
 mod oauth;
 #[cfg(not(mobile))]
 mod poller;
+#[cfg(not(mobile))]
+mod qr_transfer;
 mod secrets;
 #[cfg(not(mobile))]
 mod tray;
@@ -42,7 +44,7 @@ mod desktop_app {
     #[cfg(target_os = "linux")]
     use crate::tray_linux;
     use crate::{
-        codex_oauth, credential_transfer, desktop, grok_oauth, oauth, poller, secrets, tray,
+codex_oauth, credential_transfer, desktop, grok_oauth, oauth, poller, qr_transfer, secrets, tray,
         updates,
     };
     use quota_core::alerts::AlertEngine;
@@ -711,9 +713,10 @@ mod desktop_app {
                 desktop::mark_desktop_integration_prompted,
                 updates::restart_app,
                 quit,
-                credential_transfer::export_credential_bundle,
+credential_transfer::export_credential_bundle,
                 credential_transfer::import_credential_bundle,
                 set_dialog_open,
+                qr_transfer::qr_transfer_frames,
             ])
             .setup(move |app| {
                 // Launch is tray-first: both windows are configured `visible: false`
