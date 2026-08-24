@@ -14,6 +14,7 @@
   import Thresholds from '../lib/shared/Thresholds.svelte';
   import SimpleKeyAccount from '../lib/shared/SimpleKeyAccount.svelte';
   import OAuthAccount from './OAuthAccount.svelte';
+  import CredentialTransfer from './CredentialTransfer.svelte';
   import {
     getSnapshots,
     setConfig,
@@ -244,6 +245,31 @@
     pendingSignins = await getPendingSignins().catch(() => []);
   }
 
+  // Refills `secretStored` for every account in the current config — after the
+  // initial load and after a credential import lands accounts whose keys came
+  // with them, so their rows show the stored state rather than a paste field.
+  async function scanSecrets() {
+    for (const id of Object.keys(config.providers)) {
+      const info = providerInfo(config.providers[id].kind ?? id);
+      const secretKey = info.mode === 'oauth' ? `${id}_oauth` : id;
+      secretStored[id] = await hasSecret(secretKey).catch(() => false);
+    }
+  }
+
+  // A credential import landed accounts (issue #152): re-read the persisted
+  // configuration rather than wait for the `config` event (which may not have
+  // arrived yet), re-scan which accounts hold secrets, and refresh so the
+  // newly stored pasted-key accounts read immediately. The imported OAuth
+  // shells have no secret and stay in provider onboarding — their Sign in
+  // buttons are already how the list renders them.
+  async function handleImported() {
+    const initial = await getSnapshots();
+    config = initial.config;
+    syncAccountState();
+    await scanSecrets();
+    await refresh();
+  }
+
   function pendingFor(id) {
     return pendingSignins.find((p) => p.provider_key === id) ?? null;
   }
@@ -307,11 +333,7 @@
       snapshots = initial.snapshots;
       config = initial.config;
       syncAccountState();
-      for (const id of Object.keys(config.providers)) {
-        const info = providerInfo(config.providers[id].kind ?? id);
-        const secretKey = info.mode === 'oauth' ? `${id}_oauth` : id;
-        secretStored[id] = await hasSecret(secretKey).catch(() => false);
-      }
+      await scanSecrets();
       await loadPending();
       // The debug-only CI OpenRouter seed lives in Rust `setup()` (see
       // src-tauri/src/mobile.rs), not here: the Android webview reloads once
@@ -444,6 +466,7 @@
           {/if}
         {/each}
       </section>
+      <CredentialTransfer onImported={handleImported} />
       <section>
         <h2>Ordering</h2>
         <Ordering bind:sortOrder={config.sort_order} bind:sortBasis={config.sort_basis} />

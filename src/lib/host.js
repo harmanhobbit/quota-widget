@@ -32,3 +32,29 @@ export const getPendingSignins = () => invoke('get_pending_signins');
 // issue #160 removed that fallback, threw past) a dead branch. Bundler
 // imports work regardless of that setting, matching `invoke`/`listen` above.
 export const getOpener = () => openUrl;
+
+// Credential export & import (issue #152). Only the user-picked file URI and
+// the passphrase cross the bridge: the commands read and write the file
+// in-process, so the webview never holds a filesystem permission of its own.
+export const exportCredentials = (destination, passphrase) =>
+  invoke('export_credentials', { destination, passphrase });
+export const importCredentials = (source, passphrase) =>
+  invoke('import_credentials', { source, passphrase });
+
+// The system file dialogs come from the dialog plugin, imported lazily the
+// same way Settings pulls in the updater plugin: under the smoke-mount
+// harness only a dynamic `import('@tauri-apps/...')` specifier is rewritten
+// to the stub, and a static import would resolve the real package, whose
+// calls need a live WebView. `.qwb` is the sealed-bundle file extension both
+// platforms' pickers filter on (the format's magic is `QWSB`).
+export const pickExportDestination = async () =>
+  (await import('@tauri-apps/plugin-dialog')).save({
+    defaultPath: 'quota-widget-export.qwb',
+    filters: [{ name: 'Quota Widget credential export', extensions: ['qwb'] }],
+  });
+export const pickImportSource = async () =>
+  (await import('@tauri-apps/plugin-dialog')).open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: 'Quota Widget credential export', extensions: ['qwb'] }],
+  });
