@@ -44,8 +44,8 @@ mod desktop_app {
     #[cfg(target_os = "linux")]
     use crate::tray_linux;
     use crate::{
-codex_oauth, credential_transfer, desktop, grok_oauth, oauth, poller, qr_transfer, secrets, tray,
-        updates,
+        codex_oauth, credential_transfer, desktop, grok_oauth, oauth, poller, qr_transfer, secrets,
+        tray, updates,
     };
     use quota_core::alerts::AlertEngine;
     use quota_core::config::{Config, ConfigRecovery};
@@ -713,7 +713,7 @@ codex_oauth, credential_transfer, desktop, grok_oauth, oauth, poller, qr_transfe
                 desktop::mark_desktop_integration_prompted,
                 updates::restart_app,
                 quit,
-credential_transfer::export_credential_bundle,
+                credential_transfer::export_credential_bundle,
                 credential_transfer::import_credential_bundle,
                 set_dialog_open,
                 qr_transfer::qr_transfer_frames,
