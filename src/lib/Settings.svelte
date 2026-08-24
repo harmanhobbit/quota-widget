@@ -71,11 +71,17 @@
   let addingAccount = $state(false);
   let saveError = $state('');
   let removalError = $state('');
-  // Encrypted credential export/import (issue #151).
+  // Encrypted credential export/import (issue #151). Collapsed by default:
+  // most sessions never touch it, and an open passphrase form is not
+  // something to show unasked.
+  let backupOpen = $state(false);
   let exportPassphrase = $state('');
   let exportPassphraseConfirm = $state('');
   let exportBusy = $state(false);
   let exportMessage = $state('');
+  // The passphrase field only appears once a file is chosen — asking for it
+  // with nothing selected yet has nothing to attach it to.
+  let importPath = $state('');
   let importPassphrase = $state('');
   let importBusy = $state(false);
   let importMessage = $state('');
@@ -519,35 +525,55 @@
     }
   }
 
-  // Encrypted credential import: pick a backup file, open it under the given
-  // passphrase, and merge whatever it holds onto the running configuration.
-  // A wrong passphrase or a corrupt file is refused by Rust before anything
-  // here changes.
-  async function importCredentials() {
+  // Step one of import: pick the backup file. The passphrase field only
+  // appears once a file is chosen — asking for it with nothing selected has
+  // nothing to attach it to.
+  async function chooseImportFile() {
     importMessage = '';
     importSummary = null;
-    if (!importPassphrase) {
-      importMessage = 'Enter the backup passphrase first.';
-      return;
-    }
     const selected = await openDialog({
       multiple: false,
       filters: [{ name: 'Quota Widget backup', extensions: ['qwsb'] }],
     });
     if (!selected) return; // user cancelled the dialog
+    importPath = selected;
+    importPassphrase = '';
+  }
+
+  function cancelImportFile() {
+    importPath = '';
+    importPassphrase = '';
+    importMessage = '';
+  }
+
+  function fileName(path) {
+    return path.split(/[\\/]/).pop();
+  }
+
+  // Step two: open the chosen file under the given passphrase and merge
+  // whatever it holds onto the running configuration. A wrong passphrase or
+  // a corrupt file is refused by Rust before anything here changes.
+  async function importCredentials() {
+    importMessage = '';
+    importSummary = null;
+    if (!importPassphrase) {
+      importMessage = 'Enter the backup passphrase.';
+      return;
+    }
     importBusy = true;
     try {
       const report = await invoke('import_credential_bundle', {
-        path: selected,
+        path: importPath,
         passphrase: importPassphrase,
       });
-      importPassphrase = '';
       const counts = { added: 0, updated: 0, needs_onboarding: 0, could_not_store: 0 };
       for (const outcome of Object.values(report.accounts)) {
         counts[outcome.outcome] = (counts[outcome.outcome] ?? 0) + 1;
       }
       importSummary = counts;
       await refreshImportedProviders(Object.keys(report.accounts));
+      importPath = '';
+      importPassphrase = '';
     } catch (error) {
       importMessage = `Could not import: ${error}`;
     } finally {
@@ -1185,49 +1211,61 @@
     </section>
 
     <section class="backup">
-      <h2>Backup</h2>
-      <p class="note">
-        Export every account to a file encrypted under a passphrase you
-        choose — a backup you can restore here or on another device. There is
-        no way to recover a forgotten passphrase: no one but you holds it.
-      </p>
-      <div class="row">
-        <label class="inline">Passphrase
+      <h2>
+        <button
+          class="provider-disclosure"
+          aria-expanded={backupOpen}
+          onclick={() => (backupOpen = !backupOpen)}
+        ><span class="chevron" class:open={backupOpen}>▸</span> Backup</button>
+      </h2>
+      {#if backupOpen}
+        <p class="note">
+          Export every account to a file encrypted under a passphrase you
+          choose — a backup you can restore here or on another device. There is
+          no way to recover a forgotten passphrase: no one but you holds it.
+        </p>
+        <label class="field">Passphrase
           <input type="password" bind:value={exportPassphrase} autocomplete="new-password" />
         </label>
-      </div>
-      <div class="row">
-        <label class="inline">Confirm passphrase
+        <label class="field">Confirm passphrase
           <input type="password" bind:value={exportPassphraseConfirm} autocomplete="new-password" />
         </label>
-      </div>
-      <div class="row">
-        <button class="small" onclick={exportCredentials} disabled={exportBusy}>
-          {exportBusy ? 'Exporting…' : 'Export accounts…'}
-        </button>
-      </div>
-      {#if exportMessage}<p class="note">{exportMessage}</p>{/if}
+        <div class="row">
+          <button class="small" onclick={exportCredentials} disabled={exportBusy}>
+            {exportBusy ? 'Exporting…' : 'Export accounts…'}
+          </button>
+        </div>
+        {#if exportMessage}<p class="note">{exportMessage}</p>{/if}
 
-      <p class="note">
-        Import accounts from a backup file. Pasted-key accounts work
-        immediately; OAuth and cookie accounts (Claude, Codex, Grok, Hermes
-        Portal) arrive awaiting sign-in.
-      </p>
-      <div class="row">
-        <label class="inline">Passphrase
-          <input type="password" bind:value={importPassphrase} autocomplete="current-password" />
-        </label>
-      </div>
-      <div class="row">
-        <button class="small" onclick={importCredentials} disabled={importBusy}>
-          {importBusy ? 'Importing…' : 'Import accounts…'}
-        </button>
-      </div>
-      {#if importMessage}<p class="note">{importMessage}</p>{/if}
-      {#if importSummary}
         <p class="note">
-          Added {importSummary.added}, updated {importSummary.updated}{#if importSummary.needs_onboarding}, {importSummary.needs_onboarding} awaiting sign-in{/if}{#if importSummary.could_not_store}, {importSummary.could_not_store} could not be stored{/if}.
+          Import accounts from a backup file. Pasted-key accounts work
+          immediately; OAuth and cookie accounts (Claude, Codex, Grok, Hermes
+          Portal) arrive awaiting sign-in.
         </p>
+        {#if !importPath}
+          <div class="row">
+            <button class="small" onclick={chooseImportFile}>Choose backup file…</button>
+          </div>
+        {:else}
+          <div class="row">
+            <span class="note">Selected: {fileName(importPath)}</span>
+            <button class="small" onclick={cancelImportFile}>Change</button>
+          </div>
+          <label class="field">Passphrase
+            <input type="password" bind:value={importPassphrase} autocomplete="current-password" />
+          </label>
+          <div class="row">
+            <button class="small" onclick={importCredentials} disabled={importBusy || !importPassphrase}>
+              {importBusy ? 'Importing…' : 'Import accounts'}
+            </button>
+          </div>
+        {/if}
+        {#if importMessage}<p class="note">{importMessage}</p>{/if}
+        {#if importSummary}
+          <p class="note">
+            Added {importSummary.added}, updated {importSummary.updated}{#if importSummary.needs_onboarding}, {importSummary.needs_onboarding} awaiting sign-in{/if}{#if importSummary.could_not_store}, {importSummary.could_not_store} could not be stored{/if}.
+          </p>
+        {/if}
       {/if}
     </section>
 
