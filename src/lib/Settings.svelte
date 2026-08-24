@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { runQrTransfer } from './qrTransfer.js';
+  import { qrTransferFrames } from './host.js';
 
   let { onclose, initialConfig, snapshots = [] } = $props();
 
@@ -95,6 +97,66 @@
   let desktop = $state(null);
   let desktopBusy = $state(false);
   let desktopMessage = $state('');
+
+  // Desktop→phone QR transfer (issue #156). `qrFrames` holds the SVG markup
+  // for every frame once sealing succeeds; `qrFrameIndex` cycles through them
+  // on a timer while the section is open, so a multi-frame transfer scans as
+  // an animated sequence rather than a single frame the phone can't keep up
+  // with. Cleared on Done/close so nothing sealed lingers on screen.
+  let qrOpen = $state(false);
+  let qrPassphrase = $state('');
+  let qrConfirm = $state('');
+  let qrBusy = $state(false);
+  let qrError = $state('');
+  let qrFrames = $state(null);
+  let qrFrameIndex = $state(0);
+  let qrTimer = null;
+
+  function openQrTransfer() {
+    qrOpen = true;
+    qrPassphrase = '';
+    qrConfirm = '';
+    qrError = '';
+    qrFrames = null;
+  }
+
+  function closeQrTransfer() {
+    qrOpen = false;
+    qrPassphrase = '';
+    qrConfirm = '';
+    qrFrames = null;
+    if (qrTimer) {
+      clearInterval(qrTimer);
+      qrTimer = null;
+    }
+  }
+
+  async function showQrTransfer() {
+    qrBusy = true;
+    qrError = '';
+    const r = await runQrTransfer({
+      passphrase: qrPassphrase,
+      confirm: qrConfirm,
+      host: { qrTransferFrames },
+    });
+    qrBusy = false;
+    if (r.status === 'failed') {
+      qrError = r.msg;
+      return;
+    }
+    qrFrames = r.frames;
+    qrFrameIndex = 0;
+    // The passphrase has done its job — it stays out of memory beyond this
+    // point, same as the file export flow.
+    qrPassphrase = '';
+    qrConfirm = '';
+    if (qrTimer) clearInterval(qrTimer);
+    if (qrFrames.length > 1) {
+      qrTimer = setInterval(() => {
+        qrFrameIndex = (qrFrameIndex + 1) % qrFrames.length;
+      }, 700);
+    }
+  }
 
   async function refreshDesktop() {
     try {
@@ -1080,6 +1142,40 @@
           setting above says. Launching it with <code>GDK_BACKEND=x11</code>
           restores it.
         </p>
+      {/if}
+    </section>
+
+    <section class="qr-transfer">
+      <h2>Transfer to phone</h2>
+      {#if !qrOpen}
+        <div class="row">
+          <button class="small" onclick={openQrTransfer}>Show QR code…</button>
+        </div>
+        <p class="note">Shows a scannable code with every account — pasted keys included, OAuth/cookie accounts as a shell to sign in again — for the Android app to scan and import.</p>
+      {:else if !qrFrames}
+        <label class="field">Passphrase
+          <input type="password" autocomplete="new-password" bind:value={qrPassphrase} />
+        </label>
+        <label class="field">Confirm
+          <input type="password" autocomplete="new-password" bind:value={qrConfirm} />
+        </label>
+        {#if qrError}<p class="test bad">{qrError}</p>{/if}
+        <div class="row">
+          <button class="small" onclick={showQrTransfer} disabled={qrBusy}>{qrBusy ? 'Sealing…' : 'Show code'}</button>
+          <button class="small" onclick={closeQrTransfer}>Cancel</button>
+        </div>
+      {:else}
+        <div class="qr-frame">{@html qrFrames[qrFrameIndex]}</div>
+        <p class="note">
+          {#if qrFrames.length > 1}
+            Scan continuously on the phone — frame {qrFrameIndex + 1} of {qrFrames.length}.
+          {:else}
+            Scan on the phone, then enter this passphrase when it asks.
+          {/if}
+        </p>
+        <div class="row">
+          <button class="small" onclick={closeQrTransfer}>Done</button>
+        </div>
       {/if}
     </section>
 

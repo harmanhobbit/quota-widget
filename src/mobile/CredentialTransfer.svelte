@@ -7,11 +7,19 @@
   // travel as shells (ADR-0008): they arrive signed out and land in provider
   // onboarding above, which is what the "needs sign-in" summary line means.
   import { runExport, runImport } from './credentialTransfer.js';
+  import { runQrScan, finishQrImport } from './qrImport.js';
   import {
     pickExportDestination,
     pickImportSource,
     exportCredentials,
     importCredentials,
+    qrCheckPermissions,
+    qrRequestPermissions,
+    qrScanReset,
+    qrScan,
+    qrCancelScan,
+    qrScanFrame,
+    qrScanFinish,
   } from '../lib/host.js';
 
   let {
@@ -20,13 +28,18 @@
     onImported,
   } = $props();
 
-  let mode = $state(null); // null | 'export' | 'import'
+  let mode = $state(null); // null | 'export' | 'import' | 'qr-scanning' | 'qr-passphrase'
   let passphrase = $state('');
   let confirm = $state('');
   let busy = $state(false);
   let error = $state('');
   let doneMsg = $state('');
   let summary = $state(null);
+  // Desktop→phone QR transfer (issue #156): progress while `qr-scanning`,
+  // populated by `runQrScan`'s onProgress callback for a "captured N of M"
+  // caption — the same `quota_core::qr_transfer::FrameStatus` shape the host
+  // command returns.
+  let qrProgress = $state(null);
 
   function open(which) {
     mode = which;
@@ -82,6 +95,52 @@
       if (landed) await onImported?.();
     }
   }
+
+  async function startQrScan() {
+    mode = 'qr-scanning';
+    error = '';
+    qrProgress = null;
+    const r = await runQrScan({
+      host: { qrCheckPermissions, qrRequestPermissions, qrScanReset, qrScan, qrScanFrame },
+      onProgress: (status) => {
+        qrProgress = status;
+      },
+    });
+    if (r.status === 'failed') {
+      mode = null;
+      error = r.msg;
+    } else if (r.status === 'cancelled') {
+      mode = null;
+    } else {
+      // Complete: ask for the passphrase before opening what was scanned.
+      mode = 'qr-passphrase';
+      passphrase = '';
+    }
+  }
+
+  function cancelQrScan() {
+    // Aborts the in-flight `qrScan()` promise `runQrScan`'s loop is awaiting;
+    // its rejection is what turns that loop's result into 'cancelled'.
+    qrCancelScan();
+  }
+
+  async function doQrFinish() {
+    busy = true;
+    error = '';
+    summary = null;
+    const r = await finishQrImport({ passphrase, host: { qrScanFinish } });
+    busy = false;
+    if (r.status === 'failed') {
+      error = r.msg;
+    } else {
+      mode = null;
+      summary = r.summary;
+      passphrase = '';
+      const landed =
+        summary.added.length + summary.updated.length + summary.needsSignIn.length > 0;
+      if (landed) await onImported?.();
+    }
+  }
 </script>
 
 <section class="credential-transfer">
@@ -97,6 +156,27 @@
     <div class="row transfer-actions">
       <button onclick={() => open('export')}>Export accounts…</button>
       <button onclick={() => open('import')}>Import accounts…</button>
+      <button onclick={startQrScan}>Scan from desktop…</button>
+    </div>
+  {:else if mode === 'qr-scanning'}
+    <p class="note">
+      Point the camera at the code on your desktop and keep it steady — it
+      cycles through several frames for a large account set.
+      {#if qrProgress}Captured {qrProgress.have} of {qrProgress.total}.{/if}
+    </p>
+    <div class="row transfer-actions">
+      <button onclick={cancelQrScan}>Cancel</button>
+    </div>
+  {:else if mode === 'qr-passphrase'}
+    <p class="note">Scan complete. Enter the passphrase it was sealed under.</p>
+    <label class="field">Passphrase
+      <input type="password" autocomplete="current-password" bind:value={passphrase} />
+    </label>
+    <div class="row transfer-actions">
+      <button class="primary" disabled={busy} onclick={doQrFinish}>
+        {busy ? 'Working…' : 'Import'}
+      </button>
+      <button disabled={busy} onclick={() => open(null)}>Cancel</button>
     </div>
   {:else if mode === 'export'}
     <label class="field">Passphrase

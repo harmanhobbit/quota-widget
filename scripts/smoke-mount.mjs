@@ -1683,6 +1683,110 @@ const CASES = [
       }
     },
   },
+  // Desktop→phone QR transfer, desktop side (issue #156): typing and
+  // confirming a passphrase reaches qr_transfer_frames, and the returned SVG
+  // renders — proving the frame actually reaches the page, not just the
+  // command call. A mismatched confirmation is refused before the command.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    qrFrames: ['<svg data-smoke-frame="0"><rect width="1" height="1"/></svg>'],
+    verify: async ({ target, flushSync }) => {
+      const button = (text) => [...target.querySelectorAll('button')].find((b) => b.textContent.trim() === text);
+      const fillPasswords = (values) => {
+        const inputs = [...target.querySelectorAll('.qr-transfer input[type="password"]')];
+        if (inputs.length !== values.length) throw new Error(`expected ${values.length} passphrase fields, found ${inputs.length}`);
+        inputs.forEach((el, i) => {
+          el.value = values[i];
+          el.dispatchEvent(new window.Event('input', { bubbles: true }));
+        });
+        flushSync();
+      };
+
+      button('Show QR code…').click();
+      flushSync();
+      fillPasswords(['one', 'two']);
+      button('Show code').click();
+      await settle(flushSync);
+      if (!globalThis.__SMOKE_TRANSFER_CALLS__.every((c) => !c.startsWith('qr_transfer_frames'))) {
+        throw new Error('a mismatched confirmation still called qr_transfer_frames');
+      }
+      if (!target.querySelector('.qr-transfer .test.bad')) {
+        throw new Error('a mismatched confirmation showed no error');
+      }
+
+      fillPasswords(['correct horse', 'correct horse']);
+      button('Show code').click();
+      await settle(flushSync);
+      if (!globalThis.__SMOKE_TRANSFER_CALLS__.includes('qr_transfer_frames:correct horse')) {
+        throw new Error(`did not reach qr_transfer_frames with the passphrase: ${globalThis.__SMOKE_TRANSFER_CALLS__.join(',')}`);
+      }
+      if (!target.querySelector('.qr-frame svg')) {
+        throw new Error('the returned frame did not render as an SVG on the page');
+      }
+
+      button('Done').click();
+      flushSync();
+      if (target.querySelector('.qr-frame') || !button('Show QR code…')) {
+        throw new Error('Done did not return to the closed state');
+      }
+    },
+  },
+  // Desktop→phone QR transfer, mobile side (issue #156): the scan loop calls
+  // qr_scan_reset then qr_scan_frame for each queued detection, renders
+  // "captured N of M" progress from the FrameStatus each call returns, and —
+  // once the collector reports complete — asks for the passphrase and
+  // reaches qr_scan_finish with it, rendering the same four-way summary the
+  // file import path does.
+  {
+    file: 'src/mobile/MobileApp.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, providers: { openrouter: provider({ enabled: true }) } },
+    verify: async ({ target, flushSync }) => {
+      const button = (text) => [...target.querySelectorAll('button')].find((b) => b.textContent.trim() === text);
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+
+      globalThis.__SMOKE_QR_SCAN_QUEUE__ = ['frame-a', 'frame-b'];
+      globalThis.__SMOKE_QR_STATUS_SEQUENCE__ = [
+        { have: 1, total: 2, complete: false },
+        { have: 2, total: 2, complete: true },
+      ];
+      button('Scan from desktop…').click();
+      await settle(flushSync);
+      const calls = globalThis.__SMOKE_TRANSFER_CALLS__;
+      if (calls[0] !== 'qr_scan_reset') {
+        throw new Error(`scan did not reset the collector first: ${calls.join(',')}`);
+      }
+      if (!calls.includes('qr_scan_frame:frame-a') || !calls.includes('qr_scan_frame:frame-b')) {
+        throw new Error(`both scanned frames did not reach qr_scan_frame: ${calls.join(',')}`);
+      }
+      // Progress ("captured N of M") only renders while still in the
+      // qr-scanning view; completion moves straight to the passphrase
+      // prompt, which is what's asserted below.
+      const passInput = target.querySelector('.credential-transfer input[type="password"]');
+      if (!passInput) throw new Error('scan completing did not prompt for the passphrase');
+      passInput.value = 'correct horse';
+      passInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+      flushSync();
+
+      globalThis.__SMOKE_IMPORT_REPORT__ = {
+        accounts: {
+          elevenlabs: { outcome: 'added' },
+          claude: { outcome: 'needs_onboarding' },
+        },
+      };
+      button('Import').click();
+      await settle(flushSync);
+      if (!calls.includes('qr_scan_finish:correct horse')) {
+        throw new Error(`did not reach qr_scan_finish with the passphrase: ${calls.join(',')}`);
+      }
+      const summary = target.querySelector('.import-summary');
+      if (!summary?.textContent.includes('Added: elevenlabs') || !summary.textContent.includes('Needs sign-in: claude')) {
+        throw new Error(`scan summary missing expected outcomes: ${summary?.textContent}`);
+      }
+    },
+  },
 ];
 
 function stubTauri() {
@@ -1770,6 +1874,30 @@ export async function invoke(cmd, args) {
       (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push(\`import_credentials:\${args.source}:\${args.passphrase}\`);
       if (globalThis.__SMOKE_IMPORT_ERROR__) throw new Error(globalThis.__SMOKE_IMPORT_ERROR__);
       return globalThis.__SMOKE_IMPORT_REPORT__ ?? { accounts: {} };
+    // Desktop→phone QR transfer (issue #156). Desktop's qr_transfer_frames
+    // stands in for sealing + rendering; the mobile trio stand in for the
+    // FrameCollector, tracked by the per-case __SMOKE_QR_STATUS_SEQUENCE__ so
+    // a case can prove the scan loop keeps calling qr_scan_frame until it
+    // reports complete, and only then reaches qr_scan_finish.
+    case 'qr_transfer_frames':
+      (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push(\`qr_transfer_frames:\${args.passphrase}\`);
+      if (globalThis.__SMOKE_QR_TRANSFER_ERROR__) throw new Error(globalThis.__SMOKE_QR_TRANSFER_ERROR__);
+      return globalThis.__SMOKE_QR_FRAMES__ ?? ['<svg data-smoke-frame="0"></svg>'];
+    case 'qr_scan_reset':
+      (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push('qr_scan_reset');
+      globalThis.__SMOKE_QR_STATUS_INDEX__ = 0;
+      return null;
+    case 'qr_scan_frame': {
+      (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push(\`qr_scan_frame:\${args.text}\`);
+      const seq = globalThis.__SMOKE_QR_STATUS_SEQUENCE__ ?? [{ have: 1, total: 1, complete: true }];
+      const i = globalThis.__SMOKE_QR_STATUS_INDEX__ ?? 0;
+      globalThis.__SMOKE_QR_STATUS_INDEX__ = Math.min(i + 1, seq.length - 1);
+      return seq[i];
+    }
+    case 'qr_scan_finish':
+      (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push(\`qr_scan_finish:\${args.passphrase}\`);
+      if (globalThis.__SMOKE_QR_FINISH_ERROR__) throw new Error(globalThis.__SMOKE_QR_FINISH_ERROR__);
+      return globalThis.__SMOKE_IMPORT_REPORT__ ?? { accounts: {} };
     default: return null;
   }
 }`);
@@ -1798,6 +1926,21 @@ export async function listen(event, handler) {
   w('@tauri-apps/plugin-dialog/index.js', `
 export async function save() { return globalThis.__SMOKE_DIALOG_SAVE__ ?? null; }
 export async function open() { return globalThis.__SMOKE_DIALOG_OPEN__ ?? null; }`);
+  // host.js imports this lazily for the desktop→phone QR transfer's camera
+  // side (issue #156), same lazy-import pattern as the dialog plugin above.
+  // __SMOKE_QR_SCAN_QUEUE__ hands back one { content } per call, in order,
+  // so a case can drive a multi-frame scan loop deterministically; running
+  // off the end throws, standing in for a cancelled scan.
+  mkdirSync(join(WORK, '@tauri-apps/plugin-barcode-scanner'), { recursive: true });
+  w('@tauri-apps/plugin-barcode-scanner/index.js', `
+export async function checkPermissions() { return globalThis.__SMOKE_QR_PERMISSION__ ?? 'granted'; }
+export async function requestPermissions() { return globalThis.__SMOKE_QR_PERMISSION__ ?? 'granted'; }
+export async function cancel() { (globalThis.__SMOKE_QR_SCAN_QUEUE__ ??= []).length = 0; }
+export async function scan() {
+  const queue = globalThis.__SMOKE_QR_SCAN_QUEUE__ ?? [];
+  if (queue.length === 0) throw new Error('scan cancelled');
+  return { content: queue.shift(), format: 'QR_CODE', bounds: null };
+}`);
   // Settings imports this lazily when Install update is pressed. Stubbed so the
   // button can be exercised without a real updater or a real download.
   mkdirSync(join(WORK, '@tauri-apps/plugin-updater'), { recursive: true });
@@ -1947,6 +2090,13 @@ for (const c of CASES) {
     globalThis.__SMOKE_IMPORT_REPORT__ = null;
     globalThis.__SMOKE_IMPORT_ERROR__ = '';
     globalThis.__SMOKE_EXPORT_ERROR__ = '';
+    globalThis.__SMOKE_QR_FRAMES__ = c.qrFrames ?? null;
+    globalThis.__SMOKE_QR_TRANSFER_ERROR__ = '';
+    globalThis.__SMOKE_QR_PERMISSION__ = c.qrPermission ?? 'granted';
+    globalThis.__SMOKE_QR_SCAN_QUEUE__ = [];
+    globalThis.__SMOKE_QR_STATUS_SEQUENCE__ = null;
+    globalThis.__SMOKE_QR_STATUS_INDEX__ = 0;
+    globalThis.__SMOKE_QR_FINISH_ERROR__ = '';
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle

@@ -655,6 +655,22 @@ button.primary {
   margin-bottom: 8px;
 }
 
+/* The rendered SVG frame fills its own box, white background so the code
+   reads on a dark theme the same as a light one — a QR scanner needs real
+   light/dark modules, not the app's own contrast. */
+.qr-frame {
+  display: flex;
+  justify-content: center;
+  padding: 12px;
+  background: #fff;
+  border-radius: 8px;
+}
+
+.qr-frame :global(svg) {
+  width: 220px;
+  height: 220px;
+}
+
 .provider {
   margin-top: 8px;
   padding: 10px;
