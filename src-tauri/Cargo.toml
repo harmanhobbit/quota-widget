@@ -59,6 +59,18 @@ ndk-context = "0.1"
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
 
+# Credential export/import on Android (issue #152). The export file lives
+# wherever the user puts it in the system file picker, which on Android hands
+# back a content:// URI — unreadable by std::fs. `dialog` provides the picker
+# (ACTION_GET_CONTENT / ACTION_CREATE_DOCUMENT); `fs`'s Rust `Fs::open`
+# resolves that URI through the ContentResolver into a real fd, so the
+# commands in mobile.rs read and write the user's chosen file without the
+# webview ever holding a filesystem permission. Mobile-only like the
+# commands themselves; desktop's own export path is #151.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2.10.1"
 # Native save/open dialogs for the encrypted credential export/import (issue

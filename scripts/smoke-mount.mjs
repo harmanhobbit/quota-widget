@@ -1598,6 +1598,91 @@ const CASES = [
       }
     },
   },
+  // Credential export & import through the mobile shell (issue #152). The
+  // system dialog and the two commands are stubbed; what is proven here is
+  // the wiring the issue's criteria depend on: the typed passphrase reaches
+  // the command together with the file the dialog returned, an import report
+  // renders as the four-way summary (added / updated / needs sign-in /
+  // could-not-store), and a refused import surfaces the error without any
+  // set_config — existing accounts untouched.
+  {
+    file: 'src/mobile/MobileApp.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, providers: { openrouter: provider({ enabled: true }) } },
+    verify: async ({ target, flushSync }) => {
+      const button = (text) => [...target.querySelectorAll('button')].find((b) => b.textContent.trim() === text);
+      const fillPasswords = (values) => {
+        const inputs = [...target.querySelectorAll('.credential-transfer input[type="password"]')];
+        if (inputs.length !== values.length) throw new Error(`expected ${values.length} passphrase fields, found ${inputs.length}`);
+        inputs.forEach((el, i) => {
+          el.value = values[i];
+          el.dispatchEvent(new window.Event('input', { bubbles: true }));
+        });
+        flushSync();
+      };
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+
+      // Export: both passphrase fields, then the picked file and the
+      // passphrase reach export_credentials together.
+      button('Export accounts…').click();
+      flushSync();
+      globalThis.__SMOKE_DIALOG_SAVE__ = 'content://smoke/export.qwb';
+      fillPasswords(['correct horse', 'correct horse']);
+      button('Choose where to save').click();
+      await settle(flushSync);
+      const calls = globalThis.__SMOKE_TRANSFER_CALLS__;
+      if (!calls.includes('export_credentials:content://smoke/export.qwb:correct horse')) {
+        throw new Error(`export did not reach the command with the picked file and passphrase: ${calls.join(',') || 'nothing'}`);
+      }
+      if (!target.textContent.includes('Export written')) {
+        throw new Error('a successful export showed no confirmation');
+      }
+
+      // Import: the report renders as the four-way summary, and the shell
+      // reloads (handleImported re-reads the config for the new accounts).
+      button('Import accounts…').click();
+      flushSync();
+      globalThis.__SMOKE_DIALOG_OPEN__ = 'content://smoke/export.qwb';
+      globalThis.__SMOKE_IMPORT_REPORT__ = {
+        accounts: {
+          elevenlabs: { outcome: 'added' },
+          'openrouter#1': { outcome: 'updated' },
+          claude: { outcome: 'needs_onboarding' },
+          deepseek: { outcome: 'could_not_store', reason: 'keystore locked' },
+        },
+      };
+      fillPasswords(['correct horse']);
+      button('Choose the export file').click();
+      await settle(flushSync);
+      if (!calls.includes('import_credentials:content://smoke/export.qwb:correct horse')) {
+        throw new Error(`import did not reach the command: ${calls.join(',')}`);
+      }
+      const summary = target.querySelector('.import-summary');
+      for (const text of ['Added: elevenlabs', 'Updated: openrouter#1', 'Needs sign-in: claude', 'Could not store deepseek: keystore locked']) {
+        if (!summary?.textContent.includes(text)) {
+          throw new Error(`summary missing ${JSON.stringify(text)}: ${summary?.textContent}`);
+        }
+      }
+
+      // A refused import (wrong passphrase / corrupt file) surfaces the error
+      // and saves nothing — the accounts on screen are the ones that were
+      // there before.
+      const savesBefore = globalThis.__SMOKE_LAST_CONFIG__;
+      button('Import accounts…').click();
+      flushSync();
+      globalThis.__SMOKE_IMPORT_ERROR__ = 'wrong passphrase, or the sealed bundle was tampered with or truncated';
+      fillPasswords(['wrong']);
+      button('Choose the export file').click();
+      await settle(flushSync);
+      if (!target.querySelector('.credential-transfer .test.bad')?.textContent.includes('wrong passphrase')) {
+        throw new Error(`a refused import did not surface the error: ${target.querySelector('.credential-transfer')?.textContent}`);
+      }
+      if (globalThis.__SMOKE_LAST_CONFIG__ !== savesBefore) {
+        throw new Error('a refused import still wrote a config');
+      }
+    },
+  },
 ];
 
 function stubTauri() {
@@ -1672,7 +1757,7 @@ export async function invoke(cmd, args) {
       (globalThis.__SMOKE_SIGNIN_CALLS__ ??= []).push(\`cancel_signin:\${args.provider}\`);
       globalThis.__SMOKE_PENDING_SIGNINS__ = (globalThis.__SMOKE_PENDING_SIGNINS__ ?? []).filter((p) => p.provider_key !== args.provider);
       return null;
-    // Encrypted credential export/import (issue #151).
+// Encrypted credential export/import (issue #151).
     case 'export_credential_bundle':
       (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push('export_credential_bundle');
       return null;
@@ -1680,8 +1765,21 @@ export async function invoke(cmd, args) {
       (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push('import_credential_bundle');
       return globalThis.__SMOKE_IMPORT_REPORT__ ?? { accounts: {} };
     case 'set_dialog_open':
-      (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push(\`set_dialog_open:\${args.open}\`);
+      (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push(`set_dialog_open:${args.open}`);
       return null;
+    // Credential export/import (issue #152). The dialog stub (below) decides
+    // which file the user "picked"; these stand in for the seal/apply commands
+    // and record the exact arguments the component handed over, so a case can
+    // prove the picked URI and the typed passphrase reach the command, that a
+    // report renders, and that a refusal surfaces without touching the config.
+    case 'export_credentials':
+      (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push(`export_credentials:${args.destination}:${args.passphrase}`);
+      if (globalThis.__SMOKE_EXPORT_ERROR__) throw new Error(globalThis.__SMOKE_EXPORT_ERROR__);
+      return null;
+    case 'import_credentials':
+      (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push(`import_credentials:${args.source}:${args.passphrase}`);
+      if (globalThis.__SMOKE_IMPORT_ERROR__) throw new Error(globalThis.__SMOKE_IMPORT_ERROR__);
+      return globalThis.__SMOKE_IMPORT_REPORT__ ?? { accounts: {} };
     default: return null;
   }
 }`);
@@ -1703,6 +1801,13 @@ export async function listen(event, handler) {
     if (at >= 0) current.splice(at, 1);
   };
 }`);
+  // host.js imports this lazily for credential export/import (issue #152),
+  // the same pattern as the updater below. The per-case globals decide what
+  // the system dialog "returned": null is a cancelled dialog.
+  mkdirSync(join(WORK, '@tauri-apps/plugin-dialog'), { recursive: true });
+  w('@tauri-apps/plugin-dialog/index.js', `
+export async function save() { return globalThis.__SMOKE_DIALOG_SAVE__ ?? null; }
+export async function open() { return globalThis.__SMOKE_DIALOG_OPEN__ ?? null; }`);
   // Settings imports this lazily when Install update is pressed. Stubbed so the
   // button can be exercised without a real updater or a real download.
   mkdirSync(join(WORK, '@tauri-apps/plugin-updater'), { recursive: true });
@@ -1867,6 +1972,12 @@ for (const c of CASES) {
     globalThis.__SMOKE_SIZES__ = [];
     globalThis.__SMOKE_PENDING_SIGNINS__ = c.pendingSignins ?? [];
     globalThis.__SMOKE_SIGNIN_CALLS__ = [];
+    globalThis.__SMOKE_TRANSFER_CALLS__ = [];
+    globalThis.__SMOKE_DIALOG_SAVE__ = null;
+    globalThis.__SMOKE_DIALOG_OPEN__ = null;
+    globalThis.__SMOKE_IMPORT_REPORT__ = null;
+    globalThis.__SMOKE_IMPORT_ERROR__ = '';
+    globalThis.__SMOKE_EXPORT_ERROR__ = '';
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle
