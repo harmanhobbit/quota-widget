@@ -1,5 +1,7 @@
 mod codex_oauth;
 #[cfg(not(mobile))]
+mod credential_transfer;
+#[cfg(not(mobile))]
 mod desktop;
 #[cfg(not(mobile))]
 mod grok_oauth;
@@ -42,7 +44,8 @@ mod desktop_app {
     #[cfg(target_os = "linux")]
     use crate::tray_linux;
     use crate::{
-        codex_oauth, desktop, grok_oauth, oauth, poller, qr_transfer, secrets, tray, updates,
+        codex_oauth, credential_transfer, desktop, grok_oauth, oauth, poller, qr_transfer, secrets,
+        tray, updates,
     };
     use quota_core::alerts::AlertEngine;
     use quota_core::config::{Config, ConfigRecovery};
@@ -534,6 +537,21 @@ mod desktop_app {
         );
     }
 
+    /// The main popup is `alwaysOnTop` so it never gets lost behind other
+    /// windows — but that same setting buries any native dialog it opens
+    /// (issue #151's file picker) underneath itself, since the OS/portal
+    /// dialog is a separate top-level window with no reason to outrank an
+    /// always-on-top one. The frontend calls this with `true` right before
+    /// opening a save/open dialog and `false` once it resolves, so the
+    /// suspension only ever covers that window.
+    #[tauri::command]
+    fn set_dialog_open(window: tauri::Window, open: bool) {
+        if window.label() != "main" {
+            return;
+        }
+        let _ = window.set_always_on_top(!open);
+    }
+
     /// A connected monitor, as the Settings picker needs to describe it. Tauri
     /// exposes no friendlier identity than the name (`DP-1`, `\\.\DISPLAY1`), so
     /// the resolution and left-to-right order are what make a row recognisable.
@@ -657,6 +675,9 @@ mod desktop_app {
             // Desktop-only: the crate is not built for mobile targets, and there is
             // no in-place install there to expose.
             .plugin(tauri_plugin_updater::Builder::new().build())
+            // Native save/open dialogs for encrypted credential export/import
+            // (issue #151) — desktop-only, same as the updater above.
+            .plugin(tauri_plugin_dialog::init())
             .plugin(tauri_plugin_autostart::init(
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
                 None,
@@ -692,6 +713,9 @@ mod desktop_app {
                 desktop::mark_desktop_integration_prompted,
                 updates::restart_app,
                 quit,
+                credential_transfer::export_credential_bundle,
+                credential_transfer::import_credential_bundle,
+                set_dialog_open,
                 qr_transfer::qr_transfer_frames,
             ])
             .setup(move |app| {

@@ -78,6 +78,20 @@ tauri-plugin-barcode-scanner = "2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2.10.1"
+# Native save/open dialogs for the encrypted credential export/import (issue
+# #151) — desktop-only, matching how the transfer commands themselves are
+# `#[cfg(not(mobile))]`; Android has no export/import path yet.
+#
+# `xdg-portal` instead of the default `gtk3`: the raw GtkFileChooserWidget
+# backend crashes the whole process (SIGABRT, fatal GLib critical out of
+# `_gtk_file_chooser_get_settings_for_widget`) on any system whose
+# `org.gtk.Settings.FileChooser` GSettings schema doesn't match what this
+# build's GTK expects — observed hitting exactly that on a real Linux
+# machine the first time the file picker opened. The desktop-portal backend
+# asks the session's own file-chooser service over D-Bus instead, so it
+# never touches that schema, and it's also what a sandboxed (Flatpak) build
+# would need regardless.
+tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
 
 [features]
 # Enabled by the tauri CLI during `tauri build` and by the Nix package.
