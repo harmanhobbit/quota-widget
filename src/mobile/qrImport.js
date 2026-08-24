@@ -71,7 +71,15 @@ export async function runQrScan({ host, onProgress }) {
       // passed as the literal string rather than importing the plugin's enum,
       // so this module (and `host.js`) never statically import the plugin
       // itself; only the lazy `qrScan` wrapper does.
-      scanned = await host.qrScan({ windowed: true, formats: ['QR_CODE'] });
+      //
+      // `windowed: true` renders the camera *through* a transparent webview —
+      // it needs the window and CSS specifically prepared for that (an
+      // element to show it through), which nothing here sets up. Without it,
+      // the camera runs (Android's "app is using your camera" notice fires)
+      // but nothing is visible. Omitting `windowed` uses the plugin's own
+      // dedicated full-screen native camera view instead, which needs none
+      // of that setup.
+      scanned = await host.qrScan({ formats: ['QR_CODE'] });
     } catch {
       // A cancelled scan (user backed out of the camera view) and a genuine
       // scanner failure are indistinguishable from the plugin's rejection
