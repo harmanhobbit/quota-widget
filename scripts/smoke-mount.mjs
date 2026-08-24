@@ -1679,6 +1679,9 @@ export async function invoke(cmd, args) {
     case 'import_credential_bundle':
       (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push('import_credential_bundle');
       return globalThis.__SMOKE_IMPORT_REPORT__ ?? { accounts: {} };
+    case 'set_dialog_open':
+      (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push(\`set_dialog_open:\${args.open}\`);
+      return null;
     default: return null;
   }
 }`);

@@ -535,6 +535,21 @@ mod desktop_app {
         );
     }
 
+    /// The main popup is `alwaysOnTop` so it never gets lost behind other
+    /// windows — but that same setting buries any native dialog it opens
+    /// (issue #151's file picker) underneath itself, since the OS/portal
+    /// dialog is a separate top-level window with no reason to outrank an
+    /// always-on-top one. The frontend calls this with `true` right before
+    /// opening a save/open dialog and `false` once it resolves, so the
+    /// suspension only ever covers that window.
+    #[tauri::command]
+    fn set_dialog_open(window: tauri::Window, open: bool) {
+        if window.label() != "main" {
+            return;
+        }
+        let _ = window.set_always_on_top(!open);
+    }
+
     /// A connected monitor, as the Settings picker needs to describe it. Tauri
     /// exposes no friendlier identity than the name (`DP-1`, `\\.\DISPLAY1`), so
     /// the resolution and left-to-right order are what make a row recognisable.
@@ -698,6 +713,7 @@ mod desktop_app {
                 quit,
                 credential_transfer::export_credential_bundle,
                 credential_transfer::import_credential_bundle,
+                set_dialog_open,
             ])
             .setup(move |app| {
                 // Launch is tray-first: both windows are configured `visible: false`

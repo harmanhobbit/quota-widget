@@ -495,6 +495,18 @@
     }
   }
 
+  // The popup is `alwaysOnTop` so it never gets lost behind other windows —
+  // which buries a native save/open dialog underneath it the moment one
+  // opens. Suspend that just around the dialog call.
+  async function withDialogOpen(showDialog) {
+    await invoke('set_dialog_open', { open: true });
+    try {
+      return await showDialog();
+    } finally {
+      await invoke('set_dialog_open', { open: false });
+    }
+  }
+
   // Encrypted credential export: choose a passphrase, pick where to write
   // the file, seal every account under it.
   async function exportCredentials() {
@@ -507,10 +519,10 @@
       exportMessage = 'Passphrases do not match.';
       return;
     }
-    const path = await saveDialog({
+    const path = await withDialogOpen(() => saveDialog({
       defaultPath: 'quota-widget-backup.qwsb',
       filters: [{ name: 'Quota Widget backup', extensions: ['qwsb'] }],
-    });
+    }));
     if (!path) return; // user cancelled the dialog
     exportBusy = true;
     try {
@@ -531,10 +543,10 @@
   async function chooseImportFile() {
     importMessage = '';
     importSummary = null;
-    const selected = await openDialog({
+    const selected = await withDialogOpen(() => openDialog({
       multiple: false,
       filters: [{ name: 'Quota Widget backup', extensions: ['qwsb'] }],
-    });
+    }));
     if (!selected) return; // user cancelled the dialog
     importPath = selected;
     importPassphrase = '';
