@@ -140,6 +140,19 @@ Every account, including the original defaults, can be removed.
 are narrower: built-in sign-in for Claude and Codex, a pasted portal session cookie
 for Hermes, and pasted API keys for every direct-HTTPS provider. Desktop CLI files,
 local commands, SSH and Tailscale are not available on Android.
+
+Android Settings also has a **Credential export** section for moving accounts
+between devices or keeping a backup. **Export accounts…** writes every account to
+an encrypted `.qwb` file sealed with a passphrase you choose: pasted API keys
+travel inside the encryption, while Claude, Codex and Hermes accounts travel as
+their account entries alone — a session is never copied between devices, so those
+accounts sign in again on the destination. **Import accounts…** merges such a
+file back in (including one exported on desktop, and vice versa), storing pasted
+keys in the Android Keystore and reporting what happened per account: added,
+updated, needs sign-in, or could-not-store — an account whose key could not be
+stored is not added, so it never looks set up when it isn't. A wrong passphrase
+or a corrupt file is refused without touching your existing accounts, and a lost
+passphrase makes the file unrecoverable: nothing else holds the key.
 Accounts can be moved up and down in Settings; that order is saved and is the
 order used in the full popup, mini summary, and tray tooltip. Each account can
 also choose its own mini-summary headline: Automatic picks the worst real quota
