@@ -24,6 +24,7 @@ use quota_core::model::UsageSnapshot;
 use quota_core::providers::{providers_for, ProviderCtx};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use tokio::sync::{Mutex, RwLock};
@@ -385,6 +386,122 @@ fn ci_test_key() -> Option<&'static str> {
     }
 }
 
+// ---- Credential export & import (issue #152) -------------------------------
+//
+// Thin adapters over the `quota_core::transfer` / `quota_core::seal` seam —
+// the same operations desktop's export (#151) uses, so a file written by one
+// host opens on the other. Everything here is marshalling: the webview picks
+// the file in a system dialog (dialog plugin), these commands move bytes
+// between that file and the core, and no branching logic lives at this layer.
+
+/// Reads a file the user picked in a system dialog. On Android that is a
+/// `content://` URI, which `std::fs` cannot open — the fs plugin's `Fs::open`
+/// resolves it through the ContentResolver into a real fd. A plain path still
+/// works, which is what keeps this honest off Android.
+fn read_user_file(app: &tauri::AppHandle, uri: &str) -> Result<Vec<u8>, String> {
+    use tauri_plugin_fs::FsExt;
+    // `FilePath::from_str`'s error type is `Infallible`: a string that does
+    // not parse as a URI falls back to a plain path, never to an error.
+    let path = tauri_plugin_fs::FilePath::from_str(uri).expect("FromStr is infallible");
+    app.fs()
+        .read(path)
+        .map_err(|e| format!("could not read the chosen file: {e}"))
+}
+
+/// Writes bytes over a file the user created in the system save dialog.
+/// Truncating mirrors the fs plugin's own `write_file`: the document SAF just
+/// created is empty, but a rewrite must not leave a stale tail behind a
+/// shorter export.
+fn write_user_file(app: &tauri::AppHandle, uri: &str, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use tauri_plugin_fs::FsExt;
+    let path = tauri_plugin_fs::FilePath::from_str(uri).expect("FromStr is infallible");
+    let mut options = tauri_plugin_fs::OpenOptions::new();
+    options.write(true).truncate(true);
+    let mut file = app
+        .fs()
+        .open(path, options)
+        .map_err(|e| format!("could not open the chosen file for writing: {e}"))?;
+    file.write_all(bytes)
+        .map_err(|e| format!("could not write the export: {e}"))
+}
+
+/// Export every account to the encrypted credential export the user just
+/// chose in the save dialog (`destination` is its content URI on Android).
+///
+/// The bundle carries each account's entry plus, for pasted-key providers,
+/// the API key read from the Keystore; OAuth/cookie accounts travel as shells
+/// (ADR-0008) and sign in again on the importing device.
+#[tauri::command]
+async fn export_credentials(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<MobileState>>,
+    destination: String,
+    passphrase: String,
+) -> Result<(), String> {
+    let cfg = state.config.read().await.clone();
+    let (shared, _prefs) = cfg.split();
+    let dir = state.config_dir.clone();
+    let bundle = quota_core::transfer::build_bundle(&shared, |key| crate::secrets::get(&dir, key));
+    let bytes = quota_core::seal::seal(&bundle, &passphrase);
+    write_user_file(&app, &destination, &bytes)
+}
+
+/// Import a credential export the user picked in the system file dialog,
+/// merging its accounts into the current configuration and returning the
+/// per-account report the UI summarises (added / updated / needs sign-in /
+/// could-not-store).
+///
+/// The sealed bytes are opened *before* anything is touched, so a wrong
+/// passphrase or a corrupt file is refused with existing accounts exactly as
+/// they were. Pasted keys are written to the Android Keystore through the
+/// same `secrets` backend Settings uses; `apply_bundle` leaves an account out
+/// of the configuration when its key cannot be stored, so a Keystore failure
+/// never leaves an account looking configured when it is not.
+#[tauri::command]
+async fn import_credentials(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<MobileState>>,
+    source: String,
+    passphrase: String,
+) -> Result<quota_core::transfer::ApplyReport, String> {
+    // A configuration in recovery (an unreadable file the app is carefully
+    // not overwriting) must fail here, before any secret is written into a
+    // state the accounts themselves could not be persisted into — `save`
+    // would refuse below either way, but by then the Keystore writes would
+    // already have happened.
+    if let Some(recovery) = Config::recovery_state(&state.config_dir) {
+        return Err(format!(
+            "the existing configuration could not be read ({}), so the import was refused \
+             rather than risk overwriting it",
+            recovery.detail
+        ));
+    }
+    let bytes = read_user_file(&app, &source)?;
+    let bundle = quota_core::seal::open(&bytes, &passphrase).map_err(|e| e.to_string())?;
+    let cfg = state.config.read().await.clone();
+    let (mut shared, prefs) = cfg.split();
+    let dir = state.config_dir.clone();
+    let report = quota_core::transfer::apply_bundle(&bundle, &mut shared, |key, value| {
+        crate::secrets::set(&dir, key, value)
+    });
+    // Persist only when at least one account actually landed: an import whose
+    // every account failed to store leaves the configuration file untouched.
+    let landed = report.accounts.values().any(|outcome| {
+        !matches!(
+            outcome,
+            quota_core::transfer::ApplyOutcome::CouldNotStore { .. }
+        )
+    });
+    if landed {
+        let updated = Config::from_parts(shared, prefs);
+        updated.save(&state.config_dir).map_err(|e| e.to_string())?;
+        *state.config.write().await = updated.clone();
+        let _ = app.emit("config", &updated);
+    }
+    Ok(report)
+}
+
 #[tauri::mobile_entry_point]
 pub fn run() {
     tauri::Builder::default()
@@ -395,6 +512,16 @@ pub fn run() {
         // in-app WebView — see the mobile capability's `opener:allow-open-url`
         // permission grant below.
         .plugin(tauri_plugin_opener::init())
+        // Credential export/import (issue #152): the webview picks the export
+        // file in the system dialog (this is what SAF's ACTION_GET_CONTENT /
+        // ACTION_CREATE_DOCUMENT come through), and the export/import
+        // commands below read and write the picked content URI through the fs
+        // plugin's Rust API — its Kotlin `getFileDescriptor` resolves a
+        // content:// URI via the ContentResolver, which std::fs cannot do.
+        // Neither plugin is called over IPC by the webview beyond the two
+        // dialog entry points granted in the mobile capability.
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .setup(move |app| {
             // Register the Android Keystore-backed credential store as
             // keyring-core's default before any secret access. The `keyring`
@@ -518,6 +645,8 @@ pub fn run() {
             cancel_signin,
             get_pending_signins,
             ci_test_key,
+            export_credentials,
+            import_credentials,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quota-widget (mobile)");
