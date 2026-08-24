@@ -1,8 +1,17 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "mobile",
-  "description": "Android usage-list window capabilities. Mobile registers one plugin, opener (issue #159): built-in sign-in hands the Claude authorize URL and Codex verification URL to the device's external default browser instead of loading them in the app's own WebView, so this grants only the \"open URL\" permission that flow needs — no tray, no autostart, no updater, no notifications (all later tickets per ADR 0006). Every other command it calls (get_snapshots, set_config, ...) is an app-defined command, not a plugin one, and app-defined commands aren't ACL-gated.",
+  "description": "Android usage-list window capabilities. Mobile registers one plugin, opener (issue #159): built-in sign-in hands the Claude authorize URL and Codex verification URL to the device's external default browser instead of loading them in the app's own WebView, so this grants only the \"open URL\" permission that flow needs — no tray, no autostart, no updater, no notifications (all later tickets per ADR 0006). Every other command it calls (get_snapshots, set_config, ...) is an app-defined command, not a plugin one, and app-defined commands aren't ACL-gated. `allow-open-url` only ENABLES the command; unlike desktop (which calls opener::open_url directly from Rust, bypassing the ACL) the mobile flow invokes it over IPC, so it is scope-checked. An empty scope forbids every URL, so we attach an allow-list restricted to the two OAuth hosts we actually open — the tight-scope equivalent of `opener:allow-default-urls`' blanket `https://*`.",
   "windows": ["main"],
   "platforms": ["android"],
-  "permissions": ["core:default", "opener:allow-open-url"]
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://claude.ai/*" },
+        { "url": "https://auth.openai.com/*" }
+      ]
+    }
+  ]
 }
