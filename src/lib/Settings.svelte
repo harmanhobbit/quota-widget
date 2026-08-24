@@ -1153,12 +1153,12 @@
         </div>
         <p class="note">Shows a scannable code with every account — pasted keys included, OAuth/cookie accounts as a shell to sign in again — for the Android app to scan and import.</p>
       {:else if !qrFrames}
-        <div class="row">
-          <label class="inline">Passphrase <input type="password" bind:value={qrPassphrase} /></label>
-        </div>
-        <div class="row">
-          <label class="inline">Confirm <input type="password" bind:value={qrConfirm} /></label>
-        </div>
+        <label class="field">Passphrase
+          <input type="password" autocomplete="new-password" bind:value={qrPassphrase} />
+        </label>
+        <label class="field">Confirm
+          <input type="password" autocomplete="new-password" bind:value={qrConfirm} />
+        </label>
         {#if qrError}<p class="test bad">{qrError}</p>{/if}
         <div class="row">
           <button class="small" onclick={showQrTransfer} disabled={qrBusy}>{qrBusy ? 'Sealing…' : 'Show code'}</button>
