@@ -34,6 +34,10 @@ pub struct MobileState {
     pub config: RwLock<Config>,
     pub snapshots: RwLock<HashMap<String, UsageSnapshot>>,
     pub alert_engine: Mutex<AlertEngine>,
+    /// In-progress desktop→phone QR scan (issue #156): frames accumulate here
+    /// across repeated `qr_scan_frame` calls, one per camera detection, until
+    /// `qr_scan_finish` opens and applies the reassembled bundle.
+    pub qr_collector: Mutex<quota_core::qr_transfer::FrameCollector>,
 }
 
 impl MobileState {
@@ -465,6 +469,31 @@ async fn import_credentials(
     source: String,
     passphrase: String,
 ) -> Result<quota_core::transfer::ApplyReport, String> {
+    let bytes = read_user_file(&app, &source)?;
+    apply_sealed_bytes(&app, &state, &bytes, &passphrase).await
+}
+
+/// Open sealed bytes under `passphrase` and merge their accounts into the
+/// current configuration, returning the per-account report the UI summarises
+/// (added / updated / needs sign-in / could-not-store). Shared by
+/// `import_credentials` (bytes from a picked file, #152) and `qr_scan_finish`
+/// (bytes reassembled from scanned QR frames, #156) — everything past "here
+/// are the sealed bytes and a passphrase" is identical between the two
+/// transports.
+///
+/// The sealed bytes are opened *before* anything is touched, so a wrong
+/// passphrase or a corrupt/tampered payload is refused with existing
+/// accounts exactly as they were. Pasted keys are written to the Android
+/// Keystore through the same `secrets` backend Settings uses; `apply_bundle`
+/// leaves an account out of the configuration when its key cannot be stored,
+/// so a Keystore failure never leaves an account looking configured when it
+/// is not.
+async fn apply_sealed_bytes(
+    app: &tauri::AppHandle,
+    state: &Arc<MobileState>,
+    bytes: &[u8],
+    passphrase: &str,
+) -> Result<quota_core::transfer::ApplyReport, String> {
     // A configuration in recovery (an unreadable file the app is carefully
     // not overwriting) must fail here, before any secret is written into a
     // state the accounts themselves could not be persisted into — `save`
@@ -477,8 +506,7 @@ async fn import_credentials(
             recovery.detail
         ));
     }
-    let bytes = read_user_file(&app, &source)?;
-    let bundle = quota_core::seal::open(&bytes, &passphrase).map_err(|e| e.to_string())?;
+    let bundle = quota_core::seal::open(bytes, passphrase).map_err(|e| e.to_string())?;
     let cfg = state.config.read().await.clone();
     let (mut shared, prefs) = cfg.split();
     let dir = state.config_dir.clone();
@@ -502,6 +530,69 @@ async fn import_credentials(
     Ok(report)
 }
 
+// ---- Desktop→phone QR transfer (issue #156) --------------------------------
+//
+// The webview scans QR frames one at a time via the barcode-scanner plugin's
+// own JS API and hands each decoded string to `qr_scan_frame`, which folds it
+// into the in-progress `FrameCollector` — the same pure reassembly logic
+// `quota_core::qr_transfer` is unit-tested against. Once collection reports
+// complete, `qr_scan_finish` opens and applies the reassembled bytes through
+// the exact path `import_credentials` uses for a picked file.
+
+/// Start a fresh scan: discards any frames collected so far. Call when the
+/// scan screen opens, and again on retry — a scan abandoned mid-way must not
+/// leave stale frames around to confuse the next attempt.
+#[tauri::command]
+async fn qr_scan_reset(state: tauri::State<'_, Arc<MobileState>>) -> Result<(), String> {
+    *state.qr_collector.lock().await = quota_core::qr_transfer::FrameCollector::new();
+    Ok(())
+}
+
+/// Feed one scanned QR frame's decoded text into the in-progress collection.
+/// A frame that doesn't parse as ours (a stray unrelated QR code the camera
+/// picked up) leaves progress unchanged rather than erroring, so the scan
+/// loop never has to special-case it — it just keeps scanning.
+#[tauri::command]
+async fn qr_scan_frame(
+    state: tauri::State<'_, Arc<MobileState>>,
+    text: String,
+) -> Result<quota_core::qr_transfer::FrameStatus, String> {
+    let mut collector = state.qr_collector.lock().await;
+    let status = collector.accept(&text).or_else(|_| {
+        collector
+            .status()
+            .ok_or_else(|| "no frame scanned yet".to_string())
+    });
+    // Nothing scanned yet and this one didn't parse either: still "keep
+    // scanning", not a fatal error — report zero progress rather than fail.
+    Ok(status.unwrap_or(quota_core::qr_transfer::FrameStatus {
+        have: 0,
+        total: 0,
+        complete: false,
+    }))
+}
+
+/// Once scanning is complete, open the reassembled sealed bytes under
+/// `passphrase` and apply them — identical outcome shape to
+/// `import_credentials`. Resets the collector afterwards either way, so a
+/// wrong passphrase can be retried by re-entering it without rescanning.
+#[tauri::command]
+async fn qr_scan_finish(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<MobileState>>,
+    passphrase: String,
+) -> Result<quota_core::transfer::ApplyReport, String> {
+    let bytes = {
+        let collector = state.qr_collector.lock().await;
+        collector
+            .assemble()
+            .ok_or_else(|| "the scan is not complete yet".to_string())?
+    };
+    let result = apply_sealed_bytes(&app, &state, &bytes, &passphrase).await;
+    *state.qr_collector.lock().await = quota_core::qr_transfer::FrameCollector::new();
+    result
+}
+
 #[tauri::mobile_entry_point]
 pub fn run() {
     tauri::Builder::default()
@@ -522,6 +613,11 @@ pub fn run() {
         // dialog entry points granted in the mobile capability.
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        // Camera-based QR scanning for the desktop→phone transfer (issue
+        // #156): the webview drives `scan()`/`cancel()` from the plugin's own
+        // JS API directly (not an app-defined command), which is what the
+        // `barcode-scanner:*` grants in the mobile capability gate.
+        .plugin(tauri_plugin_barcode_scanner::init())
         .setup(move |app| {
             // Register the Android Keystore-backed credential store as
             // keyring-core's default before any secret access. The `keyring`
@@ -620,6 +716,7 @@ pub fn run() {
                 config: RwLock::new(loaded.config),
                 snapshots: RwLock::new(persisted.prior_map()),
                 alert_engine: Mutex::new(alert_engine),
+                qr_collector: Mutex::new(quota_core::qr_transfer::FrameCollector::new()),
             });
             app.manage(state.clone());
             // Opens directly to the usage list, so the first thing on screen
@@ -647,6 +744,9 @@ pub fn run() {
             ci_test_key,
             export_credentials,
             import_credentials,
+            qr_scan_reset,
+            qr_scan_frame,
+            qr_scan_finish,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quota-widget (mobile)");

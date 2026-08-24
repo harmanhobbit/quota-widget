@@ -58,3 +58,21 @@ export const pickImportSource = async () =>
     directory: false,
     filters: [{ name: 'Quota Widget credential export', extensions: ['qwb'] }],
   });
+
+// Desktop→phone QR transfer (issue #156). Desktop renders the frames;
+// Android scans them. Both sides share this one module so a component never
+// imports `@tauri-apps/plugin-barcode-scanner` directly — the lazy dynamic
+// import keeps it out of the desktop bundle and lets `smoke-mount` rewrite
+// the specifier to its stub, same as the dialog plugin above.
+export const qrTransferFrames = (passphrase) => invoke('qr_transfer_frames', { passphrase });
+export const qrScanReset = () => invoke('qr_scan_reset');
+export const qrScanFrame = (text) => invoke('qr_scan_frame', { text });
+export const qrScanFinish = (passphrase) => invoke('qr_scan_finish', { passphrase });
+
+export const qrScan = async (options) =>
+  (await import('@tauri-apps/plugin-barcode-scanner')).scan(options);
+export const qrCancelScan = async () => (await import('@tauri-apps/plugin-barcode-scanner')).cancel();
+export const qrCheckPermissions = async () =>
+  (await import('@tauri-apps/plugin-barcode-scanner')).checkPermissions();
+export const qrRequestPermissions = async () =>
+  (await import('@tauri-apps/plugin-barcode-scanner')).requestPermissions();
