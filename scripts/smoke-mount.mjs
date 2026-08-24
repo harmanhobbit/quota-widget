@@ -1672,6 +1672,13 @@ export async function invoke(cmd, args) {
       (globalThis.__SMOKE_SIGNIN_CALLS__ ??= []).push(\`cancel_signin:\${args.provider}\`);
       globalThis.__SMOKE_PENDING_SIGNINS__ = (globalThis.__SMOKE_PENDING_SIGNINS__ ?? []).filter((p) => p.provider_key !== args.provider);
       return null;
+    // Encrypted credential export/import (issue #151).
+    case 'export_credential_bundle':
+      (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push('export_credential_bundle');
+      return null;
+    case 'import_credential_bundle':
+      (globalThis.__SMOKE_SHELL_CALLS__ ??= []).push('import_credential_bundle');
+      return globalThis.__SMOKE_IMPORT_REPORT__ ?? { accounts: {} };
     default: return null;
   }
 }`);
@@ -1726,6 +1733,20 @@ export function getCurrentWindow() {
   w('@tauri-apps/api/dpi.js', `
 export class LogicalSize { constructor(w,h){ this.width=w; this.height=h; } }
 export class LogicalPosition { constructor(x,y){ this.x=x; this.y=y; } }`);
+  // Settings imports `save`/`open` statically for the encrypted credential
+  // export/import controls (issue #151). Stubbed the same way as the updater
+  // above rather than left to resolve the real package: a real dialog would
+  // call `window.__TAURI_INTERNALS__.invoke`, which doesn't exist under jsdom.
+  mkdirSync(join(WORK, '@tauri-apps/plugin-dialog'), { recursive: true });
+  w('@tauri-apps/plugin-dialog/index.js', `
+export async function save(options) {
+  (globalThis.__SMOKE_DIALOG_CALLS__ ??= []).push({ fn: 'save', options });
+  return globalThis.__SMOKE_SAVE_DIALOG_PATH__ ?? null;
+}
+export async function open(options) {
+  (globalThis.__SMOKE_DIALOG_CALLS__ ??= []).push({ fn: 'open', options });
+  return globalThis.__SMOKE_OPEN_DIALOG_PATH__ ?? null;
+}`);
 }
 
 // Rewrite bare `@tauri-apps/...` specifiers to the stubs above, relative to
@@ -1742,6 +1763,13 @@ function rewriteTauriImports(code, rel) {
   // `from`, so it needs its own rewrite or the specifier reaches Node bare.
   code = code.replace(/(import\(\s*')@tauri-apps\/([\w-]+)('\s*\))/g, (_m, a, pkg, z) => {
     const target = relative(dirname(rel), `@tauri-apps/${pkg}/index.js`);
+    return `${a}${target.startsWith('.') ? target : './' + target}${z}`;
+  });
+  // Settings imports plugin-dialog statically (unlike the updater above), so
+  // it needs the same bare-specifier rewrite the `@tauri-apps/api/*` rule
+  // above does.
+  code = code.replace(/(from\s+')@tauri-apps\/plugin-dialog(')/g, (_m, a, z) => {
+    const target = relative(dirname(rel), `@tauri-apps/plugin-dialog/index.js`);
     return `${a}${target.startsWith('.') ? target : './' + target}${z}`;
   });
   return code;

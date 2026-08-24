@@ -2,6 +2,8 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  // Aliased: the panel already has its own `save` (Save & close).
+  import { save as saveDialog, open as openDialog } from '@tauri-apps/plugin-dialog';
 
   let { onclose, initialConfig, snapshots = [] } = $props();
 
@@ -69,6 +71,15 @@
   let addingAccount = $state(false);
   let saveError = $state('');
   let removalError = $state('');
+  // Encrypted credential export/import (issue #151).
+  let exportPassphrase = $state('');
+  let exportPassphraseConfirm = $state('');
+  let exportBusy = $state(false);
+  let exportMessage = $state('');
+  let importPassphrase = $state('');
+  let importBusy = $state(false);
+  let importMessage = $state('');
+  let importSummary = $state(null);
   // Removal clears secrets before deleting the config entry. Save must wait
   // for that async work so a fast Remove → Save click cannot resurrect it.
   const pendingRemovals = new Set();
@@ -475,6 +486,96 @@
       onclose();
     } catch (error) {
       saveError = String(error.message ?? error);
+    }
+  }
+
+  // Encrypted credential export: choose a passphrase, pick where to write
+  // the file, seal every account under it.
+  async function exportCredentials() {
+    exportMessage = '';
+    if (!exportPassphrase) {
+      exportMessage = 'Choose a passphrase first.';
+      return;
+    }
+    if (exportPassphrase !== exportPassphraseConfirm) {
+      exportMessage = 'Passphrases do not match.';
+      return;
+    }
+    const path = await saveDialog({
+      defaultPath: 'quota-widget-backup.qwsb',
+      filters: [{ name: 'Quota Widget backup', extensions: ['qwsb'] }],
+    });
+    if (!path) return; // user cancelled the dialog
+    exportBusy = true;
+    try {
+      await invoke('export_credential_bundle', { path, passphrase: exportPassphrase });
+      exportMessage = 'Exported.';
+      exportPassphrase = '';
+      exportPassphraseConfirm = '';
+    } catch (error) {
+      exportMessage = `Could not export: ${error}`;
+    } finally {
+      exportBusy = false;
+    }
+  }
+
+  // Encrypted credential import: pick a backup file, open it under the given
+  // passphrase, and merge whatever it holds onto the running configuration.
+  // A wrong passphrase or a corrupt file is refused by Rust before anything
+  // here changes.
+  async function importCredentials() {
+    importMessage = '';
+    importSummary = null;
+    if (!importPassphrase) {
+      importMessage = 'Enter the backup passphrase first.';
+      return;
+    }
+    const selected = await openDialog({
+      multiple: false,
+      filters: [{ name: 'Quota Widget backup', extensions: ['qwsb'] }],
+    });
+    if (!selected) return; // user cancelled the dialog
+    importBusy = true;
+    try {
+      const report = await invoke('import_credential_bundle', {
+        path: selected,
+        passphrase: importPassphrase,
+      });
+      importPassphrase = '';
+      const counts = { added: 0, updated: 0, needs_onboarding: 0, could_not_store: 0 };
+      for (const outcome of Object.values(report.accounts)) {
+        counts[outcome.outcome] = (counts[outcome.outcome] ?? 0) + 1;
+      }
+      importSummary = counts;
+      await refreshImportedProviders(Object.keys(report.accounts));
+    } catch (error) {
+      importMessage = `Could not import: ${error}`;
+    } finally {
+      importBusy = false;
+    }
+  }
+
+  // Import writes accounts and secrets in Rust, behind this open panel's
+  // back. Pull just the imported accounts' fresh state back in — the same
+  // fields and checks `initialiseSettings` seeds at mount — rather than
+  // reloading the whole config and discarding any other unsaved edit.
+  async function refreshImportedProviders(keys) {
+    const fresh = await invoke('get_snapshots');
+    for (const key of keys) {
+      const account = fresh.config.providers[key];
+      if (!account) continue; // could-not-store: nothing was written
+      account.settings ??= {};
+      account.in_tray ??= true;
+      account.mini_summary_metrics ??= null;
+      account.tray_metric ??= null;
+      account.usage_schedule ??= allDaysActive();
+      config.providers[key] = account;
+      const p = providerInfo(account.kind ?? key);
+      if (p.secret) secretStored[key] = await invoke('has_secret', { provider: key });
+      const kind = account.kind ?? key;
+      if (kind === 'claude') oauthFor(key).signedIn = await invoke('has_secret', { provider: `${key}_oauth` });
+      if (kind === 'codex') codexFor(key).signedIn = await invoke('has_secret', { provider: `${key}_oauth` });
+      if (kind === 'grok') grokFor(key).signedIn = await invoke('has_secret', { provider: `${key}_oauth` });
     }
   }
 
@@ -1079,6 +1180,53 @@
           will slip behind other windows when they take focus, whatever the
           setting above says. Launching it with <code>GDK_BACKEND=x11</code>
           restores it.
+        </p>
+      {/if}
+    </section>
+
+    <section class="backup">
+      <h2>Backup</h2>
+      <p class="note">
+        Export every account to a file encrypted under a passphrase you
+        choose — a backup you can restore here or on another device. There is
+        no way to recover a forgotten passphrase: no one but you holds it.
+      </p>
+      <div class="row">
+        <label class="inline">Passphrase
+          <input type="password" bind:value={exportPassphrase} autocomplete="new-password" />
+        </label>
+      </div>
+      <div class="row">
+        <label class="inline">Confirm passphrase
+          <input type="password" bind:value={exportPassphraseConfirm} autocomplete="new-password" />
+        </label>
+      </div>
+      <div class="row">
+        <button class="small" onclick={exportCredentials} disabled={exportBusy}>
+          {exportBusy ? 'Exporting…' : 'Export accounts…'}
+        </button>
+      </div>
+      {#if exportMessage}<p class="note">{exportMessage}</p>{/if}
+
+      <p class="note">
+        Import accounts from a backup file. Pasted-key accounts work
+        immediately; OAuth and cookie accounts (Claude, Codex, Grok, Hermes
+        Portal) arrive awaiting sign-in.
+      </p>
+      <div class="row">
+        <label class="inline">Passphrase
+          <input type="password" bind:value={importPassphrase} autocomplete="current-password" />
+        </label>
+      </div>
+      <div class="row">
+        <button class="small" onclick={importCredentials} disabled={importBusy}>
+          {importBusy ? 'Importing…' : 'Import accounts…'}
+        </button>
+      </div>
+      {#if importMessage}<p class="note">{importMessage}</p>{/if}
+      {#if importSummary}
+        <p class="note">
+          Added {importSummary.added}, updated {importSummary.updated}{#if importSummary.needs_onboarding}, {importSummary.needs_onboarding} awaiting sign-in{/if}{#if importSummary.could_not_store}, {importSummary.could_not_store} could not be stored{/if}.
         </p>
       {/if}
     </section>

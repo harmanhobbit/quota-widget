@@ -1,5 +1,7 @@
 mod codex_oauth;
 #[cfg(not(mobile))]
+mod credential_transfer;
+#[cfg(not(mobile))]
 mod desktop;
 #[cfg(not(mobile))]
 mod grok_oauth;
@@ -39,7 +41,10 @@ mod desktop_app {
     // qualifying at each call site.
     #[cfg(target_os = "linux")]
     use crate::tray_linux;
-    use crate::{codex_oauth, desktop, grok_oauth, oauth, poller, secrets, tray, updates};
+    use crate::{
+        codex_oauth, credential_transfer, desktop, grok_oauth, oauth, poller, secrets, tray,
+        updates,
+    };
     use quota_core::alerts::AlertEngine;
     use quota_core::config::{Config, ConfigRecovery};
     use quota_core::model::UsageSnapshot;
@@ -653,6 +658,9 @@ mod desktop_app {
             // Desktop-only: the crate is not built for mobile targets, and there is
             // no in-place install there to expose.
             .plugin(tauri_plugin_updater::Builder::new().build())
+            // Native save/open dialogs for encrypted credential export/import
+            // (issue #151) — desktop-only, same as the updater above.
+            .plugin(tauri_plugin_dialog::init())
             .plugin(tauri_plugin_autostart::init(
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
                 None,
@@ -688,6 +696,8 @@ mod desktop_app {
                 desktop::mark_desktop_integration_prompted,
                 updates::restart_app,
                 quit,
+                credential_transfer::export_credential_bundle,
+                credential_transfer::import_credential_bundle,
             ])
             .setup(move |app| {
                 // Launch is tray-first: both windows are configured `visible: false`
