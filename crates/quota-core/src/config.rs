@@ -290,6 +290,42 @@ impl Default for ProviderConfig {
     }
 }
 
+/// The `auth_mode` value that pins an account to a local CLI credential file
+/// (`~/.codex/auth.json`, `~/.claude/.credentials.json`, `~/.grok/auth.json`).
+const AUTH_MODE_CLI: &str = "cli";
+/// The `auth_mode` value that uses the widget's own built-in sign-in — the only
+/// source that exists on Android, and what a freshly-added mobile account gets.
+const AUTH_MODE_OAUTH: &str = "oauth";
+
+/// Coerce every `auth_mode: "cli"` account to the built-in sign-in.
+///
+/// Android has no CLI for any provider, so a `cli` auth mode can never be
+/// satisfied there — yet one arrives all the same, carried verbatim from a
+/// desktop config through a credential transfer (`crate::transfer::apply_bundle`
+/// copies each account's settings as-is) or left behind by an older build. Since
+/// the mobile Settings UI has no sign-in-method selector, the user cannot correct
+/// it, and the account is stuck reporting "no CLI login found" even after a
+/// successful built-in sign-in (the `cli` fetch path never consults the stored
+/// OAuth token). Rewriting the mode to `oauth` — what `MobileApp`'s `newAccount`
+/// writes for a fresh account — makes the transferred account behave like a
+/// locally-added one.
+///
+/// Returns whether anything changed, so a caller can skip a redundant save.
+/// Callers are the Android config seams only; desktop keeps `cli` mode.
+pub fn coerce_cli_auth_mode_to_oauth(providers: &mut IndexMap<String, ProviderConfig>) -> bool {
+    let mut changed = false;
+    for config in providers.values_mut() {
+        if config.settings.get("auth_mode").and_then(|v| v.as_str()) == Some(AUTH_MODE_CLI) {
+            config.settings.insert(
+                "auth_mode".into(),
+                serde_json::Value::String(AUTH_MODE_OAUTH.into()),
+            );
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
@@ -997,6 +1033,71 @@ mod tests {
     /// what was read rather than about recovery.
     fn load(dir: &Path) -> Config {
         Config::load(dir).config
+    }
+
+    fn account_with_auth_mode(kind: &str, auth_mode: Option<&str>) -> ProviderConfig {
+        let mut config = ProviderConfig {
+            kind: Some(kind.into()),
+            ..Default::default()
+        };
+        if let Some(mode) = auth_mode {
+            config
+                .settings
+                .insert("auth_mode".into(), serde_json::Value::String(mode.into()));
+        }
+        config
+    }
+
+    #[test]
+    fn coerce_cli_auth_mode_rewrites_only_cli_and_reports_change() {
+        let mut providers = IndexMap::new();
+        providers.insert("codex".into(), account_with_auth_mode("codex", Some("cli")));
+        providers.insert(
+            "claude".into(),
+            account_with_auth_mode("claude", Some("cli")),
+        );
+        providers.insert("grok".into(), account_with_auth_mode("grok", Some("oauth")));
+        providers.insert("hermes".into(), account_with_auth_mode("hermes", None));
+
+        assert!(coerce_cli_auth_mode_to_oauth(&mut providers));
+
+        // Both `cli` accounts are rewritten to the built-in sign-in.
+        assert_eq!(
+            providers["codex"].settings["auth_mode"],
+            serde_json::json!("oauth")
+        );
+        assert_eq!(
+            providers["claude"].settings["auth_mode"],
+            serde_json::json!("oauth")
+        );
+        // An explicit `oauth` is left as-is; an account with no `auth_mode`
+        // (the Auto default) is untouched, not given one.
+        assert_eq!(
+            providers["grok"].settings["auth_mode"],
+            serde_json::json!("oauth")
+        );
+        assert!(!providers["hermes"].settings.contains_key("auth_mode"));
+    }
+
+    #[test]
+    fn coerce_cli_auth_mode_is_a_noop_without_any_cli_account() {
+        let mut providers = IndexMap::new();
+        providers.insert(
+            "codex".into(),
+            account_with_auth_mode("codex", Some("oauth")),
+        );
+        providers.insert(
+            "openrouter".into(),
+            account_with_auth_mode("openrouter", None),
+        );
+
+        // Nothing to change, so it reports false and leaves settings alone.
+        assert!(!coerce_cli_auth_mode_to_oauth(&mut providers));
+        assert_eq!(
+            providers["codex"].settings["auth_mode"],
+            serde_json::json!("oauth")
+        );
+        assert!(!providers["openrouter"].settings.contains_key("auth_mode"));
     }
 
     #[test]
