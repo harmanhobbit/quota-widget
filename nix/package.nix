@@ -106,7 +106,7 @@ rustPlatform.buildRustPackage rec {
     # Regenerate whenever package.json/package-lock.json changes (a
     # mismatched `got:` is printed by `nix build .#quota-widget`, or compute
     # it directly with `prefetch-npm-deps package-lock.json`).
-    hash = "sha256-4AvIty9QzZEuDXNQ/O26AXQK2I791M+XkmI1jPhob30=";
+    hash = "sha256-SbipLr6PFv3c2pU/V8TK6wtwe3CHiZsCS1qtyWOicvA=";
   };
 
   nativeBuildInputs = [
