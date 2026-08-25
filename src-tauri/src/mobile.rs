@@ -513,6 +513,11 @@ async fn apply_sealed_bytes(
     let report = quota_core::transfer::apply_bundle(&bundle, &mut shared, |key, value| {
         crate::secrets::set(&dir, key, value)
     });
+    // A transferred account keeps its source's settings verbatim, including a
+    // desktop `auth_mode: "cli"` that cannot work on Android. Rewrite it to the
+    // built-in sign-in before this config is persisted, so a phone that just
+    // scanned a desktop bundle doesn't land a permanently-stuck account.
+    quota_core::config::coerce_cli_auth_mode_to_oauth(&mut shared.providers);
     // Persist only when at least one account actually landed: an import whose
     // every account failed to store leaves the configuration file untouched.
     let landed = report.accounts.values().any(|outcome| {
@@ -657,6 +662,18 @@ pub fn run() {
                 loaded.config = Config::mobile_first_run_default();
                 if let Err(e) = loaded.config.save(&config_dir) {
                     eprintln!("[mobile] saving first-run default config failed: {e}");
+                }
+            }
+            // Android has no CLI for any provider, so an `auth_mode: "cli"`
+            // account — carried in verbatim from a desktop config by a
+            // credential transfer, or left by an older build — can never fetch
+            // and, with the sign-in-method selector removed from the mobile UI,
+            // can never be corrected by the user. Coerce it to the built-in
+            // sign-in the phone actually uses and persist, so both this
+            // launch's poller and the next launch see the corrected mode.
+            if quota_core::config::coerce_cli_auth_mode_to_oauth(&mut loaded.config.providers) {
+                if let Err(e) = loaded.config.save(&config_dir) {
+                    eprintln!("[mobile] persisting auth-mode normalization failed: {e}");
                 }
             }
             // CI-only OpenRouter seed for issue #108's emulator proof. Done
