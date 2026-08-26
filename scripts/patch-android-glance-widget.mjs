@@ -70,38 +70,35 @@ if (gradle.includes('// quota-widget:glance')) {
     ensurePluginVersion(kotlinVersion);
   }
 
-  // Enable the compose build feature (extend the existing buildFeatures block
-  // if present, else add one), plus composeOptions on the 1.9.x path.
-  const composeOptions = isKotlin2
-    ? ''
-    : `\n    composeOptions {\n        kotlinCompilerExtensionVersion = "${composeCompilerFor(kotlinVersion)}"\n    }`;
-  if (/buildFeatures\s*\{/.test(gradle)) {
-    gradle = gradle.replace(/buildFeatures\s*\{/, 'buildFeatures {\n        compose = true // quota-widget:glance');
-  } else {
-    gradle = gradle.replace(
-      /(android\s*\{)/,
-      `$1\n    buildFeatures {\n        compose = true // quota-widget:glance\n    }${composeOptions}`,
-    );
-  }
-  if (composeOptions && !gradle.includes('composeOptions')) {
-    gradle = gradle.replace(/(android\s*\{)/, `$1${composeOptions}`);
-  }
-
-  // Dependencies. Glance pulls the Compose runtime it needs transitively; the
-  // explicit compose-runtime keeps @Composable resolvable in the widget code.
-  // The Compose artifacts must be a single, consistent version that the Compose
-  // compiler the Kotlin plugin pins actually supports. Glance 1.1.1 itself only
-  // pulls ancient compose (runtime 1.2.1, ui-unit/ui-graphics 1.1.1); leaving
-  // those transitive while bumping only the runtime mixes ABIs and triggers
-  // "Couldn't inline … CompositionLocal.current" during IR lowering. So pin
-  // runtime, ui-unit and ui-graphics together: 1.6.8 on the Kotlin 1.9.x path
-  // (compiler 1.5.x), a current line on the Kotlin 2.0+ path (version-tracking
-  // compose plugin). glance-material3 is intentionally absent — GlanceTheme
-  // ships in glance-appwidget and nothing here uses material3 dynamic colour.
+  // Enable Compose and add the dependencies by APPENDING second `android {}`
+  // and `dependencies {}` blocks. The Kotlin Gradle DSL merges repeated
+  // extension blocks, so this configures the same android extension without any
+  // fragile in-place edit of the generated file (whose exact shape — whether it
+  // already has a `buildFeatures {}` block, and where — we cannot assume). The
+  // earlier in-place approach silently failed to land `composeOptions`, so AGP
+  // used no Compose compiler and IR lowering blew up on `CompositionLocal.current`.
+  //
+  // Compose artifacts are pinned to one consistent version the compiler the
+  // Kotlin plugin pins supports (Glance 1.1.1 only drags in ancient compose, so
+  // these explicit, matched versions win): 1.6.8 with compiler 1.5.x on the
+  // Kotlin 1.9.x path; a current line on the Kotlin 2.0+ path, whose
+  // version-tracking compose plugin owns the compiler. glance-material3 is
+  // intentionally absent — GlanceTheme ships in glance-appwidget.
   const compose = isKotlin2 ? '1.7.5' : '1.6.8';
-  const deps = `
+  const composeOptionsBlock = isKotlin2
+    ? ''
+    : `
+    composeOptions {
+        kotlinCompilerExtensionVersion = "${composeCompilerFor(kotlinVersion)}"
+    }`;
+  const addition = `
+// quota-widget:glance — Compose + Glance + WorkManager host (issue #113)
+android {
+    buildFeatures {
+        compose = true
+    }${composeOptionsBlock}
+}
 dependencies {
-    // quota-widget:glance — home-screen widget host (issue #113)
     implementation("androidx.glance:glance-appwidget:1.1.1")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("androidx.compose.runtime:runtime:${compose}")
@@ -111,11 +108,11 @@ dependencies {
     testImplementation("org.json:json:20240303")
 }
 `;
-  // Append a second dependencies{} block — Gradle merges multiple, so this
-  // avoids brittle edits inside the generated one.
-  gradle = gradle.trimEnd() + '\n' + deps;
+  gradle = gradle.trimEnd() + '\n' + addition;
   writeFileSync(gradlePath, gradle);
   console.log(`wired ${gradlePath} for Compose + Glance + WorkManager (kotlin ${kotlinVersion ?? 'unknown'})`);
+  // Dump the appended wiring so a CI failure has the exact Gradle to look at.
+  console.log(`--- quota-widget:glance appended to build.gradle.kts ---${addition}--- end ---`);
 }
 
 // ---- 3. Manifest: receiver, config activity, deep-link filter --------------
