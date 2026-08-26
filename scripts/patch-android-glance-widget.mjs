@@ -84,7 +84,12 @@ if (gradle.includes('// quota-widget:glance')) {
   // Kotlin 1.9.x path; a current line on the Kotlin 2.0+ path, whose
   // version-tracking compose plugin owns the compiler. glance-material3 is
   // intentionally absent — GlanceTheme ships in glance-appwidget.
-  const compose = isKotlin2 ? '1.7.5' : '1.6.8';
+  // Compose 1.7.x is the library line aligned with Compose Compiler 1.5.15
+  // (Kotlin 1.9.25, what Tauri pins) and requires compileSdk 35+ (the template
+  // uses 36). 1.6.x pairs with the older 1.5.14 compiler and mixing it with
+  // this compiler is what tripped IR lowering. Pin runtime + ui-unit +
+  // ui-graphics to one 1.7.x so DpSize/Color and CompositionLocal all agree.
+  const compose = '1.7.5';
   const composeOptionsBlock = isKotlin2
     ? ''
     : `
