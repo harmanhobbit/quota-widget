@@ -73,14 +73,39 @@ class QuotaGlanceWidget : GlanceAppWidget() {
     }
 }
 
-/** The status → colour map. Colours stay stable across light/dark; the tier's
- *  text/background follow the system theme via [GlanceTheme]. */
+/**
+ * The status → colour map. These are deliberately **stable** across light and
+ * dark (issue #113: "stable status colours"), so a status reads the same in
+ * both themes; only the tier's text/background follow the system theme via
+ * [GlanceTheme]. Each is a mid-tone that stays legible on either background,
+ * and every status is also carried as a non-colour label ([WidgetStatus.label])
+ * so the state never depends on colour alone.
+ */
 private fun statusColor(status: WidgetStatus): ColorProvider = when (status) {
-    WidgetStatus.OK -> ColorProvider(Color(0xFF2E7D32), Color(0xFF66BB6A))
-    WidgetStatus.WARN -> ColorProvider(Color(0xFFF9A825), Color(0xFFFFCA28))
-    WidgetStatus.CRITICAL -> ColorProvider(Color(0xFFC62828), Color(0xFFEF5350))
-    WidgetStatus.STALE -> ColorProvider(Color(0xFF616161), Color(0xFF9E9E9E))
-    WidgetStatus.UNKNOWN -> ColorProvider(Color(0xFF616161), Color(0xFF9E9E9E))
+    WidgetStatus.OK -> ColorProvider(Color(0xFF2E9E4F))
+    WidgetStatus.WARN -> ColorProvider(Color(0xFFF9A825))
+    WidgetStatus.CRITICAL -> ColorProvider(Color(0xFFE53935))
+    WidgetStatus.STALE -> ColorProvider(Color(0xFF9E9E9E))
+    WidgetStatus.UNKNOWN -> ColorProvider(Color(0xFF9E9E9E))
+}
+
+/** A compact "as of" age from whole seconds. */
+private fun formatAge(secs: Long): String = when {
+    secs < 60 -> "just now"
+    secs < 3600 -> "${secs / 60}m ago"
+    secs < 86_400 -> "${secs / 3600}h ago"
+    else -> "${secs / 86_400}d ago"
+}
+
+/** A compact "resets in …" from an epoch-seconds reset instant. */
+private fun formatReset(epochSecs: Long): String {
+    val delta = epochSecs - System.currentTimeMillis() / 1000
+    return when {
+        delta <= 0 -> "now"
+        delta < 3600 -> "in ${delta / 60}m"
+        delta < 86_400 -> "in ${delta / 3600}h"
+        else -> "in ${delta / 86_400}d"
+    }
 }
 
 @Composable
