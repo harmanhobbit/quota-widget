@@ -29,7 +29,10 @@ class WidgetRefreshWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
-        val error = WidgetBridge.nativeRefresh(WidgetPaths.configDir(applicationContext))
+        val error = WidgetBridge.nativeRefresh(
+            WidgetPaths.configDir(applicationContext),
+            applicationContext,
+        )
         // Re-render every instance whether or not the fetch succeeded: a failed
         // refresh still updates data age and any newly-stale rows, and the read
         // model keeps the last-known readings (ADR-0006).

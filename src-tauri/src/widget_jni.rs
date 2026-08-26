@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{TimeZone, Utc};
-use jni::objects::{JClass, JString};
+use jni::objects::{JClass, JObject, JString};
 use jni::sys::{jdouble, jlong, jstring};
 use jni::JNIEnv;
 
@@ -166,6 +166,10 @@ pub extern "system" fn Java_tech_allaway_quotawidget_widget_WidgetBridge_nativeR
 /// scheduling of this same work is issue #111's; this entry point is the unit
 /// of durable work #113's refresh action enqueues.
 ///
+/// `context` is the worker's Android `Context` (its `applicationContext`), used
+/// to reach the Keystore from this activity-less background process — see
+/// [`headless_refresh`].
+///
 /// # Safety
 /// See [`Java_tech_allaway_quotawidget_widget_WidgetBridge_nativeRender`].
 #[no_mangle]
@@ -173,23 +177,54 @@ pub extern "system" fn Java_tech_allaway_quotawidget_widget_WidgetBridge_nativeR
     mut env: JNIEnv,
     _class: JClass,
     dir: JString,
+    context: JObject,
 ) -> jstring {
     let dir = jstring_arg(&mut env, &dir);
-    let result = headless_refresh(Path::new(&dir)).err().unwrap_or_default();
+    let result = headless_refresh(&mut env, &context, Path::new(&dir))
+        .err()
+        .unwrap_or_default();
     to_jstring(&mut env, &result)
+}
+
+/// Seed the Keystore-backed secret store from the worker's own Android context.
+///
+/// The foreground host registers the store from tao's *activity* context at
+/// startup (`secrets::init_store`), but a WorkManager worker runs with no
+/// activity, so that path is unavailable and the store would stay unregistered —
+/// every credential read would then fail. Instead we seed `ndk_context` from the
+/// worker's `applicationContext` (a real Context a background process does have)
+/// and register the store, sharing the same one-time guard as the activity path.
+///
+/// The context pointer is stored by `ndk_context` for the store's lifetime, so
+/// it must outlive this call: we take a global ref and deliberately leak it, so
+/// it stays valid for the whole process (the application context is a
+/// process-singleton anyway). This matches the process-lifetime validity tao
+/// gives the activity ref.
+fn init_worker_keystore(env: &mut JNIEnv, context: &JObject) -> Result<(), String> {
+    let vm = env.get_java_vm().map_err(|e| e.to_string())?;
+    let vm_ptr = vm.get_java_vm_pointer() as *mut std::ffi::c_void;
+    let global = env.new_global_ref(context).map_err(|e| e.to_string())?;
+    let ctx_ptr = global.as_raw() as *mut std::ffi::c_void;
+    // Leak the global ref: `ndk_context` keeps the raw pointer, so the ref must
+    // never be dropped for as long as the store can dereference it.
+    std::mem::forget(global);
+    // Safety: `vm_ptr` is the process JavaVM and `ctx_ptr` a leaked global ref
+    // to the application context, both valid for the process lifetime.
+    unsafe { crate::secrets::init_store_with_context(vm_ptr, ctx_ptr) }
 }
 
 /// One headless refresh pass over the persisted config and Keystore secrets,
 /// persisting the resulting read model and alert memory. Kept close to
 /// `mobile.rs::refresh_once` so the two never drift in what a refresh means.
-fn headless_refresh(dir: &Path) -> Result<(), String> {
-    // The Keystore-backed store must be registered before `load_all` can
-    // decrypt any stored credential — the same one-time init the foreground
-    // host does at startup (`secrets::init_store`). Ignoring an error here is
-    // deliberate: a device with no stored secrets still refreshes (every
-    // account simply reports "not configured"), which is a truthful widget
-    // state, not a crash.
-    let _ = crate::secrets::init_store();
+fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(), String> {
+    // The Keystore-backed store must be registered before `load_all` can decrypt
+    // any stored credential. If it cannot be — a device/state where the worker's
+    // context init fails — we must NOT proceed: a refresh with no decryptable
+    // secrets marks every account "not configured"/failed and would overwrite the
+    // app's good read model with an all-stale one (the "stale as of now" bug).
+    // Bail instead, leaving snapshots.json intact so the widget keeps the
+    // last-known data, and let WorkManager retry.
+    init_worker_keystore(env, context)?;
 
     let cfg = Config::load(dir).config;
     let secrets = crate::secrets::load_all(dir, &cfg);

@@ -267,29 +267,73 @@ mod backend {
 pub fn init_store() -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
-        // `initialize_android_context` asserts on re-entry
-        // (`assert!(previous.is_none())` — "must be called exactly once"),
-        // and a panic here is the very launch crash this function exists to
-        // prevent, so make the call idempotent. The flag is set only after
-        // the init succeeds, so an early `Err` return leaves a retry free
-        // to attempt the init again.
-        static NDK_CONTEXT_INIT: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        if !NDK_CONTEXT_INIT.load(std::sync::atomic::Ordering::SeqCst) {
-            let ctx = tauri::tao::platform::android::prelude::main_android_context()
-                .ok_or_else(|| "no Android activity context available at startup".to_string())?;
-            // Safety: tao's CONTEXTS map holds the activity's GlobalRef for
-            // the activity's whole lifetime, so both raw pointers are valid
-            // here and stay valid for as long as the store can use them.
-            unsafe {
-                ndk_context::initialize_android_context(ctx.java_vm, ctx.context_jobject);
-            }
-            NDK_CONTEXT_INIT.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-        let store = android_native_keyring_store::Store::new().map_err(|e| e.to_string())?;
-        keyring_core::set_default_store(store);
+        let ctx = tauri::tao::platform::android::prelude::main_android_context()
+            .ok_or_else(|| "no Android activity context available at startup".to_string())?;
+        // Safety: tao's CONTEXTS map holds the activity's GlobalRef for the
+        // activity's whole lifetime, so both raw pointers are valid here and
+        // stay valid for as long as the store can use them.
+        init_ndk_context_once(ctx.java_vm, ctx.context_jobject);
+        register_keystore_store()?;
     }
     Ok(())
+}
+
+/// One-time `ndk_context` init guard, shared by every entry point that can be
+/// the first to initialize it in a process — the foreground activity
+/// ([`init_store`]) and the background widget refresh
+/// ([`init_store_with_context`]). `initialize_android_context` asserts it is
+/// "called exactly once" (`assert!(previous.is_none())`), and either caller can
+/// win the race depending on whether an activity or a WorkManager worker started
+/// the process, so the two MUST share one guard — a per-function `static` would
+/// let the second caller panic the process.
+#[cfg(all(mobile, target_os = "android"))]
+static NDK_CONTEXT_INIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Initialize `ndk_context` at most once per process from the given raw
+/// pointers. The first caller wins; every later caller is a no-op (keeping the
+/// first context, which the store only uses for `getSharedPreferences` and so
+/// works from either an activity or the application context).
+#[cfg(all(mobile, target_os = "android"))]
+fn init_ndk_context_once(java_vm: *mut std::ffi::c_void, context_jobject: *mut std::ffi::c_void) {
+    // `swap` returns the prior value, so exactly one caller sees `false` and
+    // performs the init; the flag is only ever set here, after we have real
+    // pointers in hand.
+    if !NDK_CONTEXT_INIT.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        unsafe {
+            ndk_context::initialize_android_context(java_vm, context_jobject);
+        }
+    }
+}
+
+/// Register the Android Keystore store as keyring-core's default. Requires
+/// `ndk_context` to have been initialized first; safe to call again (a later
+/// caller simply re-registers the same store).
+#[cfg(all(mobile, target_os = "android"))]
+fn register_keystore_store() -> Result<(), String> {
+    let store = android_native_keyring_store::Store::new().map_err(|e| e.to_string())?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
+/// Like [`init_store`], but seeds `ndk_context` from a JavaVM + Context supplied
+/// by a background caller — the widget's WorkManager refresh
+/// (`widget_jni::nativeRefresh`) runs with no Tauri activity, so
+/// `main_android_context()` is `None` and [`init_store`] cannot be used. Shares
+/// the one-time guard with [`init_store`], so whichever of the activity or the
+/// worker initializes the process first wins and the other is a no-op.
+///
+/// # Safety
+/// `java_vm` must be a valid `JavaVM` pointer (stable for the process) and
+/// `context_jobject` a Context reference that outlives the store's use of it —
+/// the caller passes a leaked application-context global ref, matching the
+/// process-lifetime validity tao's activity ref provides in [`init_store`].
+#[cfg(all(mobile, target_os = "android"))]
+pub unsafe fn init_store_with_context(
+    java_vm: *mut std::ffi::c_void,
+    context_jobject: *mut std::ffi::c_void,
+) -> Result<(), String> {
+    init_ndk_context_once(java_vm, context_jobject);
+    register_keystore_store()
 }
 
 pub fn get(dir: &Path, provider: &str) -> Option<String> {

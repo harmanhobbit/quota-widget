@@ -52,6 +52,11 @@ object WidgetBridge {
      * that fetches and persists the read model. Empty string on success, else
      * the error. Runs on the WorkManager worker thread, so it outlives the
      * short-lived broadcast receiver that enqueued it.
+     *
+     * [context] is the worker's `applicationContext`: this process has no Tauri
+     * activity, so the Rust side seeds the Keystore-backed secret store from
+     * this context instead (see `src-tauri/src/widget_jni.rs`). Without it a
+     * background refresh could not decrypt any credential.
      */
-    external fun nativeRefresh(dir: String): String
+    external fun nativeRefresh(dir: String, context: android.content.Context): String
 }
