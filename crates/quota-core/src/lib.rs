@@ -17,5 +17,6 @@ pub mod spend_baseline;
 pub mod transfer;
 pub mod update;
 pub mod widget;
+pub mod widget_view;
 
 pub use model::{Allowance, Credits, FetchError, Status, UsageSnapshot, UsageWindow};
