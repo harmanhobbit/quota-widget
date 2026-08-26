@@ -28,7 +28,7 @@
 //!   placement from the shared compact-summary selection
 //!   ([`WidgetInstanceConfig::inherit_shared`]).
 
-use crate::config::Config;
+use crate::config::{Config, ConfigPresence};
 use crate::model::Status;
 use crate::snapshots::{SnapshotLoad, SnapshotStore};
 use crate::widget::{
@@ -264,24 +264,30 @@ pub fn render(
 ) -> WidgetView {
     let size = WidgetSize::from_dimensions(width_dp, height_dp);
 
-    // Corrupt *persisted* inputs are a configuration-level fault, not an empty
-    // read model: the widget must surface "needs configuration" rather than fall
-    // back to substituted defaults or pretend it is merely un-refreshed. Each of
-    // the three stores is checked for that before projecting:
+    // Corrupt *or missing* persisted config is a configuration-level fault, not
+    // an empty read model: the widget must surface "needs configuration" rather
+    // than fall back to substituted defaults or pretend it is merely
+    // un-refreshed. Each store is checked for that before projecting:
     //
-    //  - a corrupt/unreadable shared config would otherwise load the built-in
-    //    default accounts (Claude/Codex) and render readings for accounts the
-    //    user never configured — the silent substitution issue #113 forbids;
+    //  - a corrupt/unreadable *or absent* shared config would otherwise load the
+    //    built-in default accounts (Claude/Codex, enabled in `Config::default`)
+    //    and render readings for accounts the user never configured — the silent
+    //    substitution issue #113 forbids for BOTH missing and corrupt config, so
+    //    a `recovery`-only check is not enough (a missing file has no recovery).
+    //    `Config::load_presence` is the primitive that tells the two failure
+    //    shapes apart from a healthy persisted config;
     //  - a corrupt widget-preference file has lost every instance's selection;
     //  - a corrupt read model cannot be trusted to render.
     //
     // An *absent* read model is deliberately not corruption — it stays the
-    // honest "No data—tap to refresh" the projection already produces.
-    let config_load = Config::load(dir);
-    if config_load.recovery.is_some() {
-        return WidgetView::needs_configuration(size);
-    }
-    let cfg = config_load.config;
+    // honest "No data—tap to refresh" the projection already produces (reached
+    // only once a healthy config is present).
+    let cfg = match Config::load_presence(dir) {
+        ConfigPresence::Present(cfg) => cfg,
+        ConfigPresence::Absent | ConfigPresence::Corrupt(_) => {
+            return WidgetView::needs_configuration(size);
+        }
+    };
 
     let prefs = match WidgetConfigStore::load_state(dir) {
         WidgetConfigLoad::Corrupt => return WidgetView::needs_configuration(size),
@@ -771,6 +777,45 @@ mod tests {
         );
         let view = render(dir.path(), "id-1", 300.0, 260.0, Utc::now());
         assert_eq!(view.state, "needs_configuration");
+        assert!(view.content.is_none());
+    }
+
+    /// An *absent* shared config must not substitute the built-in defaults
+    /// either. `Config::load` returns `recovery: None` for a missing file (a
+    /// first run), so a recovery-only check would silently render readings for
+    /// the pre-enabled Claude/Codex defaults — the regression the review flagged.
+    /// The widget surfaces needs-configuration instead.
+    #[test]
+    fn an_absent_shared_config_flattens_to_needs_configuration_without_substituting_defaults() {
+        // A snapshots file and a widget instance exist, but no shared config has
+        // ever been written — the state a widget can cold-read before the app has
+        // run. Write the two derived stores directly, leaving shared-config.json
+        // absent.
+        let dir = tempfile::tempdir().unwrap();
+        store_with(
+            vec![UsageSnapshot::ok(
+                "claude",
+                "Claude",
+                vec![window("w", "W", 10.0)],
+                None,
+            )],
+            AggregateStatus::default(),
+        )
+        .save(dir.path())
+        .unwrap();
+        let mut prefs = WidgetConfigStore::default();
+        prefs.set("id-1", instance(&["claude"]));
+        prefs.save(dir.path()).unwrap();
+        assert!(
+            !dir.path().join("shared-config.json").exists(),
+            "the shared config is genuinely absent for this test"
+        );
+
+        let view = render(dir.path(), "id-1", 300.0, 260.0, Utc::now());
+        assert_eq!(
+            view.state, "needs_configuration",
+            "an absent shared config must not substitute the Claude/Codex defaults"
+        );
         assert!(view.content.is_none());
     }
 
