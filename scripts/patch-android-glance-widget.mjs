@@ -89,20 +89,24 @@ if (gradle.includes('// quota-widget:glance')) {
 
   // Dependencies. Glance pulls the Compose runtime it needs transitively; the
   // explicit compose-runtime keeps @Composable resolvable in the widget code.
-  // The Compose runtime must match the Compose compiler the Kotlin plugin
-  // pins — a runtime newer than the compiler triggers "Couldn't inline …
-  // CompositionLocal.current" during IR lowering. On the Kotlin 1.9.x path the
-  // compiler is 1.5.x, which pairs with Compose 1.6.x; Glance 1.1.1 targets
-  // that line too. The Kotlin 2.0+ path uses the version-tracking compose
-  // plugin, so a current runtime is fine there.
-  const composeRuntime = isKotlin2 ? '1.7.5' : '1.6.8';
+  // The Compose artifacts must be a single, consistent version that the Compose
+  // compiler the Kotlin plugin pins actually supports. Glance 1.1.1 itself only
+  // pulls ancient compose (runtime 1.2.1, ui-unit/ui-graphics 1.1.1); leaving
+  // those transitive while bumping only the runtime mixes ABIs and triggers
+  // "Couldn't inline … CompositionLocal.current" during IR lowering. So pin
+  // runtime, ui-unit and ui-graphics together: 1.6.8 on the Kotlin 1.9.x path
+  // (compiler 1.5.x), a current line on the Kotlin 2.0+ path (version-tracking
+  // compose plugin). glance-material3 is intentionally absent — GlanceTheme
+  // ships in glance-appwidget and nothing here uses material3 dynamic colour.
+  const compose = isKotlin2 ? '1.7.5' : '1.6.8';
   const deps = `
 dependencies {
     // quota-widget:glance — home-screen widget host (issue #113)
     implementation("androidx.glance:glance-appwidget:1.1.1")
-    implementation("androidx.glance:glance-material3:1.1.1")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
-    implementation("androidx.compose.runtime:runtime:${composeRuntime}")
+    implementation("androidx.compose.runtime:runtime:${compose}")
+    implementation("androidx.compose.ui:ui-unit:${compose}")
+    implementation("androidx.compose.ui:ui-graphics:${compose}")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }
