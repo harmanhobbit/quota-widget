@@ -34,7 +34,7 @@ use jni::sys::{jdouble, jlong, jstring};
 use jni::JNIEnv;
 
 use quota_core::alerts::AlertEngine;
-use quota_core::config::Config;
+use quota_core::config::{Config, RefreshConfigLoad};
 use quota_core::providers::ProviderCtx;
 use quota_core::snapshots::SnapshotStore;
 use quota_core::widget_view;
@@ -226,7 +226,26 @@ fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(
     // last-known data, and let WorkManager retry.
     init_worker_keystore(env, context)?;
 
-    let cfg = Config::load(dir).config;
+    // Load the config for a headless refresh, which must never substitute the
+    // built-in defaults: a corrupt or not-yet-written shared config would
+    // otherwise fetch and persist a read model for accounts the user never
+    // configured (Claude/Codex are enabled in `Config::default`). Both non-Ready
+    // outcomes stand down and leave snapshots.json intact so the widget keeps its
+    // last-known data; WorkManager retries on the returned error. See
+    // `Config::load_for_refresh`.
+    let cfg = match Config::load_for_refresh(dir) {
+        RefreshConfigLoad::Ready(cfg) => cfg,
+        // Nothing is configured yet — no accounts, no credentials. Success with
+        // no write; there is genuinely nothing to refresh.
+        RefreshConfigLoad::FirstRun => return Ok(()),
+        RefreshConfigLoad::Corrupt(recovery) => {
+            return Err(format!(
+                "shared configuration is unreadable; refusing to refresh over the built-in \
+                 defaults and keeping the last-known read model: {}",
+                recovery.message()
+            ));
+        }
+    };
     let secrets = crate::secrets::load_all(dir, &cfg);
     let mut ctx = ProviderCtx::new(dir.to_path_buf(), dir.to_path_buf(), secrets, cfg.clone());
     let dir_owned: PathBuf = dir.to_path_buf();

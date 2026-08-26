@@ -30,10 +30,10 @@
 
 use crate::config::Config;
 use crate::model::Status;
-use crate::snapshots::SnapshotStore;
+use crate::snapshots::{SnapshotLoad, SnapshotStore};
 use crate::widget::{
-    self, HeadlineCell, HeadlineValue, RowState, WidgetConfigStore, WidgetContent,
-    WidgetInstanceConfig, WidgetProjection, WidgetSize, WidgetState, WorstHeadline,
+    self, HeadlineCell, HeadlineValue, RowState, WidgetConfigLoad, WidgetConfigStore,
+    WidgetContent, WidgetInstanceConfig, WidgetProjection, WidgetSize, WidgetState, WorstHeadline,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -128,6 +128,17 @@ pub struct CellView {
 }
 
 impl WidgetView {
+    /// A sized "Widget needs configuration" view — the placeholder a corrupt
+    /// persisted input resolves to, distinct from the "no data" one an *absent*
+    /// read model gives. The host still needs the size to draw the placeholder.
+    fn needs_configuration(size: WidgetSize) -> Self {
+        Self {
+            size: size_str(size).to_string(),
+            state: "needs_configuration".into(),
+            content: None,
+        }
+    }
+
     /// Flatten a finished [`WidgetProjection`] for a host.
     pub fn from_projection(projection: &WidgetProjection) -> Self {
         let size = size_str(projection.size).to_string();
@@ -251,10 +262,40 @@ pub fn render(
     height_dp: f64,
     now: DateTime<Utc>,
 ) -> WidgetView {
-    let cfg = Config::load(dir).config;
-    let snapshots = SnapshotStore::load(dir);
-    let prefs = WidgetConfigStore::load(dir);
     let size = WidgetSize::from_dimensions(width_dp, height_dp);
+
+    // Corrupt *persisted* inputs are a configuration-level fault, not an empty
+    // read model: the widget must surface "needs configuration" rather than fall
+    // back to substituted defaults or pretend it is merely un-refreshed. Each of
+    // the three stores is checked for that before projecting:
+    //
+    //  - a corrupt/unreadable shared config would otherwise load the built-in
+    //    default accounts (Claude/Codex) and render readings for accounts the
+    //    user never configured — the silent substitution issue #113 forbids;
+    //  - a corrupt widget-preference file has lost every instance's selection;
+    //  - a corrupt read model cannot be trusted to render.
+    //
+    // An *absent* read model is deliberately not corruption — it stays the
+    // honest "No data—tap to refresh" the projection already produces.
+    let config_load = Config::load(dir);
+    if config_load.recovery.is_some() {
+        return WidgetView::needs_configuration(size);
+    }
+    let cfg = config_load.config;
+
+    let prefs = match WidgetConfigStore::load_state(dir) {
+        WidgetConfigLoad::Corrupt => return WidgetView::needs_configuration(size),
+        WidgetConfigLoad::Loaded(prefs) => prefs,
+        WidgetConfigLoad::Absent => WidgetConfigStore::default(),
+    };
+
+    let snapshots = match SnapshotStore::load_state(dir) {
+        SnapshotLoad::Corrupt => return WidgetView::needs_configuration(size),
+        SnapshotLoad::Loaded(store) => store,
+        // Absent → the empty read model → the projection routes to "no data".
+        SnapshotLoad::Absent => SnapshotStore::default(),
+    };
+
     let projection = widget::project(prefs.get(instance_id), &snapshots, &cfg, size, now);
     WidgetView::from_projection(&projection)
 }
@@ -299,7 +340,18 @@ pub struct ConfigOptionsView {
 /// Build the placement activity's options for `instance_id`, seeding an unsaved
 /// instance from the shared compact-summary selection.
 pub fn config_options(dir: &Path, instance_id: &str) -> ConfigOptionsView {
-    let cfg = Config::load(dir).config;
+    let config_load = Config::load(dir);
+    // A corrupt/unreadable shared config cannot be trusted to enumerate the real
+    // accounts, and the built-in defaults must never stand in for them here — the
+    // placement activity would otherwise offer accounts the user never created.
+    // Offer nothing until the config is recovered.
+    if config_load.recovery.is_some() {
+        return ConfigOptionsView {
+            accounts: Vec::new(),
+            privacy: false,
+        };
+    }
+    let cfg = config_load.config;
     let prefs = WidgetConfigStore::load(dir);
     // An existing instance keeps its own selection; a fresh placement inherits
     // the shared compact-summary selection as its initial choice.
@@ -635,6 +687,124 @@ mod tests {
         assert!(json.contains("\"resets_at_secs\""));
         let back: WidgetView = serde_json::from_str(&json).unwrap();
         assert_eq!(back.state, "content");
+    }
+
+    // ---- Corruption vs. absence (the #113 blocking finding) ----------------
+
+    use crate::snapshots::{SnapshotLoad, SnapshotStore as Snap};
+    use crate::widget::{WidgetConfigLoad, WidgetConfigStore};
+
+    /// Overwrite one of the three persisted stores with unparseable bytes.
+    fn corrupt(dir: &Path, file: &str) {
+        std::fs::write(dir.join(file), "{ not valid json").unwrap();
+    }
+
+    /// A corrupt read model is a persisted-data fault, not an empty read model:
+    /// the widget surfaces "needs configuration", never "no data" (which would
+    /// invite a refresh over a file it could not trust) and never invented data.
+    #[test]
+    fn a_corrupt_read_model_flattens_to_needs_configuration_not_no_data() {
+        let cfg = cfg_with(&["a"]);
+        let dir = seed_dir(
+            &cfg,
+            vec![UsageSnapshot::ok(
+                "a",
+                "A",
+                vec![window("w", "W", 10.0)],
+                None,
+            )],
+            AggregateStatus::default(),
+            &[("id-1", instance(&["a"]))],
+        );
+        // Sanity: healthy inputs render content.
+        assert_eq!(
+            render(dir.path(), "id-1", 300.0, 260.0, Utc::now()).state,
+            "content"
+        );
+
+        corrupt(dir.path(), "snapshots.json");
+        assert_eq!(SnapshotStore::load_state(dir.path()), SnapshotLoad::Corrupt);
+        let view = render(dir.path(), "id-1", 300.0, 260.0, Utc::now());
+        assert_eq!(view.state, "needs_configuration");
+        assert_eq!(view.size, "large", "the placeholder is still sized");
+        assert!(view.content.is_none());
+    }
+
+    /// An *absent* read model stays the honest "no data—tap to refresh"; this is
+    /// the behaviour the corrupt-case must not regress.
+    #[test]
+    fn an_absent_read_model_still_flattens_to_no_data() {
+        let cfg = cfg_with(&["a"]);
+        let dir = tempfile::tempdir().unwrap();
+        cfg.save(dir.path()).unwrap();
+        let mut prefs = WidgetConfigStore::default();
+        prefs.set("id-1", instance(&["a"]));
+        prefs.save(dir.path()).unwrap();
+        // No snapshots.json written at all — absent, not corrupt.
+        assert_eq!(Snap::load_state(dir.path()), SnapshotLoad::Absent);
+
+        let view = render(dir.path(), "id-1", 200.0, 140.0, Utc::now());
+        assert_eq!(view.state, "no_data");
+        assert!(view.content.is_none());
+    }
+
+    /// Corrupt widget preferences lose every instance's selection, so any
+    /// instance the launcher asks about routes to needs-configuration.
+    #[test]
+    fn corrupt_widget_prefs_flatten_to_needs_configuration() {
+        let cfg = cfg_with(&["a"]);
+        let dir = seed_dir(
+            &cfg,
+            vec![UsageSnapshot::ok(
+                "a",
+                "A",
+                vec![window("w", "W", 10.0)],
+                None,
+            )],
+            AggregateStatus::default(),
+            &[("id-1", instance(&["a"]))],
+        );
+        corrupt(dir.path(), "widgets.json");
+        assert_eq!(
+            WidgetConfigStore::load_state(dir.path()),
+            WidgetConfigLoad::Corrupt
+        );
+        let view = render(dir.path(), "id-1", 300.0, 260.0, Utc::now());
+        assert_eq!(view.state, "needs_configuration");
+        assert!(view.content.is_none());
+    }
+
+    /// A corrupt shared config must not substitute the built-in default accounts:
+    /// the widget surfaces needs-configuration instead of rendering readings for
+    /// accounts (Claude/Codex, enabled in `Config::default`) the user never
+    /// configured.
+    #[test]
+    fn a_corrupt_shared_config_flattens_to_needs_configuration_without_substituting_defaults() {
+        let cfg = cfg_with(&["a"]);
+        let dir = seed_dir(
+            &cfg,
+            vec![UsageSnapshot::ok(
+                "a",
+                "A",
+                vec![window("w", "W", 10.0)],
+                None,
+            )],
+            AggregateStatus::default(),
+            &[("id-1", instance(&["a"]))],
+        );
+        corrupt(dir.path(), "shared-config.json");
+
+        let view = render(dir.path(), "id-1", 300.0, 260.0, Utc::now());
+        assert_eq!(view.state, "needs_configuration");
+        assert!(view.content.is_none());
+
+        // And the placement activity offers no accounts either, rather than the
+        // built-in defaults it would get from `Config::default`.
+        let opts = config_options(dir.path(), "id-1");
+        assert!(
+            opts.accounts.is_empty(),
+            "no accounts are offered while the shared config is corrupt"
+        );
     }
 
     // ---- Configuration path ------------------------------------------------

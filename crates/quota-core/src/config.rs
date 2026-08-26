@@ -504,6 +504,23 @@ pub struct ConfigLoad {
     pub recovery: Option<ConfigRecovery>,
 }
 
+/// The outcome of [`Config::load_for_refresh`]: the only three ways a headless
+/// refresh may see the shared configuration, deliberately without a "fell back
+/// to defaults" case — a background refresh must never fetch or persist for the
+/// built-in default accounts.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RefreshConfigLoad {
+    /// A healthy, persisted shared config. The refresh may fetch and save.
+    Ready(Config),
+    /// No shared config has ever been written (a first run): nothing is
+    /// configured to refresh, and there are no credentials to read. The refresh
+    /// stands down and touches nothing.
+    FirstRun,
+    /// A shared config exists but is corrupt or unreadable. The refresh stands
+    /// down and leaves the last-known read model intact.
+    Corrupt(ConfigRecovery),
+}
+
 /// What `save` refuses to do, and why. `io::Error` rather than a bespoke type
 /// so the existing `Result<(), io::Error>` call sites are unchanged.
 fn refuse_overwrite(recovery: &ConfigRecovery) -> std::io::Error {
@@ -855,6 +872,42 @@ impl Config {
         }
     }
 
+    /// Load the configuration for a **headless refresh**, refusing to ever act
+    /// on the built-in defaults.
+    ///
+    /// A background refresh (the widget's WorkManager job, `widget_jni.rs`) runs
+    /// with no UI to make a first-run decision and no user watching. If it fell
+    /// back to [`Config::default`] — which pre-enables Claude and Codex — a
+    /// corrupt or not-yet-written shared config would make it *fetch and persist*
+    /// a read model for accounts the user never configured, exactly the silent
+    /// substitution issue #113 forbids. So this returns:
+    ///
+    /// - [`RefreshConfigLoad::Ready`] only for a healthy, persisted shared config
+    ///   — the sole case in which a refresh may fetch and save;
+    /// - [`RefreshConfigLoad::FirstRun`] when no shared config has ever been
+    ///   written (nothing is configured, and there are no credentials to read),
+    ///   so the refresh stands down and leaves the read model untouched;
+    /// - [`RefreshConfigLoad::Corrupt`] when a shared config exists but cannot be
+    ///   read or parsed, so the refresh stands down and keeps the last-known read
+    ///   model rather than overwriting it with readings for substituted defaults.
+    ///
+    /// The foreground app does not use this: it makes its own first-run decision
+    /// (`Config::mobile_first_run_default`) and surfaces recovery to the user.
+    pub fn load_for_refresh(dir: &Path) -> RefreshConfigLoad {
+        let load = Self::load(dir);
+        if let Some(recovery) = load.recovery {
+            return RefreshConfigLoad::Corrupt(recovery);
+        }
+        // After a clean `load`, a persisted shared config exists iff the split
+        // file is on disk — a true first run (no legacy file to migrate either)
+        // leaves it absent, and `load` never writes one. This is the same
+        // crate-private filename `migrate_if_needed` keys off.
+        if !dir.join(crate::shared_config::FILE_NAME).exists() {
+            return RefreshConfigLoad::FirstRun;
+        }
+        RefreshConfigLoad::Ready(load.config)
+    }
+
     /// The recovery state of whatever is on disk right now, independent of what
     /// is in memory. `save` consults this rather than trusting a flag carried
     /// from startup, so a file that became unreadable while the app was running
@@ -1033,6 +1086,62 @@ mod tests {
     /// what was read rather than about recovery.
     fn load(dir: &Path) -> Config {
         Config::load(dir).config
+    }
+
+    /// A headless refresh over a healthy, persisted shared config gets exactly
+    /// that config back — the only case in which it is allowed to fetch and save.
+    #[test]
+    fn load_for_refresh_returns_a_persisted_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.providers.clear();
+        cfg.providers.insert(
+            "openrouter".into(),
+            ProviderConfig {
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        cfg.save(dir.path()).unwrap();
+
+        match Config::load_for_refresh(dir.path()) {
+            RefreshConfigLoad::Ready(loaded) => {
+                assert!(loaded.providers.contains_key("openrouter"));
+                assert!(!loaded.providers.contains_key("claude"));
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+    }
+
+    /// A true first run — no shared config ever written — must NOT substitute the
+    /// built-in defaults (which pre-enable Claude and Codex). The refresh stands
+    /// down instead, so it never fetches or persists for unconfigured defaults.
+    #[test]
+    fn load_for_refresh_on_a_first_run_stands_down_rather_than_defaulting() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            Config::load_for_refresh(dir.path()),
+            RefreshConfigLoad::FirstRun
+        );
+    }
+
+    /// A corrupt shared config makes the refresh stand down: it reports Corrupt
+    /// (so the caller keeps the last-known read model) rather than running the
+    /// fetch over the substituted defaults.
+    #[test]
+    fn load_for_refresh_on_a_corrupt_config_stands_down() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(crate::shared_config::FILE_NAME),
+            "{ not json",
+        )
+        .unwrap();
+        match Config::load_for_refresh(dir.path()) {
+            RefreshConfigLoad::Corrupt(recovery) => {
+                assert_eq!(recovery.kind, RecoveryKind::Malformed);
+            }
+            other => panic!("expected Corrupt, got {other:?}"),
+        }
     }
 
     fn account_with_auth_mode(kind: &str, auth_mode: Option<&str>) -> ProviderConfig {
