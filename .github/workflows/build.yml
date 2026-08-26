@@ -194,6 +194,17 @@ jobs:
       # is reapplied here every run rather than committed once.
       - name: Exclude app data from Android backup
         run: node scripts/patch-android-manifest.mjs
+      # The native Glance home-screen widget host (issue #113), committed under
+      # src-tauri/android-widget/, is reapplied into the regenerated gen/android
+      # here — the same reason the manifest patch above is reapplied every run.
+      - name: Install the Glance home-screen widget host
+        run: node scripts/patch-android-glance-widget.mjs
+      # The widget host's Kotlin projection-parsing unit tests (issue #113's
+      # "native JVM/unit tests"). They need no emulator, so they run before the
+      # APK build; a failure here fails the job.
+      - name: Widget host unit tests (JVM)
+        working-directory: src-tauri/gen/android
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
       - name: Build debug APK
         # OPENROUTER_CI_KEY is read via `option_env!` at compile time by the
         # `#[cfg(debug_assertions)]` half of `ci_test_key()` in

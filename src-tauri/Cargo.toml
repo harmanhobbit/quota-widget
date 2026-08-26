@@ -48,6 +48,12 @@ keyring = { version = "3", features = ["windows-native"] }
 keyring-core = "1"
 android-native-keyring-store = "1"
 ndk-context = "0.1"
+# The Glance home-screen widget host (issue #113) calls into this same shared
+# library for the cold read-model projection and its durable refresh, so the
+# widget never re-implements a quota decision in Kotlin (ADR-0006). `jni`
+# provides the `extern "system"` entry points in `widget_jni.rs`; it is an
+# Android-only dependency because that host is the only JNI caller.
+jni = "0.21"
 
 # Used directly on Linux so the alert path can call notify-rust's `show_async`,
 # which speaks zbus over the existing tokio runtime. Going through
