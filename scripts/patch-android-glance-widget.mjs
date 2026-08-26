@@ -89,13 +89,20 @@ if (gradle.includes('// quota-widget:glance')) {
 
   // Dependencies. Glance pulls the Compose runtime it needs transitively; the
   // explicit compose-runtime keeps @Composable resolvable in the widget code.
+  // The Compose runtime must match the Compose compiler the Kotlin plugin
+  // pins — a runtime newer than the compiler triggers "Couldn't inline …
+  // CompositionLocal.current" during IR lowering. On the Kotlin 1.9.x path the
+  // compiler is 1.5.x, which pairs with Compose 1.6.x; Glance 1.1.1 targets
+  // that line too. The Kotlin 2.0+ path uses the version-tracking compose
+  // plugin, so a current runtime is fine there.
+  const composeRuntime = isKotlin2 ? '1.7.5' : '1.6.8';
   const deps = `
 dependencies {
     // quota-widget:glance — home-screen widget host (issue #113)
     implementation("androidx.glance:glance-appwidget:1.1.1")
     implementation("androidx.glance:glance-material3:1.1.1")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
-    implementation("androidx.compose.runtime:runtime:1.7.5")
+    implementation("androidx.compose.runtime:runtime:${composeRuntime}")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }
