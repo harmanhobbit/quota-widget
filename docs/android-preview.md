@@ -76,5 +76,9 @@ uninstall.
   Anyone can sign an APK with the same public debug key, so do not treat an
   Obtainium "update" here as trusted-origin. A real signed release channel is a
   later ticket (`docs/adr/0006-…`).
-- **No background refresh / notifications / widgets yet** — the Android build is
-  the foreground app only; background scheduling and widgets are later tickets.
+- **No notifications yet** — threshold alerts are computed and their memory
+  persisted (issue #112's seam), but Android does not post them; presenting
+  alerts as notifications is a later ticket. Background refresh is in
+  (issue #111: a best-effort WorkManager job targeting ~15 minutes while the
+  app is unused), and home-screen widgets render the last-known data
+  (issue #113).

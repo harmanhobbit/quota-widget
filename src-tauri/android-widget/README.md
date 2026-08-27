@@ -1,7 +1,9 @@
-# Native Glance home-screen widget host (issue #113)
+# Native Glance home-screen widget host (issues #113, #111)
 
 This directory is the **committed source of truth** for the Android home-screen
-widget's native host. The Gradle project it compiles into —
+widget's native host, and (since #111) for the app-wide background refresh
+schedule: the same host owns WorkManager, so the periodic refresh lives beside
+the widget code it serves. The Gradle project it compiles into —
 `src-tauri/gen/android` — is generated fresh by `tauri android init` on every
 build and is `.gitignore`d, so (exactly like the manifest backup-exclusion in
 `scripts/patch-android-manifest.mjs`) the host is reapplied after init by
@@ -20,6 +22,19 @@ decision is settled in `quota-core::widget` and flattened by
 `src-tauri/src/widget_jni.rs`. The Kotlin here parses that finished JSON and
 lays it out.
 
+## The background refresh schedule (issue #111)
+
+`RefreshScheduler` owns the best-effort periodic refresh: one unique
+`PeriodicWorkRequest` targeting fifteen minutes (`quota_core::refresh::
+BACKGROUND_REFRESH_TARGET` — a target, never a guarantee, everywhere it is
+described). It runs the same `WidgetRefreshWorker` the manual paths enqueue, so
+every refresh — scheduled, widget-tapped, or pressed in the app — fetches
+through `WidgetBridge.nativeRefresh` into the shared `quota-core` refresh and
+persists the same read model. The schedule is (re)ensured from two places, both
+idempotent under unique work with KEEP: the app's Rust setup (via the JNI call
+in `src-tauri/src/android_schedule.rs`) and the widget receiver's `onUpdate`,
+so a widget keeps refreshing even if the app is never opened again.
+
 ## Layout
 
 | Path | Role |
@@ -27,12 +42,14 @@ lays it out.
 | `kotlin/.../widget/WidgetBridge.kt` | `external` JNI declarations into `libquota_widget_lib.so`. |
 | `kotlin/.../widget/WidgetModel.kt` | Parse the `WidgetView` wire JSON into typed Kotlin (no decisions). |
 | `kotlin/.../widget/QuotaGlanceWidget.kt` | The Glance widget: small/medium/large tiers, status colours + non-colour cues, deep-link and refresh actions. |
-| `kotlin/.../widget/QuotaWidgetReceiver.kt` | `GlanceAppWidgetReceiver` + the refresh `ActionCallback`. |
-| `kotlin/.../widget/WidgetRefreshWorker.kt` | The one-time durable WorkManager job the refresh action enqueues. |
+| `kotlin/.../widget/QuotaWidgetReceiver.kt` | `GlanceAppWidgetReceiver` + the refresh `ActionCallback`; also ensures the periodic refresh exists on widget updates. |
+| `kotlin/.../widget/WidgetRefreshWorker.kt` | The one-time durable WorkManager refresh job — enqueued by the widget's refresh action, the app's manual refresh, and the periodic schedule. |
+| `kotlin/.../widget/RefreshScheduler.kt` | The background refresh schedule (issue #111): the best-effort periodic job targeting ~15 minutes, plus the app's manual-refresh enqueue that the JNI call in `src-tauri/src/android_schedule.rs` reaches. |
 | `kotlin/.../widget/WidgetConfigActivity.kt` | Placement configuration (per-instance accounts + privacy). |
 | `kotlin/.../widget/WidgetPaths.kt` | The app config directory both the app and the widget read. |
 | `res/xml/quota_glance_widget_info.xml` | The `appwidget-provider` metadata (config activity, resize, sizes). |
 | `test/.../widget/WidgetModelTest.kt` | JVM unit tests for the wire-format parse — also a drift guard on the Rust DTO. |
+| `test/.../widget/RefreshSchedulerTest.kt` | Pins the periodic target to the documented fifteen minutes (`quota_core::refresh::BACKGROUND_REFRESH_TARGET`). |
 
 ## Verifying
 
