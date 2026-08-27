@@ -205,24 +205,31 @@ count_jobs() {
 base_jobs=$(count_jobs)
 echo "   scheduled jobs before the tap: $base_jobs"
 
+# Sample fast (the dump itself takes ~0.5s on the emulator, so each sample is
+# slower than its interval) and interleave with the taps: the one-time job is
+# observable only while pending or running, and a fast failing fetch can close
+# that window in well under a second. The unique-work REPLACE policy makes the
+# burst collapse into one fetch, while the repeated re-enqueues give each
+# round a fresh window to observe.
+one_time=0
 for _ in 1 2 3; do
   adb shell input tap "$tap_x" "$tap_y"
-  sleep 2
-done
-
-one_time=0
-deadline=$(( SECONDS + 30 ))
-while [ "$SECONDS" -lt "$deadline" ]; do
-  jobs_now=$(count_jobs)
-  if [ "${jobs_now:-0}" -ge $(( base_jobs + 1 )) ]; then
-    one_time=1
-    break
-  fi
-  sleep 1
+  deadline=$(( SECONDS + 8 ))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    jobs_now=$(count_jobs)
+    if [ "${jobs_now:-0}" -ge $(( base_jobs + 1 )) ]; then
+      one_time=1
+      break
+    fi
+    sleep 0.3
+  done
+  [ "$one_time" -eq 1 ] && break
 done
 if [ "$one_time" -ne 1 ]; then
   echo "!! No second WorkManager job observed after tapping refresh —"
-  echo "   the manual refresh did not enqueue durable work (jobs now: $jobs_now)."
+  echo "   the manual refresh did not enqueue durable work (jobs now: ${jobs_now:-?})."
+  echo "   App-side log for evidence of what the tap actually did:"
+  adb logcat -d 2>/dev/null | grep "RustStdoutStderr" | grep "\[mobile\]" | tail -10 || true
   exit 1
 fi
 echo "   durable one-time refresh job observed on top of the periodic schedule"

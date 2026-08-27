@@ -209,7 +209,13 @@ async fn refresh_manual(
 ) -> Result<(), String> {
     #[cfg(target_os = "android")]
     match crate::android_schedule::enqueue_manual_refresh() {
-        Ok(()) => return Ok(()),
+        Ok(()) => {
+            // The durable unit is now WorkManager's; surface the handoff, so a
+            // device log distinguishes "enqueued and finished out-of-band"
+            // from "fell back to the in-process fetch" below.
+            eprintln!("[mobile] manual refresh enqueued as durable work");
+            return Ok(());
+        }
         Err(e) => eprintln!("[mobile] enqueueing manual refresh failed: {e}"),
     }
     refresh_once(&app, &state).await;
