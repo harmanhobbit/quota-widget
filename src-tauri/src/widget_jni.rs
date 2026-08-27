@@ -11,10 +11,11 @@
 //!   JSON the host draws — the cold, credential-free read.
 //! - `nativeConfigOptions` / `nativeSaveInstance` / `nativeRemoveInstance` drive
 //!   the placement configuration activity.
-//! - `nativeRefresh` is the body of the one-time durable WorkManager job the
-//!   widget's refresh action enqueues: it performs a real headless refresh
-//!   (load config, decrypt Keystore secrets, fetch, persist the read model) so
-//!   the work finishes after the short-lived broadcast receiver has exited.
+//! - `nativeRefresh` is the body of every durable refresh work item — the
+//!   one-time job the widget's refresh action and the app's manual refresh
+//!   enqueue, and the periodic ~15-minute schedule (issue #111): a real
+//!   headless refresh (load config, decrypt Keystore secrets, fetch, persist
+//!   the read model) that runs to completion with no activity open.
 //!
 //! All the projection, flattening, redaction and persistence logic lives in
 //! `quota-core` and is exercised by that crate's Linux unit tests; this file is
@@ -32,6 +33,7 @@ use chrono::{TimeZone, Utc};
 use jni::objects::{JClass, JObject, JString};
 use jni::sys::{jdouble, jlong, jstring};
 use jni::JNIEnv;
+use tauri::Emitter;
 
 use quota_core::alerts::AlertEngine;
 use quota_core::config::{Config, ConfigPresence};
@@ -153,18 +155,19 @@ pub extern "system" fn Java_tech_allaway_quotawidget_widget_WidgetBridge_nativeR
     to_jstring(&mut env, &result)
 }
 
-/// `WidgetBridge.nativeRefresh(dir)`: the body of the widget's one-time durable
-/// WorkManager job. Performs a real headless refresh — load config, decrypt the
-/// Keystore-backed secrets, fetch every enabled account, and persist the read
-/// model — so a widget's manual refresh produces fresh data even with no
-/// activity open. Returns an empty string on success, else the error.
+/// `WidgetBridge.nativeRefresh(dir)`: the body of every durable refresh work
+/// item — the one-time job the widget's refresh action and the app's manual
+/// refresh enqueue, and the periodic ~15-minute schedule (issue #111). Performs
+/// a real headless refresh — load config, decrypt the Keystore-backed secrets,
+/// fetch every enabled account, and persist the read model — so a refresh
+/// produces fresh data even with no activity open. Returns an empty string on
+/// success, else the error.
 ///
-/// The refresh itself is the shared `quota_core::refresh::refresh`; this mirrors
-/// the foreground host's `refresh_once` (`mobile.rs`) minus the webview emit,
-/// which is exactly what ADR-0006 means by the native scheduler owning refresh
-/// opportunities while the behaviour stays shared. The periodic ~15-minute
-/// scheduling of this same work is issue #111's; this entry point is the unit
-/// of durable work #113's refresh action enqueues.
+/// The refresh itself is the shared `quota_core::refresh::refresh`; this
+/// mirrors the foreground host's `refresh_once` (`mobile.rs`), and when this
+/// process hosts the app its webview is told about the result the same way
+/// (`mobile::app_handle`). That is exactly what ADR-0006 means by the native
+/// scheduler owning refresh *opportunities* while the behaviour stays shared.
 ///
 /// `context` is the worker's Android `Context` (its `applicationContext`), used
 /// to reach the Keystore from this activity-less background process — see
@@ -276,8 +279,19 @@ fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(
     // it (matching `mobile.rs`).
     cfg.sort_snapshots(&mut outcome.snapshots);
     let aggregate = quota_core::refresh::aggregate_status(&outcome.snapshots, &cfg);
-    let store = SnapshotStore::from_snapshots(outcome.snapshots, aggregate);
+    let store = SnapshotStore::from_snapshots(outcome.snapshots.clone(), aggregate);
     store
         .save(dir)
-        .map_err(|e| format!("saving snapshots: {e}"))
+        .map_err(|e| format!("saving snapshots: {e}"))?;
+
+    // When the foreground app is alive in this process, its webview learns
+    // about the new read model exactly as it does from `refresh_once`'s emit —
+    // a manual refresh enqueued from the app (issue #111) and a periodic tick
+    // that fires while the app is open both want the cards to move without
+    // waiting for the next visibility change. In the widget-only process there
+    // is no webview; persisting the read model is the whole delivery.
+    if let Some(handle) = crate::mobile::app_handle() {
+        let _ = handle.emit("snapshots", &outcome.snapshots);
+    }
+    Ok(())
 }

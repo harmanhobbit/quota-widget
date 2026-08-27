@@ -25,9 +25,25 @@ use quota_core::providers::{providers_for, ProviderCtx};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tauri::{Emitter, Manager};
 use tokio::sync::{Mutex, RwLock};
+
+/// The foreground runtime's app handle, if this process hosts the app.
+///
+/// Background refresh work — the periodic ~15-minute job and the manual
+/// one-time refresh (issue #111) — lands in `widget_jni.rs`'s headless refresh
+/// whichever host enqueued it. When the app is alive in this same process, its
+/// webview must hear about the new read model exactly as it does from
+/// `refresh_once` (the `snapshots` event); when the process hosts only the
+/// widget there is no webview, and persisting the read model is the whole
+/// delivery. `widget_jni` checks this handle to tell the two apart.
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// The app handle if the Tauri runtime is alive in this process, else `None`.
+pub fn app_handle() -> Option<&'static tauri::AppHandle> {
+    APP_HANDLE.get()
+}
 
 pub struct MobileState {
     pub config_dir: PathBuf,
@@ -159,13 +175,43 @@ fn clear_secret(state: tauri::State<'_, Arc<MobileState>>, provider: String) -> 
 
 /// One pass of the shared refresh operation, presented the same way
 /// `poller.rs` does for desktop (update snapshots, emit to the webview) but
-/// with none of desktop's tray icon / notification presentation — Android's
-/// alerts and background scheduling are later tickets.
+/// with none of desktop's tray icon / notification presentation. This is the
+/// foreground host's path — it runs only while the app is visible (entry and
+/// the visibility-gated loop; the manual button goes through `refresh_manual`
+/// so its work is durable). Background refresh opportunities belong to the
+/// native host's WorkManager schedule (issue #111, ADR-0006).
 #[tauri::command]
 async fn refresh_now(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<MobileState>>,
 ) -> Result<(), String> {
+    refresh_once(&app, &state).await;
+    Ok(())
+}
+
+/// The app's manual refresh (issue #111): enqueue one-time durable WorkManager
+/// work rather than fetch inline, so the refresh can finish independently of
+/// the activity — the user is free to background or dismiss the app the moment
+/// the tap lands and the fresh data still arrives. The worker persists the
+/// read model and, when this process still hosts the app, announces it to the
+/// webview with the same `snapshots` event `refresh_once` uses (see
+/// `widget_jni::headless_refresh`).
+///
+/// Only the *foreground refresh loop* and entry refresh keep fetching
+/// in-process via [`refresh_now`] — those run while the app is visible, where
+/// an immediate in-process fetch is the point. If the durable enqueue itself
+/// fails (a JNI/scheduler problem), fall back to the in-process refresh: a
+/// failed tap must not simply do nothing.
+#[tauri::command]
+async fn refresh_manual(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<MobileState>>,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    match crate::android_schedule::enqueue_manual_refresh() {
+        Ok(()) => return Ok(()),
+        Err(e) => eprintln!("[mobile] enqueueing manual refresh failed: {e}"),
+    }
     refresh_once(&app, &state).await;
     Ok(())
 }
@@ -637,6 +683,23 @@ pub fn run() {
             if let Err(e) = crate::secrets::init_store() {
                 eprintln!("[mobile] keystore init failed: {e}");
             }
+            // Remember the foreground runtime so the durable refresh work (the
+            // periodic job and the manual one-time refresh, issue #111) can
+            // reach this process's webview with its `snapshots` event — see
+            // `widget_jni::headless_refresh`. Set before anything schedules
+            // work; the widget-only process never runs this, so its handle
+            // stays absent there.
+            let _ = APP_HANDLE.set(app.handle().clone());
+            // Issue #111: the best-effort periodic refresh is native host work
+            // (ADR-0006) — make sure the ~15-minute WorkManager schedule exists
+            // at every app start. Idempotent on the Kotlin side (unique work,
+            // KEEP), and a failure here degrades to foreground-only refresh
+            // rather than aborting startup: the same guarantee the widget
+            // receiver path gives by calling `ensurePeriodic` itself.
+            #[cfg(target_os = "android")]
+            if let Err(e) = crate::android_schedule::ensure_periodic() {
+                eprintln!("[mobile] scheduling periodic background refresh failed: {e}");
+            }
             let config_dir = app
                 .path()
                 .app_config_dir()
@@ -751,6 +814,7 @@ pub fn run() {
             has_secret,
             clear_secret,
             refresh_now,
+            refresh_manual,
             test_provider,
             start_claude_signin,
             finish_claude_signin,

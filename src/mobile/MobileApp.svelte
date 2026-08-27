@@ -22,6 +22,7 @@
     hasSecret,
     clearSecret,
     refreshNow,
+    refreshManual,
     testProvider,
     listen,
     startClaudeSignin,
@@ -235,9 +236,16 @@
     config.providers = Object.fromEntries(entries);
   }
 
+  // The header button is the *manual* refresh (issue #111): durable one-time
+  // work on the native host, so the fetch still lands if the app is dismissed
+  // right after the tap; the cards update when the worker announces the new
+  // read model with the `snapshots` event. Sign-in completions and imports
+  // refresh through this too — their credentials are already persisted, so
+  // the durable pass reads them from storage like any background refresh.
+  // The foreground visibility loop stays on the in-process `refreshNow`.
   async function refresh() {
     refreshing = true;
-    await refreshNow();
+    await refreshManual();
     setTimeout(() => (refreshing = false), 1200);
   }
 
