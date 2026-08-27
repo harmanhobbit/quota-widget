@@ -75,6 +75,21 @@ dump_ui() {
   adb pull /sdcard/ui.xml ui.xml >/dev/null 2>&1 || true
 }
 
+# The software emulator's Google Play services occasionally gets background-
+# ANR'd under memory pressure, and the system kills our app with it — because
+# it "depends on provider ...FontsProvider in dying proc
+# com.google.android.gms.persistent" — a SIGKILL with no FATAL EXCEPTION in
+# logcat, so the crash check below cannot see it. Every wait loop therefore
+# re-checks the process and relaunches it, converting that environmental kill
+# into a retry instead of a 300-second poll of a dead surface.
+ensure_running() {
+  if [ -z "$(adb shell pidof "$pkg" 2>/dev/null | tr -d '[:space:]')" ]; then
+    echo "   (app process was killed — relaunching)"
+    adb shell am start -n "$activity" >/dev/null 2>&1 || true
+    sleep 5
+  fi
+}
+
 echo "==> Installing APK: $apk"
 adb install -r "$apk"
 
@@ -94,6 +109,7 @@ deadline=$(( SECONDS + budget ))
 echo "==> Waiting for the OpenRouter card to render (budget: ${budget}s)"
 found=0
 while [ "$SECONDS" -lt "$deadline" ]; do
+  ensure_running
   # Bail out immediately on a genuine crash of OUR app — no point polling a
   # dead process. Scope to our package: a real app crash logs
   # "FATAL EXCEPTION: …" followed by "Process: <pkg>, PID: …". A bare
@@ -161,6 +177,7 @@ echo "==> Asserting the periodic refresh job is scheduled (issue #111)"
 periodic=0
 deadline=$(( SECONDS + 30 ))
 while [ "$SECONDS" -lt "$deadline" ]; do
+  ensure_running
   adb shell dumpsys jobscheduler > jobs.txt 2>/dev/null || true
   if grep -q "$wm_component" jobs.txt; then
     periodic=1
@@ -203,6 +220,7 @@ echo "==> Waiting for a stale baseline (card age in minutes)"
 stale=0
 deadline=$(( SECONDS + 240 ))
 while [ "$SECONDS" -lt "$deadline" ]; do
+  ensure_running
   dump_ui
   if grep -qiE "[0-9]+m ago" ui.xml; then
     stale=1
@@ -241,6 +259,7 @@ adb shell input tap $(( (left + right) / 2 )) $(( (top + bottom) / 2 ))
 ran=0
 deadline=$(( SECONDS + 30 ))
 while [ "$SECONDS" -lt "$deadline" ]; do
+  ensure_running
   if adb logcat -d 2>/dev/null | grep -q "QuotaWidgetRefresh.*$manual_tag"; then
     ran=1
     break
@@ -262,6 +281,7 @@ echo "   durable manual refresh work executed under WorkManager"
 fresh=0
 deadline=$(( SECONDS + 90 ))
 while [ "$SECONDS" -lt "$deadline" ]; do
+  ensure_running
   dump_ui
   if grep -qi "just now" ui.xml; then
     fresh=1
