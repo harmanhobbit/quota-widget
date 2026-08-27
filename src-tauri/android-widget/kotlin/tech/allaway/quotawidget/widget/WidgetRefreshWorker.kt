@@ -9,20 +9,18 @@ import androidx.work.WorkerParameters
 import androidx.work.WorkManager
 
 /**
- * The one-time durable refresh work a widget's refresh action enqueues
- * (issue #113: "widget refresh enqueues one-time durable work — not the
- * short-lived receiver").
+ * The one-time durable refresh work (issue #113), and the unit every schedule
+ * is built from (issue #111): a widget's refresh action enqueues it, the app's
+ * manual refresh enqueues it through [RefreshScheduler.enqueueOneTime], and the
+ * periodic ~15-minute schedule runs it on the same unique name.
  *
  * Glance action callbacks and broadcast receivers run on a short leash — the
  * system may kill the receiver as soon as the callback returns, long before a
- * network refresh finishes. So the refresh action does not fetch inline; it
- * enqueues this worker, which WorkManager runs to completion on its own thread,
+ * network refresh finishes. So no fetch happens inline; the caller enqueues
+ * this worker, which WorkManager runs to completion on its own thread,
  * surviving the receiver's exit. The worker calls the shared headless refresh
  * (`WidgetBridge.nativeRefresh` → `quota_core::refresh`), then asks every placed
  * widget to re-read the freshly persisted read model.
- *
- * The ~15-minute periodic scheduling of the same refresh is issue #111's; this
- * is the manual, on-demand unit of durable work #113 requires.
  */
 class WidgetRefreshWorker(
     context: Context,
