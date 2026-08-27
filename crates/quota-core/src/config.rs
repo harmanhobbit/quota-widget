@@ -504,6 +504,31 @@ pub struct ConfigLoad {
     pub recovery: Option<ConfigRecovery>,
 }
 
+/// The outcome of [`Config::load_presence`]: whether a *persisted, healthy*
+/// shared configuration exists, deliberately **without** a "fell back to
+/// defaults" case. Both the callers that use it — the headless refresh and the
+/// widget's cold read — must never act on the built-in default accounts
+/// (`Config::default` pre-enables Claude and Codex), so they need to tell a real
+/// persisted config apart from the two shapes where [`Config::load`] would
+/// otherwise hand them substituted defaults: a **missing** config (a first run)
+/// and a **corrupt** one. Issue #113's contract is explicit that *both* missing
+/// and corrupt shared config must never substitute defaults.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigPresence {
+    /// A healthy, persisted shared config. The refresh may fetch and save; the
+    /// widget projects over it normally.
+    Present(Config),
+    /// No shared config has ever been written (a first run): nothing is
+    /// configured, and there are no credentials to read. The refresh stands down
+    /// and touches nothing; the widget surfaces "needs configuration" rather than
+    /// rendering the built-in defaults.
+    Absent,
+    /// A shared config exists but is corrupt or unreadable. The refresh stands
+    /// down and leaves the last-known read model intact; the widget surfaces
+    /// "needs configuration". Never the substituted defaults.
+    Corrupt(ConfigRecovery),
+}
+
 /// What `save` refuses to do, and why. `io::Error` rather than a bespoke type
 /// so the existing `Result<(), io::Error>` call sites are unchanged.
 fn refuse_overwrite(recovery: &ConfigRecovery) -> std::io::Error {
@@ -855,6 +880,50 @@ impl Config {
         }
     }
 
+    /// Whether a *persisted, healthy* shared configuration exists, refusing to
+    /// ever report the built-in defaults as if they were the user's config.
+    ///
+    /// Two callers need this, and both must never act on
+    /// [`Config::default`]'s pre-enabled Claude/Codex accounts:
+    ///
+    /// - the headless refresh (the widget's WorkManager job, `widget_jni.rs`),
+    ///   which would otherwise *fetch and persist* a read model for accounts the
+    ///   user never configured;
+    /// - the widget's cold read (`widget_view::render`), which would otherwise
+    ///   *render* readings for those same substituted defaults.
+    ///
+    /// Plain [`Config::load`] cannot serve them: it always yields a usable
+    /// `Config`, and its `recovery` is `None` for **both** a valid file and no
+    /// file at all — so a *missing* shared config is indistinguishable from a
+    /// healthy one by `recovery` alone, and silently becomes the defaults. This
+    /// splits those apart:
+    ///
+    /// - [`ConfigPresence::Present`] only for a healthy, persisted shared config;
+    /// - [`ConfigPresence::Absent`] when no shared config has ever been written
+    ///   (a first run — nothing configured, no credentials to read);
+    /// - [`ConfigPresence::Corrupt`] when a shared config exists but cannot be
+    ///   read or parsed.
+    ///
+    /// The foreground app does not use this: it makes its own first-run decision
+    /// (`Config::mobile_first_run_default`) and surfaces recovery to the user.
+    pub fn load_presence(dir: &Path) -> ConfigPresence {
+        let load = Self::load(dir);
+        if let Some(recovery) = load.recovery {
+            return ConfigPresence::Corrupt(recovery);
+        }
+        // After a clean `load`, a persisted shared config exists iff the split
+        // file is on disk. `load` runs the one-time legacy migration first, so a
+        // pre-split `config.json` has already been turned into this file by now
+        // (and a corrupt/unreadable legacy file would have surfaced as `recovery`
+        // above) — only a true first run, with no legacy file to migrate either,
+        // leaves it absent, and `load` never writes one on its own. This is the
+        // same crate-private filename `migrate_if_needed` keys off.
+        if !dir.join(crate::shared_config::FILE_NAME).exists() {
+            return ConfigPresence::Absent;
+        }
+        ConfigPresence::Present(load.config)
+    }
+
     /// The recovery state of whatever is on disk right now, independent of what
     /// is in memory. `save` consults this rather than trusting a flag carried
     /// from startup, so a file that became unreadable while the app was running
@@ -1033,6 +1102,97 @@ mod tests {
     /// what was read rather than about recovery.
     fn load(dir: &Path) -> Config {
         Config::load(dir).config
+    }
+
+    /// A healthy, persisted shared config is reported `Present` with exactly that
+    /// config — the only case a refresh may fetch/save or the widget may render.
+    #[test]
+    fn load_presence_returns_a_persisted_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::default();
+        cfg.providers.clear();
+        cfg.providers.insert(
+            "openrouter".into(),
+            ProviderConfig {
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        cfg.save(dir.path()).unwrap();
+
+        match Config::load_presence(dir.path()) {
+            ConfigPresence::Present(loaded) => {
+                assert!(loaded.providers.contains_key("openrouter"));
+                assert!(!loaded.providers.contains_key("claude"));
+            }
+            other => panic!("expected Present, got {other:?}"),
+        }
+    }
+
+    /// A true first run — no shared config ever written — is `Absent`, NOT the
+    /// built-in defaults (which pre-enable Claude and Codex). This is the case
+    /// the review flagged: `Config::load` returns `recovery: None` here, so a
+    /// `recovery`-only check would silently substitute the defaults.
+    #[test]
+    fn load_presence_on_a_first_run_is_absent_not_defaulted() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(Config::load_presence(dir.path()), ConfigPresence::Absent);
+        // `Config::load` alone would have handed back the pre-enabled defaults.
+        let load = Config::load(dir.path());
+        assert!(load.recovery.is_none());
+        assert!(load.config.providers.contains_key("claude"));
+    }
+
+    /// A corrupt shared config is `Corrupt`, so the caller stands down rather
+    /// than acting on substituted defaults.
+    #[test]
+    fn load_presence_on_a_corrupt_config_reports_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(crate::shared_config::FILE_NAME),
+            "{ not json",
+        )
+        .unwrap();
+        match Config::load_presence(dir.path()) {
+            ConfigPresence::Corrupt(recovery) => {
+                assert_eq!(recovery.kind, RecoveryKind::Malformed);
+            }
+            other => panic!("expected Corrupt, got {other:?}"),
+        }
+    }
+
+    /// The legacy-migration path stays compatible with `Present`: a pre-split
+    /// `config.json` (no `shared-config.json` yet) is migrated by `load` before
+    /// the presence check, so an upgrading user with a real config is `Present`,
+    /// never mistaken for a first-run `Absent` that would drop their accounts.
+    #[test]
+    fn load_presence_treats_a_migrated_legacy_config_as_present() {
+        let dir = tempfile::tempdir().unwrap();
+        // A pre-split combined config.json with a hand-entered account.
+        let mut legacy = Config::default();
+        legacy.providers.clear();
+        legacy.providers.insert(
+            "openrouter".into(),
+            ProviderConfig {
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        std::fs::write(
+            dir.path().join("config.json"),
+            serde_json::to_string(&legacy).unwrap(),
+        )
+        .unwrap();
+        // No shared-config.json exists yet — only the legacy file.
+        assert!(!dir.path().join(crate::shared_config::FILE_NAME).exists());
+
+        match Config::load_presence(dir.path()) {
+            ConfigPresence::Present(loaded) => {
+                assert!(loaded.providers.contains_key("openrouter"));
+                assert!(!loaded.providers.contains_key("claude"));
+            }
+            other => panic!("expected Present after migration, got {other:?}"),
+        }
     }
 
     fn account_with_auth_mode(kind: &str, auth_mode: Option<&str>) -> ProviderConfig {

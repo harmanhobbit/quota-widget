@@ -19,7 +19,19 @@
 //! reads as an empty read model, and the next successful refresh overwrites it.
 //! An empty read model is honest: it shows *no data yet*, never invented data.
 //!
+//! ## Absent is not corrupt, for a reader that must route on the difference
+//!
+//! Discarding corrupt data does *not* mean a reader cannot tell corruption from
+//! absence. The home-screen widget must: an **absent** read model is the honest
+//! "No data—tap to refresh", but a **corrupt** one is a persisted-data fault it
+//! surfaces as "Widget needs configuration" rather than inviting a refresh over
+//! a file it could not trust. [`load_state`] reports that three-way distinction
+//! ([`SnapshotLoad`]); [`load`] stays the discard-to-empty convenience every
+//! *refresh* path wants for its `prior` map, where absent and corrupt are alike
+//! "start from nothing and let the next fetch repopulate".
+//!
 //! [`load`]: SnapshotStore::load
+//! [`load_state`]: SnapshotStore::load_state
 
 use crate::model::UsageSnapshot;
 use crate::refresh::{AggregateStatus, RefreshOutcome};
@@ -71,6 +83,24 @@ impl Default for SnapshotStore {
     }
 }
 
+/// The outcome of [`SnapshotStore::load_state`]: a readable read model, or which
+/// of the two "nothing usable" shapes was on disk. A reader that renders state
+/// from this — the home-screen widget — treats [`Absent`](SnapshotLoad::Absent)
+/// as the honest "no data yet" and [`Corrupt`](SnapshotLoad::Corrupt) as a
+/// persisted-data fault, so the two never collapse into one placeholder.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SnapshotLoad {
+    /// No read model has been written yet — a genuine "file not found". Routes to
+    /// the widget's "No data—tap to refresh".
+    Absent,
+    /// A read model exists on disk but could not be read or parsed. The bytes are
+    /// discarded (never recovered), and a widget routes this to "needs
+    /// configuration" rather than pretending it is merely un-refreshed.
+    Corrupt,
+    /// A readable, parseable read model.
+    Loaded(SnapshotStore),
+}
+
 impl SnapshotStore {
     /// Build a read model from a completed refresh, stamped with the current
     /// time. Use [`SnapshotStore::from_snapshots`] instead when the host has
@@ -100,13 +130,37 @@ impl SnapshotStore {
 
     /// Read the persisted read model. A missing, unreadable, or malformed file
     /// all read as the empty read model — derived data is discarded on
-    /// corruption, never recovered (see the module docs). The caller cannot
-    /// distinguish "no refresh yet" from "the file was corrupt", and does not
-    /// need to: both mean *render nothing until the next refresh*.
+    /// corruption, never recovered (see the module docs). A refresh building its
+    /// `prior` map does not need to distinguish "no refresh yet" from "the file
+    /// was corrupt": both mean *start from nothing and let the next fetch
+    /// repopulate*. A reader that must route the two differently (the widget:
+    /// absent → "no data", corrupt → "needs configuration") calls
+    /// [`load_state`](SnapshotStore::load_state) instead.
     pub fn load(dir: &Path) -> Self {
+        match Self::load_state(dir) {
+            SnapshotLoad::Loaded(store) => store,
+            // Both absent and corrupt discard to the empty read model here.
+            SnapshotLoad::Absent | SnapshotLoad::Corrupt => Self::default(),
+        }
+    }
+
+    /// Read the persisted read model, telling **absent** apart from **corrupt**.
+    ///
+    /// The bytes are still never *recovered* — a corrupt file is reported as
+    /// [`SnapshotLoad::Corrupt`], not parsed leniently — but the caller learns
+    /// which of the two failure shapes it hit so it can route on the difference.
+    /// Only a genuine "no such file" is [`Absent`](SnapshotLoad::Absent); a file
+    /// that exists but cannot be read (permissions, an I/O error) is
+    /// [`Corrupt`](SnapshotLoad::Corrupt), the same as unparseable bytes, because
+    /// both mean "a read model is on disk and we cannot trust what it says".
+    pub fn load_state(dir: &Path) -> SnapshotLoad {
         match std::fs::read_to_string(dir.join(FILE_NAME)) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
-            Err(_) => Self::default(),
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(store) => SnapshotLoad::Loaded(store),
+                Err(_) => SnapshotLoad::Corrupt,
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => SnapshotLoad::Absent,
+            Err(_) => SnapshotLoad::Corrupt,
         }
     }
 
@@ -215,6 +269,30 @@ mod tests {
             .save(dir.path())
             .unwrap();
         assert_eq!(SnapshotStore::load(dir.path()).snapshots.len(), 1);
+    }
+
+    /// `load_state` tells absent, corrupt and loaded apart — the distinction the
+    /// widget routes on ("no data" vs "needs configuration"), even though `load`
+    /// still collapses the two failures to the empty read model.
+    #[test]
+    fn load_state_distinguishes_absent_corrupt_and_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        // No file yet: absent, not corrupt.
+        assert_eq!(SnapshotStore::load_state(dir.path()), SnapshotLoad::Absent);
+
+        // A malformed file is corrupt, not absent — and `load` still discards it.
+        std::fs::write(dir.path().join(FILE_NAME), "{ not json").unwrap();
+        assert_eq!(SnapshotStore::load_state(dir.path()), SnapshotLoad::Corrupt);
+        assert_eq!(SnapshotStore::load(dir.path()), SnapshotStore::default());
+
+        // A real read model loads.
+        let written =
+            SnapshotStore::from_snapshots(vec![ok("openrouter", 7.0)], AggregateStatus::default());
+        written.save(dir.path()).unwrap();
+        assert_eq!(
+            SnapshotStore::load_state(dir.path()),
+            SnapshotLoad::Loaded(written)
+        );
     }
 
     /// Acceptance #1: a cold process renders the same last-known state a live

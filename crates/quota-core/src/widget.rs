@@ -205,9 +205,29 @@ impl WidgetConfigStore {
     /// the empty store — see the type docs for why that is the intended
     /// "needs configuration" path rather than a recovery.
     pub fn load(dir: &Path) -> Self {
+        match Self::load_state(dir) {
+            WidgetConfigLoad::Loaded(store) => store,
+            WidgetConfigLoad::Absent | WidgetConfigLoad::Corrupt => Self::default(),
+        }
+    }
+
+    /// Read the persisted preferences, telling an **absent** file (a first run
+    /// with no widget placed yet) apart from a **corrupt** one (a file that
+    /// exists but cannot be read or parsed). Both still resolve to "needs
+    /// configuration" when a specific instance is projected — an absent file has
+    /// no entry for the instance, and a corrupt file is explicitly refused — but
+    /// the reader learns which it hit so a corrupt file routes *every* instance
+    /// to needs-configuration rather than only the ones that happen to be
+    /// missing. The bytes are never recovered; a corrupt file is reported as
+    /// [`WidgetConfigLoad::Corrupt`], not parsed leniently.
+    pub fn load_state(dir: &Path) -> WidgetConfigLoad {
         match std::fs::read_to_string(dir.join(FILE_NAME)) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
-            Err(_) => Self::default(),
+            Ok(text) => match serde_json::from_str(&text) {
+                Ok(store) => WidgetConfigLoad::Loaded(store),
+                Err(_) => WidgetConfigLoad::Corrupt,
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => WidgetConfigLoad::Absent,
+            Err(_) => WidgetConfigLoad::Corrupt,
         }
     }
 
@@ -240,6 +260,23 @@ impl WidgetConfigStore {
     pub fn remove(&mut self, instance_id: &str) -> Option<WidgetInstanceConfig> {
         self.instances.remove(instance_id)
     }
+}
+
+/// The outcome of [`WidgetConfigStore::load_state`]: the readable preferences,
+/// or which "empty store" shape was on disk. A corrupt file loses every placed
+/// instance's saved selection, so the widget read path routes it to
+/// needs-configuration wholesale rather than treating only the missing entry as
+/// unconfigured.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WidgetConfigLoad {
+    /// No preference file yet — a first run with nothing placed. An instance the
+    /// launcher asks about simply has no entry (needs configuration).
+    Absent,
+    /// A preference file exists but could not be read or parsed. Discarded, never
+    /// recovered; the widget routes every instance to needs-configuration.
+    Corrupt,
+    /// A readable, parseable preference store.
+    Loaded(WidgetConfigStore),
 }
 
 /// The fully-resolved projection a launcher renders. Carries the chosen
@@ -1212,6 +1249,36 @@ mod tests {
             Utc::now(),
         );
         assert_eq!(p.state, WidgetState::NeedsConfiguration);
+    }
+
+    /// `load_state` tells an absent preference file (first run) apart from a
+    /// corrupt one, while `load` still collapses both to the empty store.
+    #[test]
+    fn load_state_distinguishes_absent_corrupt_and_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            WidgetConfigStore::load_state(dir.path()),
+            WidgetConfigLoad::Absent
+        );
+
+        std::fs::write(dir.path().join(FILE_NAME), "{ not json").unwrap();
+        assert_eq!(
+            WidgetConfigStore::load_state(dir.path()),
+            WidgetConfigLoad::Corrupt
+        );
+        // `load` still discards a corrupt file to the empty store.
+        assert_eq!(
+            WidgetConfigStore::load(dir.path()),
+            WidgetConfigStore::default()
+        );
+
+        let mut written = WidgetConfigStore::default();
+        written.set("id-1", instance(&["a"]));
+        written.save(dir.path()).unwrap();
+        assert_eq!(
+            WidgetConfigStore::load_state(dir.path()),
+            WidgetConfigLoad::Loaded(written)
+        );
     }
 
     /// Removing an instance the launcher deleted forgets exactly that one.
