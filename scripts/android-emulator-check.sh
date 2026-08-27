@@ -162,9 +162,14 @@ if [ "$periodic" -ne 1 ]; then
   echo "!! No WorkManager job for $pkg — RefreshScheduler.ensurePeriodic did not land."
   exit 1
 fi
-if ! grep -B2 -A24 "JOB #.*$wm_component" jobs.txt | grep -qE "900000|15m0s0ms"; then
+# WorkManager 2.9 schedules periodic work as a one-shot JobInfo pointed at the
+# next period (its next-schedule-time override), so the cadence shows up as the
+# job's minimum latency — ~15 minutes, minus the seconds already elapsed since
+# the app scheduled it — rather than a PERIOD line. Match either shape so a
+# WorkManager change of strategy cannot silently pass.
+if ! grep -B2 -A30 "JOB #.*$wm_component" jobs.txt | grep -qE "Minimum latency: \+1[0-5]m|PERIOD: ?900000|PERIOD: ?\+15m"; then
   echo "!! A WorkManager job exists but is not the ~15-minute periodic one"
-  echo "   (expected the 900000ms interval in the job dump above)."
+  echo "   (expected the ~15-minute minimum latency or period in the job dump above)."
   exit 1
 fi
 echo "   periodic refresh job present, interval 15 minutes"
