@@ -35,6 +35,24 @@ idempotent under unique work with KEEP: the app's Rust setup (via the JNI call
 in `src-tauri/src/android_schedule.rs`) and the widget receiver's `onUpdate`,
 so a widget keeps refreshing even if the app is never opened again.
 
+The two entry points the Rust side reaches (`ensurePeriodic`, `enqueueOneTime`)
+are `@JvmStatic`: they are called with JNI `CallStaticVoidMethod` on the class,
+and a Kotlin `object`'s plain members are instance methods only — without the
+annotation the lookup fails and the best-effort call silently schedules
+nothing.
+
+## Verifying the schedule
+
+The dispatch-only Android job exercises the real paths on the emulator
+(`scripts/android-emulator-check.sh`): after the UI render proof it asserts a
+WorkManager job for the app package exists in `dumpsys jobscheduler` at the
+15-minute interval (the startup dispatch), then taps the app's refresh button
+and asserts a second, one-time job appears on top of the schedule (the manual
+durable enqueue). Those two assertions are what pin the `@JvmStatic`
+requirement — a regression there schedules nothing, visibly. The
+`RefreshSchedulerTest` JVM tests additionally pin the interval, worker class
+and constraint-free request configuration without a device.
+
 ## Layout
 
 | Path | Role |

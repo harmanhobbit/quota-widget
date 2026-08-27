@@ -3,6 +3,7 @@ package tech.allaway.quotawidget.widget
 import android.content.Context
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.PeriodicWorkRequest
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
 
@@ -24,6 +25,14 @@ import java.util.concurrent.TimeUnit
  * and the app's manual refresh button reaches [enqueueOneTime] through the JNI
  * call in `src-tauri/src/android_schedule.rs` — one durable unit of work for
  * every refresh nobody is watching.
+ *
+ * Both entry points are `@JvmStatic` on purpose: `android_schedule.rs` reaches
+ * them with JNI `CallStaticVoidMethod` on this class. A Kotlin `object`'s plain
+ * members live on the singleton instance only — without `@JvmStatic` there is
+ * no static method for `GetStaticMethodID` to find, the call fails with
+ * `NoSuchMethodError`, and (because that call is deliberately best-effort) the
+ * schedule would silently never exist. The emulator check asserts a real
+ * periodic job exists precisely so that failure mode stays impossible.
  */
 object RefreshScheduler {
     /**
@@ -47,15 +56,12 @@ object RefreshScheduler {
      * schedule's next run time alone, where UPDATE would postpone it to a full
      * interval from *now* and thus penalise the user for opening the app.
      */
+    @JvmStatic
     fun ensurePeriodic(context: Context) {
-        val request = PeriodicWorkRequestBuilder<WidgetRefreshWorker>(
-            PERIODIC_MINUTES,
-            TimeUnit.MINUTES,
-        ).build()
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
             PERIODIC_WORK,
             ExistingPeriodicWorkPolicy.KEEP,
-            request,
+            periodicRequest(),
         )
     }
 
@@ -65,7 +71,20 @@ object RefreshScheduler {
      * unique work the widget's refresh action enqueues, so a burst of taps from
      * either surface collapses to one fetch.
      */
+    @JvmStatic
     fun enqueueOneTime(context: Context) {
         WidgetRefreshWorker.enqueue(context)
     }
+
+    /**
+     * The periodic request [ensurePeriodic] enqueues, built from the documented
+     * target. Extracted so the JVM tests can assert the actual scheduling
+     * configuration — interval, worker, and the deliberate absence of
+     * constraints — rather than trusting the call site to mean what it says.
+     */
+    fun periodicRequest(): PeriodicWorkRequest =
+        PeriodicWorkRequestBuilder<WidgetRefreshWorker>(
+            PERIODIC_MINUTES,
+            TimeUnit.MINUTES,
+        ).build()
 }

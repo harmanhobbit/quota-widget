@@ -20,6 +20,29 @@
 # A parse/runtime failure in the bundle (e.g. the Chrome-69 `globalThis` gap)
 # leaves the WebView blank, so the label never appears and this fails.
 #
+# Since issue #111 it also proves the background refresh dispatch actually
+# lands, on both of its Rust→Kotlin JNI paths:
+#
+# 1. Startup scheduling: the app's Rust setup calls RefreshScheduler
+#    .ensurePeriodic over JNI; a WorkManager job for this package must exist
+#    in JobScheduler afterwards, at the ~15-minute target. The methods must
+#    stay @JvmStatic for that call to find them at all — without it the JNI
+#    lookup throws NoSuchMethodError, the (deliberately best-effort) call
+#    degrades into the app's error log, no job ever exists, and this fails.
+# 2. Manual durable enqueue: tapping the app's refresh button drives the real
+#    refresh_manual command; its one-time WidgetRefreshWorker job must appear
+#    in JobScheduler (durable work, not an in-process fetch). The worker
+#    class name in the dump is what distinguishes it from the periodic job.
+#
+# Widget-update scheduling (the receiver's onUpdate calling the same
+# ensurePeriodic) is not automatable here: a broadcast without real widget ids
+# is dropped by AppWidgetProvider, and driving launcher widget placement is
+# out of scope for this script. The worker→webview snapshots delivery is
+# likewise not asserted: while the app is open the foreground loop keeps the
+# figures fresh, so there is no stable UI signal that would distinguish the
+# worker's emit from the loop's — it shares the exact event/payload path the
+# render assertion above already exercises.
+#
 # The emulator runs under pure software emulation on GitHub-hosted Linux
 # runners (no KVM), so first paint is slow (~20-40s) and the system throws
 # transient "System UI isn't responding" ANR dialogs that occlude the app.
@@ -30,6 +53,11 @@ set -euo pipefail
 apk="${1:?usage: android-emulator-check.sh <path-to-apk>}"
 pkg="tech.allaway.quotawidget"
 activity="${pkg}/.MainActivity"
+# WorkManager wraps every request in this service, so each of our scheduled
+# jobs names it. The short "quotawidget/" prefix is unique in the dump — our
+# application id, here as part of the component's "package/Class" form.
+wm_component="quotawidget/androidx.work.impl.background.systemjob.SystemJobService"
+refresh_glyph="⟳"
 
 dump_ui() {
   # uiautomator occasionally races the surface; `|| true` keeps the loop alive.
@@ -110,3 +138,88 @@ if grep -qi "Tauri/Console.*Error" logcat.txt 2>/dev/null; then
 fi
 
 echo "==> OK: OpenRouter card rendered in the Android WebView."
+
+# ---- 1. Startup scheduling: the periodic refresh actually exists ------------
+#
+# Not "the call didn't crash" — the job itself. Polls because WorkManager's
+# JobScheduler registration can trail the enqueue by a beat. Whatever the
+# outcome, the matching JOB blocks are printed so a failure carries its own
+# evidence in the log.
+echo "==> Asserting the periodic refresh job is scheduled (issue #111)"
+periodic=0
+deadline=$(( SECONDS + 30 ))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  adb shell dumpsys jobscheduler > jobs.txt 2>/dev/null || true
+  if grep -q "$wm_component" jobs.txt; then
+    periodic=1
+    break
+  fi
+  sleep 2
+done
+grep "JOB #.*$wm_component" jobs.txt | head -5 || true
+grep -A24 "JOB #.*$wm_component" jobs.txt | head -80 || true
+if [ "$periodic" -ne 1 ]; then
+  echo "!! No WorkManager job for $pkg — RefreshScheduler.ensurePeriodic did not land."
+  exit 1
+fi
+if ! grep -B2 -A24 "JOB #.*$wm_component" jobs.txt | grep -qE "900000|15m0s0ms"; then
+  echo "!! A WorkManager job exists but is not the ~15-minute periodic one"
+  echo "   (expected the 900000ms interval in the job dump above)."
+  exit 1
+fi
+echo "   periodic refresh job present, interval 15 minutes"
+
+# ---- 2. Manual refresh: one durable one-time job ---------------------------
+#
+# Tap the header ⟳ button — the real UI path into refresh_manual — and watch
+# JobScheduler for the one-time work it must enqueue. WorkManager does not tag
+# JobInfos with the worker class (that lives in its own database, invisible to
+# dumpsys), so the one-time request is detected as a *second* job from our
+# package on top of the periodic one. The job is visible only while pending or
+# running, so the tap is repeated a couple of times first: the unique-work
+# REPLACE policy collapses the burst into one fetch, and the repeated
+# re-enqueue widens the window in which the pending job is observable. The
+# foreground visibility loop is not a confound — it refreshes in-process and
+# never enqueues WorkManager work.
+echo "==> Tapping the manual refresh button and asserting durable one-time work"
+dump_ui
+bounds=$(grep -o "<node[^>]*text=\"$refresh_glyph\"[^>]*bounds=\"\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]\"" ui.xml | head -1 | grep -o "\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]")
+if [ -z "$bounds" ]; then
+  echo "!! Refresh button ($refresh_glyph) not found in the UI hierarchy:"
+  cat ui.xml
+  exit 1
+fi
+coords=$(printf '%s' "$bounds" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\1 \2 \3 \4/')
+read -r left top right bottom <<< "$coords"
+tap_x=$(( (left + right) / 2 ))
+tap_y=$(( (top + bottom) / 2 ))
+
+count_jobs() {
+  adb shell dumpsys jobscheduler 2>/dev/null | grep -c "JOB #.*$wm_component" || true
+}
+base_jobs=$(count_jobs)
+echo "   scheduled jobs before the tap: $base_jobs"
+
+for _ in 1 2 3; do
+  adb shell input tap "$tap_x" "$tap_y"
+  sleep 2
+done
+
+one_time=0
+deadline=$(( SECONDS + 30 ))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  jobs_now=$(count_jobs)
+  if [ "${jobs_now:-0}" -ge $(( base_jobs + 1 )) ]; then
+    one_time=1
+    break
+  fi
+  sleep 1
+done
+if [ "$one_time" -ne 1 ]; then
+  echo "!! No second WorkManager job observed after tapping refresh —"
+  echo "   the manual refresh did not enqueue durable work (jobs now: $jobs_now)."
+  exit 1
+fi
+echo "   durable one-time refresh job observed on top of the periodic schedule"
+
+echo "==> OK: background refresh dispatch verified (schedule + manual durable work)."
