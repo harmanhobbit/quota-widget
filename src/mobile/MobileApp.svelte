@@ -343,6 +343,14 @@
       syncAccountState();
       await scanSecrets();
       await loadPending();
+      // The foreground cadence reads the configured interval when it (re)starts,
+      // so re-enter now that the config has actually landed: the mount-time
+      // enter() below ran while `config` was still null and could only fall
+      // back to the 60s default — which would otherwise persist for the whole
+      // session and never follow the configured interval. Restarting the
+      // cadence is exactly what a visibility change does; this just does it
+      // once the real interval is known.
+      if (document.visibilityState !== 'hidden') fg.enter();
       // The debug-only CI OpenRouter seed lives in Rust `setup()` (see
       // src-tauri/src/mobile.rs), not here: the Android webview reloads once
       // during startup and drops in-flight invoke callbacks, which repeatedly
@@ -355,6 +363,10 @@
     listen('config', (e) => {
       config = e.payload;
       syncAccountState();
+      // A saved poll-interval change takes effect on the visible loop
+      // immediately, not at the next visibility change (issue #111's
+      // "continue at the configured interval while visible").
+      if (document.visibilityState !== 'hidden') fg.enter();
     }).then((u) => unlisten.push(u));
     // The durable worker's provenance marker (issue #111): emitted only by the
     // WorkManager worker path — never by the foreground loop or entry refresh —
