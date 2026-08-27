@@ -3196,6 +3196,7 @@ dependencies = [
  "chrono",
  "dirs 6.0.0",
  "futures-util",
+ "jni 0.21.1",
  "keyring",
  "keyring-core",
  "ksni",

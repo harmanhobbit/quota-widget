@@ -76,6 +76,13 @@ jobs:
       - name: Exclude app data from Android backup
         run: node scripts/patch-android-manifest.mjs
 
+      # Like the manifest patch above, the native Glance home-screen widget host
+      # (issue #113) is committed under src-tauri/android-widget/ and reapplied
+      # into the regenerated, gitignored gen/android here. See
+      # scripts/patch-android-glance-widget.mjs.
+      - name: Install the Glance home-screen widget host
+        run: node scripts/patch-android-glance-widget.mjs
+
       # arm64 debug APK. QUOTA_WIDGET_MOBILE=1 forces the mobile shell at build
       # time (same as build.yml). The --config override gives this build a
       # unique versionName and an incrementing versionCode (the workflow run
