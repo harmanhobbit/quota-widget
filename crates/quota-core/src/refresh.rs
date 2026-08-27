@@ -418,7 +418,11 @@ mod tests {
             .unwrap();
 
         // The process dies. A cold process reloads the persisted store as
-        // `prior`; this pass codex's fetch fails, claude's succeeds anew.
+        // `prior`; this pass codex's fetch fails, claude's succeeds anew. (The
+        // two-millisecond pause keeps the two passes' timestamps ordered by
+        // construction — the assertions below compare them exactly, and must
+        // not depend on the clock's resolution.)
+        std::thread::sleep(std::time::Duration::from_millis(2));
         let prior = SnapshotStore::load(dir.path()).prior_map();
         let second = compose(
             vec![failed("codex"), ok("claude", 30.0)],
@@ -455,10 +459,9 @@ mod tests {
             .unwrap();
         assert!(claude.error.is_none());
         assert_eq!(claude.windows[0].used_pct, 30.0);
-        assert_ne!(
-            claude.fetched_at,
-            prior.get("claude").unwrap().fetched_at,
-            "a success re-stamps as current",
+        assert!(
+            claude.fetched_at > prior.get("claude").unwrap().fetched_at,
+            "a success re-stamps as current, never as an older reading",
         );
 
         // Persist the failing pass the way the hosts do, then read the store

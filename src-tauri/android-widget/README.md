@@ -44,14 +44,27 @@ nothing.
 ## Verifying the schedule
 
 The dispatch-only Android job exercises the real paths on the emulator
-(`scripts/android-emulator-check.sh`): after the UI render proof it asserts a
-WorkManager job for the app package exists in `dumpsys jobscheduler` at the
-15-minute interval (the startup dispatch), then taps the app's refresh button
-and asserts a second, one-time job appears on top of the schedule (the manual
-durable enqueue). Those two assertions are what pin the `@JvmStatic`
-requirement — a regression there schedules nothing, visibly. The
-`RefreshSchedulerTest` JVM tests additionally pin the interval, worker class
-and constraint-free request configuration without a device.
+(`scripts/android-emulator-check.sh`):
+
+- after the UI render proof it asserts **exactly one** WorkManager job for the
+  app package exists in `dumpsys jobscheduler` at the 15-minute cadence (the
+  startup dispatch — WorkManager 2.9 surfaces the cadence as the job's minimum
+  latency);
+- it then waits for the card's data age to advance (the CI-seeded foreground
+  interval is one hour, so nothing else refreshes mid-check), taps the app's
+  refresh button, and asserts the manual work **executed** — identified by its
+  unique `quota-widget-manual-refresh` tag in the worker's own execution log,
+  immune to a fast fetch closing a JobScheduler window — and that the open
+  webview **re-rendered** from that worker's emit (the card's age resets to
+  "just now"). Emit failures are logged Rust-side (`[worker]` lines), so a
+  silent delivery failure is not an option.
+
+Those assertions pin the `@JvmStatic` requirement — a regression there
+schedules nothing, visibly. The `RefreshSchedulerTest` JVM tests additionally
+pin the request configuration without a device: the 15-minute interval, the
+shared worker class, the schedule's unique-name tag and KEEP-across-reensures
+policy, the constraint-free request, and the manual request's one-time shape
+and unique tag.
 
 ## Layout
 

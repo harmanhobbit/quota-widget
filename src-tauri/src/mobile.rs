@@ -772,6 +772,13 @@ pub fn run() {
                         .config
                         .providers
                         .insert("openrouter".to_string(), account);
+                    // Silences the foreground visibility loop for the emulator
+                    // check (scripts/android-emulator-check.sh): with an hourly
+                    // interval it cannot fire mid-check, so the card's data age
+                    // only advances, and the age reset after the check's tap is
+                    // attributable to exactly one thing — the manual refresh's
+                    // durable worker pushing snapshots to the open webview.
+                    loaded.config.poll_interval_secs = 3600;
                     if let Err(e) = loaded.config.save(&config_dir) {
                         eprintln!("[ci-seed] saving seeded config failed: {e}");
                     }

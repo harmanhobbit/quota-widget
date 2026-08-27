@@ -291,7 +291,13 @@ fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(
     // waiting for the next visibility change. In the widget-only process there
     // is no webview; persisting the read model is the whole delivery.
     if let Some(handle) = crate::mobile::app_handle() {
-        let _ = handle.emit("snapshots", &outcome.snapshots);
+        if let Err(e) = handle.emit("snapshots", &outcome.snapshots) {
+            // An emit failure means the open app missed this refresh's push and
+            // would only catch up on its next visibility change — say so rather
+            // than silently dropping the delivery (the emulator check's
+            // worker→webview assertion depends on this push landing).
+            eprintln!("[worker] emitting snapshots to the app webview failed: {e}");
+        }
     }
     Ok(())
 }

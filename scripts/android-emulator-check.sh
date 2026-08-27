@@ -21,27 +21,34 @@
 # leaves the WebView blank, so the label never appears and this fails.
 #
 # Since issue #111 it also proves the background refresh dispatch actually
-# lands, on both of its Rust→Kotlin JNI paths:
+# lands, and that its results reach the surfaces that render them:
 #
 # 1. Startup scheduling: the app's Rust setup calls RefreshScheduler
 #    .ensurePeriodic over JNI; a WorkManager job for this package must exist
-#    in JobScheduler afterwards, at the ~15-minute target. The methods must
-#    stay @JvmStatic for that call to find them at all — without it the JNI
-#    lookup throws NoSuchMethodError, the (deliberately best-effort) call
-#    degrades into the app's error log, no job ever exists, and this fails.
-# 2. Manual durable enqueue: tapping the app's refresh button drives the real
-#    refresh_manual command; its one-time WidgetRefreshWorker job must appear
-#    in JobScheduler (durable work, not an in-process fetch). The worker
-#    class name in the dump is what distinguishes it from the periodic job.
+#    in JobScheduler afterwards, at the ~15-minute target — and it must be
+#    the ONLY one at that point, so the assertion cannot pass on some other
+#    job. The methods must stay @JvmStatic for that call to find them at all
+#    — without it the JNI lookup throws NoSuchMethodError, the (deliberately
+#    best-effort) call degrades into the app's error log, no job ever exists,
+#    and this fails.
+# 2. Manual durable refresh: tapping the app's refresh button drives the real
+#    refresh_manual command; its one-time WidgetRefreshWorker request carries
+#    the unique tag `quota-widget-manual-refresh`, and the worker logs its own
+#    tags the moment WorkManager executes it. That log line — cumulative
+#    history in logcat, immune to a fast fetch closing the job's observable
+#    window — is how the manual work is identified, never by counting
+#    arbitrary jobs.
+# 3. Worker→webview delivery: with the CI-seeded foreground interval silenced
+#    (one hour — nothing else can refresh mid-check), the card's data age
+#    advances to "1m ago" before the tap; the tap's worker persists and emits
+#    the read model to the open webview, and the card re-renders at "just
+#    now". The emit failure path is logged on the Rust side, so a silent
+#    delivery failure is not an option.
 #
 # Widget-update scheduling (the receiver's onUpdate calling the same
 # ensurePeriodic) is not automatable here: a broadcast without real widget ids
 # is dropped by AppWidgetProvider, and driving launcher widget placement is
-# out of scope for this script. The worker→webview snapshots delivery is
-# likewise not asserted: while the app is open the foreground loop keeps the
-# figures fresh, so there is no stable UI signal that would distinguish the
-# worker's emit from the loop's — it shares the exact event/payload path the
-# render assertion above already exercises.
+# out of scope for this script.
 #
 # The emulator runs under pure software emulation on GitHub-hosted Linux
 # runners (no KVM), so first paint is slow (~20-40s) and the system throws
@@ -58,6 +65,9 @@ activity="${pkg}/.MainActivity"
 # application id, here as part of the component's "package/Class" form.
 wm_component="quotawidget/androidx.work.impl.background.systemjob.SystemJobService"
 refresh_glyph="⟳"
+# The unique tag the manual one-time request carries (WidgetRefreshWorker
+# .TAG_MANUAL); the worker logs its tags the moment WorkManager executes it.
+manual_tag="quota-widget-manual-refresh"
 
 dump_ui() {
   # uiautomator occasionally races the surface; `|| true` keeps the loop alive.
@@ -141,7 +151,9 @@ echo "==> OK: OpenRouter card rendered in the Android WebView."
 
 # ---- 1. Startup scheduling: the periodic refresh actually exists ------------
 #
-# Not "the call didn't crash" — the job itself. Polls because WorkManager's
+# Not "the call didn't crash" — the job itself, and exactly one of it (the only
+# schedule enqueued at startup is the periodic one, so a count above one would
+# already mean something else is scheduling work). Polls because WorkManager's
 # JobScheduler registration can trail the enqueue by a beat. Whatever the
 # outcome, the matching JOB blocks are printed so a failure carries its own
 # evidence in the log.
@@ -156,10 +168,15 @@ while [ "$SECONDS" -lt "$deadline" ]; do
   fi
   sleep 2
 done
-grep "JOB #.*$wm_component" jobs.txt | head -5 || true
-grep -A24 "JOB #.*$wm_component" jobs.txt | head -80 || true
+job_count=$(grep -c "JOB #.*$wm_component" jobs.txt || true)
+echo "   scheduled jobs after startup: $job_count"
+grep -A30 "JOB #.*$wm_component" jobs.txt | head -80 || true
 if [ "$periodic" -ne 1 ]; then
   echo "!! No WorkManager job for $pkg — RefreshScheduler.ensurePeriodic did not land."
+  exit 1
+fi
+if [ "${job_count:-0}" -ne 1 ]; then
+  echo "!! Expected exactly one scheduled job (the periodic refresh), found $job_count."
   exit 1
 fi
 # WorkManager 2.9 schedules periodic work as a one-shot JobInfo pointed at the
@@ -174,19 +191,38 @@ if ! grep -B2 -A30 "JOB #.*$wm_component" jobs.txt | grep -qE "Minimum latency: 
 fi
 echo "   periodic refresh job present, interval 15 minutes"
 
-# ---- 2. Manual refresh: one durable one-time job ---------------------------
+# ---- 2. Manual refresh: durable work executes, then reaches the webview -----
 #
-# Tap the header ⟳ button — the real UI path into refresh_manual — and watch
-# JobScheduler for the one-time work it must enqueue. WorkManager does not tag
-# JobInfos with the worker class (that lives in its own database, invisible to
-# dumpsys), so the one-time request is detected as a *second* job from our
-# package on top of the periodic one. The job is visible only while pending or
-# running, so the tap is repeated a couple of times first: the unique-work
-# REPLACE policy collapses the burst into one fetch, and the repeated
-# re-enqueue widens the window in which the pending job is observable. The
-# foreground visibility loop is not a confound — it refreshes in-process and
-# never enqueues WorkManager work.
-echo "==> Tapping the manual refresh button and asserting durable one-time work"
+# First, establish a stale baseline. The CI-seeded foreground interval is one
+# hour (see mobile.rs's ci_test_key seed), so nothing refreshes mid-check and
+# the card's data age only advances. Waiting until the card reports its age in
+# minutes makes the post-tap reset attributable to exactly one thing: the
+# worker's emit. Without this, the foreground loop could have refreshed a
+# second ago and the age would already read "just now".
+echo "==> Waiting for a stale baseline (card age in minutes)"
+stale=0
+deadline=$(( SECONDS + 240 ))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  dump_ui
+  if grep -qiE "[0-9]+m ago" ui.xml; then
+    stale=1
+    break
+  fi
+  # Transient system ANR dialogs occlude the app; dismiss as during render.
+  if grep -qi "isn't responding\|not responding" ui.xml; then
+    echo "   (dismissing an ANR dialog)"
+    adb shell input keyevent KEYCODE_BACK >/dev/null 2>&1 || true
+  fi
+  sleep 4
+done
+if [ "$stale" -ne 1 ]; then
+  echo "!! The card never aged past 'just now' — the delivery assertion below"
+  echo "   could not attribute a refresh to the manual tap."
+  exit 1
+fi
+echo "   stale baseline reached"
+
+echo "==> Tapping the manual refresh button and asserting durable work + delivery"
 dump_ui
 bounds=$(grep -o "<node[^>]*text=\"$refresh_glyph\"[^>]*bounds=\"\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]\"" ui.xml | head -1 | grep -o "\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]")
 if [ -z "$bounds" ]; then
@@ -196,42 +232,53 @@ if [ -z "$bounds" ]; then
 fi
 coords=$(printf '%s' "$bounds" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\1 \2 \3 \4/')
 read -r left top right bottom <<< "$coords"
-tap_x=$(( (left + right) / 2 ))
-tap_y=$(( (top + bottom) / 2 ))
+adb shell input tap $(( (left + right) / 2 )) $(( (top + bottom) / 2 ))
 
-count_jobs() {
-  adb shell dumpsys jobscheduler 2>/dev/null | grep -c "JOB #.*$wm_component" || true
-}
-base_jobs=$(count_jobs)
-echo "   scheduled jobs before the tap: $base_jobs"
-
-# Sample fast (the dump itself takes ~0.5s on the emulator, so each sample is
-# slower than its interval) and interleave with the taps: the one-time job is
-# observable only while pending or running, and a fast failing fetch can close
-# that window in well under a second. The unique-work REPLACE policy makes the
-# burst collapse into one fetch, while the repeated re-enqueues give each
-# round a fresh window to observe.
-one_time=0
-for _ in 1 2 3; do
-  adb shell input tap "$tap_x" "$tap_y"
-  deadline=$(( SECONDS + 8 ))
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    jobs_now=$(count_jobs)
-    if [ "${jobs_now:-0}" -ge $(( base_jobs + 1 )) ]; then
-      one_time=1
-      break
-    fi
-    sleep 0.3
-  done
-  [ "$one_time" -eq 1 ] && break
+# (a) The durable work executed under WorkManager. Identified by the manual
+# request's unique tag in the worker's own execution log — logcat is cumulative
+# history, so a fast-failing fetch cannot fall between samples the way a
+# JobScheduler poll could.
+ran=0
+deadline=$(( SECONDS + 30 ))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  if adb logcat -d 2>/dev/null | grep -q "QuotaWidgetRefresh.*$manual_tag"; then
+    ran=1
+    break
+  fi
+  sleep 0.5
 done
-if [ "$one_time" -ne 1 ]; then
-  echo "!! No second WorkManager job observed after tapping refresh —"
-  echo "   the manual refresh did not enqueue durable work (jobs now: ${jobs_now:-?})."
-  echo "   App-side log for evidence of what the tap actually did:"
+if [ "$ran" -ne 1 ]; then
+  echo "!! No manual durable work ran after the tap (worker log tag: $manual_tag)."
+  echo "   App-side Rust log — did the command run, and did the enqueue succeed?"
   adb logcat -d 2>/dev/null | grep "RustStdoutStderr" | grep "\[mobile\]" | tail -10 || true
   exit 1
 fi
-echo "   durable one-time refresh job observed on top of the periodic schedule"
+echo "   durable manual refresh work executed under WorkManager"
 
-echo "==> OK: background refresh dispatch verified (schedule + manual durable work)."
+# (b) Delivery to the open webview. The worker persists the read model and
+# pushes `snapshots` to the runtime; with the foreground loop silenced, the
+# card's age resetting to "just now" is attributable to that push and nothing
+# else — the UI re-rendered from the worker's emit.
+fresh=0
+deadline=$(( SECONDS + 90 ))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  dump_ui
+  if grep -qi "just now" ui.xml; then
+    fresh=1
+    break
+  fi
+  if grep -qi "isn't responding\|not responding" ui.xml; then
+    echo "   (dismissing an ANR dialog)"
+    adb shell input keyevent KEYCODE_BACK >/dev/null 2>&1 || true
+  fi
+  sleep 2
+done
+if [ "$fresh" -ne 1 ]; then
+  echo "!! The card never returned to 'just now' — the worker's snapshots did"
+  echo "   not reach the open webview. Rust-side emit failures would appear here:"
+  adb logcat -d 2>/dev/null | grep "RustStdoutStderr" | grep "\[worker\]" | tail -10 || true
+  exit 1
+fi
+echo "   open webview re-rendered from the worker's emit (age reset)"
+
+echo "==> OK: background refresh verified (schedule, durable manual work, webview delivery)."

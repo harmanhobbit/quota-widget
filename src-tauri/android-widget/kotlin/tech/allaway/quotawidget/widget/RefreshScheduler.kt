@@ -51,19 +51,27 @@ object RefreshScheduler {
 
     /**
      * Make sure the periodic refresh exists. Idempotent: unique work with
-     * [ExistingPeriodicWorkPolicy.KEEP], so calling this on every app start and
-     * every widget update never resets the run clock — KEEP leaves an existing
-     * schedule's next run time alone, where UPDATE would postpone it to a full
-     * interval from *now* and thus penalise the user for opening the app.
+     * [periodicPolicy], so calling this on every app start and every widget
+     * update never resets the run clock — KEEP leaves an existing schedule's
+     * next run time alone, where UPDATE would postpone it to a full interval
+     * from *now* and thus penalise the user for opening the app.
      */
     @JvmStatic
     fun ensurePeriodic(context: Context) {
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
             PERIODIC_WORK,
-            ExistingPeriodicWorkPolicy.KEEP,
+            periodicPolicy(),
             periodicRequest(),
         )
     }
+
+    /**
+     * The policy [ensurePeriodic] enqueues under. Extracted (like
+     * [periodicRequest]) so the JVM tests pin the scheduling configuration —
+     * KEEP is load-bearing and must be changed deliberately, never absorbed
+     * into a routine refactor of the call site.
+     */
+    fun periodicPolicy(): ExistingPeriodicWorkPolicy = ExistingPeriodicWorkPolicy.KEEP
 
     /**
      * The app's manual refresh: one-time durable work that can finish
@@ -78,13 +86,16 @@ object RefreshScheduler {
 
     /**
      * The periodic request [ensurePeriodic] enqueues, built from the documented
-     * target. Extracted so the JVM tests can assert the actual scheduling
-     * configuration — interval, worker, and the deliberate absence of
-     * constraints — rather than trusting the call site to mean what it says.
+     * target and tagged with the schedule's unique name. Extracted so the JVM
+     * tests can assert the actual scheduling configuration — interval, worker,
+     * tag, and the deliberate absence of constraints — rather than trusting the
+     * call site to mean what it says.
      */
     fun periodicRequest(): PeriodicWorkRequest =
         PeriodicWorkRequestBuilder<WidgetRefreshWorker>(
             PERIODIC_MINUTES,
             TimeUnit.MINUTES,
-        ).build()
+        )
+            .addTag(PERIODIC_WORK)
+            .build()
 }

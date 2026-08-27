@@ -1,5 +1,6 @@
 package tech.allaway.quotawidget.widget
 
+import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
@@ -44,8 +45,9 @@ class RefreshSchedulerTest {
             request.workSpec.workerClassName,
         )
         assertTrue(
-            "the worker class must be a default tag so the job is identifiable",
-            request.tags.contains(WidgetRefreshWorker::class.java.name),
+            "the schedule must carry its unique name as a tag so a run can be " +
+                "attributed to it in the worker's own log",
+            request.tags.contains(RefreshScheduler.PERIODIC_WORK),
         )
     }
 
@@ -64,5 +66,32 @@ class RefreshSchedulerTest {
         assertFalse(constraints.requiresBatteryNotLow())
         assertFalse(constraints.requiresDeviceIdle())
         assertFalse(constraints.requiresStorageNotLow())
+    }
+
+    @Test
+    fun periodicScheduleIsKeptAcrossReensures() {
+        assertEquals(
+            "ensurePeriodic runs at every app start and widget update; KEEP leaves " +
+                "an existing schedule's next run time alone, where UPDATE would " +
+                "postpone it to a full interval from now and penalise the user " +
+                "for opening the app",
+            ExistingPeriodicWorkPolicy.KEEP,
+            RefreshScheduler.periodicPolicy(),
+        )
+    }
+
+    @Test
+    fun manualRequestIsOneTimeAndCarriesItsUniqueTag() {
+        val request = WidgetRefreshWorker.manualRequest()
+
+        assertFalse(
+            "the manual refresh is one-time work, never a schedule",
+            request.workSpec.isPeriodic,
+        )
+        assertTrue(
+            "the manual work must carry its unique tag so its execution is " +
+                "attributable in the worker's own log",
+            request.tags.contains(WidgetRefreshWorker.TAG_MANUAL),
+        )
     }
 }
