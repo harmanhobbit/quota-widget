@@ -15,13 +15,11 @@
 //! rather than panicking, because a failed *enqueue* must never take the app
 //! down — the foreground refresh still works without any of this.
 
-use jni::objects::{JObject, JValue};
+use jni::objects::{JClass, JObject, JString, JValue};
 use jni::JavaVM;
 
-/// The `RefreshScheduler` class the Kotlin host compiles into the app. The
-/// widget host's Kotlin and this library ship in the same APK and classloader,
-/// so a plain class-path lookup finds it.
-const SCHEDULER_CLASS: &str = "tech/allaway/quotawidget/widget/RefreshScheduler";
+/// The `RefreshScheduler` class the Kotlin host compiles into the app.
+const SCHEDULER_CLASS: &str = "tech.allaway.quotawidget.widget.RefreshScheduler";
 
 /// Call `RefreshScheduler.<method>(Context)` on the JVM, passing the context
 /// `ndk_context` holds (tao's activity reference, valid for the app's lifetime;
@@ -46,14 +44,46 @@ fn call_scheduler(method: &str) -> Result<(), String> {
     // long as this process. `from_raw` does not take ownership, so nothing is
     // deleted behind tao's back.
     let context = unsafe { JObject::from_raw(ctx.context().cast()) };
-    env.call_static_method(
-        SCHEDULER_CLASS,
-        method,
-        "(Landroid/content/Context;)V",
-        &[JValue::Object(&context)],
-    )
-    .map_err(|e| format!("{method} failed: {e}"))?;
-    Ok(())
+
+    // The class must be resolved through the *app's* classloader, reached off
+    // the context, not via `find_class`: this thread was attached bare (no
+    // defining Java class), so JNI's FindClass falls back to the system
+    // classloader, whose DexPathList is just `.` — it cannot see anything in
+    // the APK. The first dispatch of this code crashed the whole app with a
+    // pending ClassNotFoundException aborting at the next JNI call, which is
+    // the failure mode the exception hygiene below exists to keep impossible:
+    // whatever goes wrong here, this function returns with no exception left
+    // pending, so the scheduler can never poison the surrounding runtime.
+    let result = (|| {
+        let loader = env
+            .call_method(&context, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?
+            .l()?;
+        let name: JString = env.new_string(SCHEDULER_CLASS)?;
+        let class = env
+            .call_method(
+                &loader,
+                "loadClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[(&name).into()],
+            )?
+            .l()?;
+        env.call_static_method(
+            JClass::from(class),
+            method,
+            "(Landroid/content/Context;)V",
+            &[JValue::Object(&context)],
+        )?;
+        Ok(())
+    })()
+    .map_err(|e: jni::errors::Error| format!("{method} failed: {e}"));
+    if result.is_err() {
+        // A JNI error generally means a Java exception is pending; leaving it
+        // set aborts the VM at the next unrelated JNI call (observed as
+        // "JNI DETECTED ERROR IN APPLICATION: ... called with pending
+        // exception"). Drop it — the error string above is the report.
+        let _ = env.exception_clear();
+    }
+    result
 }
 
 /// Make sure the best-effort periodic refresh (~15-minute target) exists.
