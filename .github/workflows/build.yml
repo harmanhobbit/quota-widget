@@ -225,9 +225,15 @@ jobs:
       # after #113 hit. So they run after the build: the same gate, in an
       # order Gradle can actually evaluate. A failure here still fails the
       # job.
+      #
+      # The task name must name a flavor: the generated project's abi
+      # dimension splits :app's unit-test tasks into testArm…/testUniversal…,
+      # so the bare abbreviation `testDebugUnitTest` is ambiguous and Gradle
+      # refuses it. One flavor suffices — these are pure-JVM tests over
+      # shared sources, no ABI in sight.
       - name: Widget host unit tests (JVM)
         working-directory: src-tauri/gen/android
-        run: ./gradlew :app:testDebugUnitTest --no-daemon
+        run: ./gradlew :app:testUniversalDebugUnitTest --no-daemon
       # Gradle's exact variant directory name isn't pinned here on purpose —
       # glob it, rather than guess a path that silently drifts. The emulator
       # step below installs this path directly off the runner.
