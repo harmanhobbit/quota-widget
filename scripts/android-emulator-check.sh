@@ -34,16 +34,19 @@
 # 2. Manual durable refresh: tapping the app's refresh button drives the real
 #    refresh_manual command; its one-time WidgetRefreshWorker request carries
 #    the unique tag `quota-widget-manual-refresh`, and the worker logs its own
-#    tags the moment WorkManager executes it. That log line — cumulative
-#    history in logcat, immune to a fast fetch closing the job's observable
-#    window — is how the manual work is identified, never by counting
-#    arbitrary jobs.
-# 3. Worker→webview delivery: with the CI-seeded foreground interval silenced
-#    (one hour — nothing else can refresh mid-check), the card's data age
-#    advances to "1m ago" before the tap; the tap's worker persists and emits
-#    the read model to the open webview, and the card re-renders at "just
-#    now". The emit failure path is logged on the Rust side, so a silent
-#    delivery failure is not an option.
+#    tags the moment WorkManager executes it. Logcat is cleared just before
+#    the tap, so the asserted line is marker-bound to THIS tap, and the check
+#    additionally requires the periodic schedule's tag to be ABSENT — the run
+#    is manual-attributed, not a periodic one.
+# 3. Worker→webview delivery, in three linked steps: the worker emits
+#    `worker-refresh` — an event produced by no other refresh path — the
+#    already-open webview's own listener logs the exact marker
+#    "[quota-widget] worker refresh delivered to this webview" (asserted in
+#    logcat through wry's Tauri/Console forwarding), and the card re-renders
+#    at "just now" (asserted in the UI hierarchy). No relaunch happens after
+#    the tap — a relaunch would run its own startup/entry refresh and could
+#    fake the age reset — so a mid-assertion kill fails loudly instead of
+#    passing on a false positive.
 #
 # Widget-update scheduling (the receiver's onUpdate calling the same
 # ensurePeriodic) is not automatable here: a broadcast without real widget ids
@@ -68,6 +71,14 @@ refresh_glyph="⟳"
 # The unique tag the manual one-time request carries (WidgetRefreshWorker
 # .TAG_MANUAL); the worker logs its tags the moment WorkManager executes it.
 manual_tag="quota-widget-manual-refresh"
+# The periodic schedule's unique name, carried as the periodic request's tag
+# (RefreshScheduler.PERIODIC_WORK) — the manual run's attribution check asserts
+# its absence.
+periodic_tag="quota-widget-periodic-refresh"
+# The delivery marker the open webview logs when it receives the worker's
+# `worker-refresh` event (MobileApp.svelte) — produced by no other refresh
+# path. Console output reaches logcat through wry's Tauri/Console tag.
+webview_marker="[quota-widget] worker refresh delivered to this webview"
 
 dump_ui() {
   # uiautomator occasionally races the surface; `|| true` keeps the loop alive.
@@ -250,17 +261,24 @@ if [ -z "$bounds" ]; then
 fi
 coords=$(printf '%s' "$bounds" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\1 \2 \3 \4/')
 read -r left top right bottom <<< "$coords"
+
+# Everything the post-tap assertions observe is marker-bound to the tap: the
+# log is cleared first, so the worker's execution line and the webview's
+# delivery marker can only come from THIS tap's run. From here on the app is
+# never relaunched — a relaunch would run its own startup/entry refresh and
+# could fake a "just now" card, so if the process dies mid-assertion the check
+# fails with diagnostics instead of passing on a false positive.
+adb logcat -c 2>/dev/null || true
 adb shell input tap $(( (left + right) / 2 )) $(( (top + bottom) / 2 ))
 
-# (a) The durable work executed under WorkManager. Identified by the manual
-# request's unique tag in the worker's own execution log — logcat is cumulative
-# history, so a fast-failing fetch cannot fall between samples the way a
-# JobScheduler poll could.
+# (a) The durable work executed under WorkManager, attributed to the manual
+# identity: the worker logs its request tags at execution time, and the line
+# must carry the manual request's unique tag AND NOT the periodic schedule's —
+# the tap produced a manual-attributed run, never a periodic one.
 ran=0
 deadline=$(( SECONDS + 30 ))
 while [ "$SECONDS" -lt "$deadline" ]; do
-  ensure_running
-  if adb logcat -d 2>/dev/null | grep -q "QuotaWidgetRefresh.*$manual_tag"; then
+  if adb logcat -d 2>/dev/null | grep "QuotaWidgetRefresh" | grep -q "$manual_tag"; then
     ran=1
     break
   fi
@@ -272,16 +290,45 @@ if [ "$ran" -ne 1 ]; then
   adb logcat -d 2>/dev/null | grep "RustStdoutStderr" | grep "\[mobile\]" | tail -10 || true
   exit 1
 fi
-echo "   durable manual refresh work executed under WorkManager"
+if adb logcat -d 2>/dev/null | grep "QuotaWidgetRefresh" | grep "$manual_tag" | grep -q "$periodic_tag"; then
+  echo "!! The post-tap worker run is not uniquely manual-attributed (its tags"
+  echo "   include the periodic schedule's). Tags it carried:"
+  adb logcat -d 2>/dev/null | grep "QuotaWidgetRefresh" | grep "$manual_tag" | tail -3 || true
+  exit 1
+fi
+echo "   durable manual refresh work executed under WorkManager (manual tag only)"
 
-# (b) Delivery to the open webview. The worker persists the read model and
-# pushes `snapshots` to the runtime; with the foreground loop silenced, the
-# card's age resetting to "just now" is attributable to that push and nothing
-# else — the UI re-rendered from the worker's emit.
+# (b) The worker's provenance marker reached the open webview. The worker path
+# emits `worker-refresh` — an event no other refresh path produces — and the
+# webview's own listener logs the marker from inside the WebView (wry forwards
+# console.info to logcat as Tauri/Console). This is the delivery proof: the
+# event was produced by the worker and received by the already-open UI.
+marker=0
+deadline=$(( SECONDS + 30 ))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  # grep -F: the marker contains brackets, which a pattern match would treat
+  # as a character class. Fixed-string only.
+  if adb logcat -d 2>/dev/null | grep "Tauri/Console" | grep -qF "$webview_marker"; then
+    marker=1
+    break
+  fi
+  sleep 0.5
+done
+if [ "$marker" -ne 1 ]; then
+  echo "!! The open webview never logged the worker's delivery marker."
+  echo "   Rust-side emit failures would appear here:"
+  adb logcat -d 2>/dev/null | grep "RustStdoutStderr" | grep "\[worker\]" | tail -10 || true
+  exit 1
+fi
+echo "   open webview received the worker's provenance marker"
+
+# (c) The webview re-rendered from that push: with the foreground loop
+# silenced (hourly CI-seed interval) and no relaunch possible past this point,
+# the card's age resetting to "just now" is attributable to the worker's
+# snapshots push and nothing else.
 fresh=0
 deadline=$(( SECONDS + 90 ))
 while [ "$SECONDS" -lt "$deadline" ]; do
-  ensure_running
   dump_ui
   if grep -qi "just now" ui.xml; then
     fresh=1

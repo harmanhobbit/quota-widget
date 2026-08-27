@@ -52,12 +52,22 @@ The dispatch-only Android job exercises the real paths on the emulator
   latency);
 - it then waits for the card's data age to advance (the CI-seeded foreground
   interval is one hour, so nothing else refreshes mid-check), taps the app's
-  refresh button, and asserts the manual work **executed** — identified by its
-  unique `quota-widget-manual-refresh` tag in the worker's own execution log,
-  immune to a fast fetch closing a JobScheduler window — and that the open
-  webview **re-rendered** from that worker's emit (the card's age resets to
-  "just now"). Emit failures are logged Rust-side (`[worker]` lines), so a
-  silent delivery failure is not an option.
+  refresh button, and proves the manual durable work and its delivery in three
+  linked steps, all marker-bound to that tap (logcat is cleared just before
+  it, and the app is never relaunched afterwards — a relaunch would run its
+  own startup refresh and could fake the age reset):
+  1. the worker **executed** — its log line carries the manual request's
+     unique `quota-widget-manual-refresh` tag and *not* the periodic
+     schedule's;
+  2. the open webview **received** the worker's push — the worker emits
+     `worker-refresh`, an event no other refresh path produces, and the
+     webview's own listener logs the exact marker (reaching logcat through
+     wry's `Tauri/Console` forwarding);
+  3. the webview **re-rendered** from it — the card's age resets to
+     "just now".
+  Emit failures are logged Rust-side (`[worker]` lines), so a silent delivery
+  failure is not an option; a kill after the tap fails the check loudly
+  rather than passing on a false positive.
 
 Those assertions pin the `@JvmStatic` requirement — a regression there
 schedules nothing, visibly. The `RefreshSchedulerTest` JVM tests additionally

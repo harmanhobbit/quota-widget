@@ -76,8 +76,10 @@ object RefreshScheduler {
     /**
      * The app's manual refresh: one-time durable work that can finish
      * independently of the activity that requested it (issue #111) — the same
-     * unique work the widget's refresh action enqueues, so a burst of taps from
-     * either surface collapses to one fetch.
+     * unique work the widget's refresh action enqueues. REPLACE means bursts
+     * from either surface never stack (a pending request is replaced; a
+     * running one is cancelled and restarted); it does not merge them into
+     * one fetch.
      */
     @JvmStatic
     fun enqueueOneTime(context: Context) {

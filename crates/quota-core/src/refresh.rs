@@ -367,7 +367,8 @@ mod tests {
     }
 
     /// A snapshot with no prior successful reading has nothing to preserve, so
-    /// a failed first fetch stays visibly failed rather than fabricating data.
+    /// a failed first fetch stays visibly failed rather than fabricating data —
+    /// carrying exactly the error the fetch produced, never a stale one.
     #[test]
     fn a_failed_first_fetch_has_nothing_to_preserve() {
         let cfg = cfg_with(crate::config::SortOrder::Manual);
@@ -375,7 +376,10 @@ mod tests {
         let mut engine = AlertEngine::default();
         let outcome = compose(vec![failed("claude")], &cfg, &prior, &mut engine, vec![]);
         assert!(outcome.snapshots[0].windows.is_empty());
-        assert!(outcome.snapshots[0].error.is_some());
+        assert_eq!(
+            outcome.snapshots[0].error,
+            Some(FetchError::Network("boom".into())),
+        );
     }
 
     /// A *partial* failure against the persisted read model, through the seams
@@ -448,6 +452,11 @@ mod tests {
         );
         assert!(codex.error.is_some(), "carries the new failure");
         assert_eq!(
+            codex.error,
+            Some(FetchError::Network("boom".into())),
+            "the attached failure is exactly the one this pass's fetch produced",
+        );
+        assert_eq!(
             codex.fetched_at, persisted_codex.fetched_at,
             "aged by the original success, not re-stamped as current",
         );
@@ -478,7 +487,11 @@ mod tests {
             .unwrap();
         assert_eq!(codex.windows, persisted_codex.windows);
         assert_eq!(codex.credits, persisted_codex.credits);
-        assert!(codex.error.is_some());
+        assert_eq!(
+            codex.error,
+            Some(FetchError::Network("boom".into())),
+            "the persisted store carries exactly the failure that caused the staleness",
+        );
         assert_eq!(codex.fetched_at, persisted_codex.fetched_at);
         let claude = third
             .snapshots

@@ -356,6 +356,15 @@
       config = e.payload;
       syncAccountState();
     }).then((u) => unlisten.push(u));
+    // The durable worker's provenance marker (issue #111): emitted only by the
+    // WorkManager worker path — never by the foreground loop or entry refresh —
+    // so this line attributes an update to background work. The emulator check
+    // asserts exactly this marker in logcat as its delivery proof: it is
+    // produced *by this webview* reacting to the worker's push, not by any
+    // other refresh path.
+    listen('worker-refresh', () =>
+      console.log('[quota-widget] worker refresh delivered to this webview'),
+    ).then((u) => unlisten.push(u));
 
     // Start the foreground loop if we launched visible (the usual case), and
     // follow the app in and out of the foreground thereafter. Rust already ran

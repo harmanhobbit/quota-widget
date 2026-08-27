@@ -96,7 +96,9 @@ pub fn ensure_periodic() -> Result<(), String> {
 /// Enqueue the app's manual refresh as one-time durable work (issue #111): the
 /// fetch then completes under WorkManager even if the activity is dismissed
 /// immediately after the tap. Shares the widget refresh action's unique
-/// one-time work, so overlapping requests collapse into a single fetch.
+/// one-time work, so overlapping requests never stack — a pending request is
+/// replaced and a running one is cancelled and restarted (REPLACE), leaving at
+/// most one refresh in flight.
 pub fn enqueue_manual_refresh() -> Result<(), String> {
     call_scheduler("enqueueOneTime")
 }

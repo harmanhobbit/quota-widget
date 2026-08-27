@@ -298,6 +298,16 @@ fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(
             // worker→webview assertion depends on this push landing).
             eprintln!("[worker] emitting snapshots to the app webview failed: {e}");
         }
+        // The worker's provenance marker, on its own event: this path is the
+        // only one that emits it (the foreground loop and entry refresh go
+        // through `refresh_once`, which never does), so a listener — and the
+        // emulator check's delivery assertion — can attribute an update to the
+        // durable work itself rather than to any refresh. Payload is the read
+        // model's own write stamp; the payload's value is incidental, the
+        // event's existence is the marker.
+        if let Err(e) = handle.emit("worker-refresh", &store.refreshed_at) {
+            eprintln!("[worker] emitting the worker-refresh marker failed: {e}");
+        }
     }
     Ok(())
 }

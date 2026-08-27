@@ -62,8 +62,12 @@ class WidgetRefreshWorker(
         const val TAG_MANUAL = "quota-widget-manual-refresh"
 
         /**
-         * Enqueue a single refresh, replacing any already pending so a burst of
-         * taps collapses to one fetch. Unique + durable: it outlives the caller.
+         * Enqueue a single refresh under unique work with REPLACE: bursts never
+         * *stack* — a pending request is replaced outright and a running one is
+         * cancelled and restarted — so at most one refresh runs at a time.
+         * "Collapses to one fetch" would overclaim: REPLACE does not coalesce a
+         * burst into a single fetch, it guarantees the newest request wins.
+         * Unique + durable: it outlives the caller.
          */
         fun enqueue(context: Context) {
             WorkManager.getInstance(context)
