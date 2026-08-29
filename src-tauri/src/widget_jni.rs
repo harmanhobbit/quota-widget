@@ -274,24 +274,29 @@ fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(
         return Err(format!("saving alert memory: {e}"));
     }
 
-    // Configured display order, then persist the read model every cold widget
-    // reads. The aggregate is folded once here so the widget need not recompute
-    // it (matching `mobile.rs`).
+    // Configured display order, then merge-and-store the read model every cold
+    // widget reads. The merge matters here more than anywhere else: this worker
+    // races the foreground app's own refreshes — in this process or, for a
+    // widget-only cold start, in another one — and its fetches were composed
+    // from the priors it loaded at start. A whole-file overwrite could regress
+    // a success the app persisted while these fetches ran (or vice versa); the
+    // generation-aware merge keeps the fresher observation per provider, and
+    // the aggregate is folded over the merged list so the stored colour matches
+    // the stored cards.
     cfg.sort_snapshots(&mut outcome.snapshots);
-    let aggregate = quota_core::refresh::aggregate_status(&outcome.snapshots, &cfg);
-    let store = SnapshotStore::from_snapshots(outcome.snapshots.clone(), aggregate);
-    store
-        .save(dir)
-        .map_err(|e| format!("saving snapshots: {e}"))?;
+    let store = SnapshotStore::merge_and_store(dir, outcome.snapshots, &cfg)
+        .map_err(|e| format!("storing snapshots: {e}"))?;
 
     // When the foreground app is alive in this process, its webview learns
     // about the new read model exactly as it does from `refresh_once`'s emit —
     // a manual refresh enqueued from the app (issue #111) and a periodic tick
     // that fires while the app is open both want the cards to move without
     // waiting for the next visibility change. In the widget-only process there
-    // is no webview; persisting the read model is the whole delivery.
+    // is no webview; persisting the read model is the whole delivery. The
+    // emitted list is the merged truth (see above), never just this worker's
+    // own outcome.
     if let Some(handle) = crate::mobile::app_handle() {
-        if let Err(e) = handle.emit("snapshots", &outcome.snapshots) {
+        if let Err(e) = handle.emit("snapshots", &store.snapshots) {
             // An emit failure means the open app missed this refresh's push and
             // would only catch up on its next visibility change — say so rather
             // than silently dropping the delivery (the emulator check's

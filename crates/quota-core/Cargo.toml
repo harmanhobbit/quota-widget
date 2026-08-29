@@ -24,6 +24,7 @@ sha2 = "0.10"
 # it pulls in) — only SVG rendering is needed, and pure-Rust output keeps this
 # light for the Android cross-compile (issue #156).
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+fs2 = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

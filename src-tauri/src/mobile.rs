@@ -329,27 +329,41 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
     // want the list render-ready.
     cfg.sort_snapshots(&mut outcome.snapshots);
 
-    {
-        let mut map = state.snapshots.write().await;
-        for s in &outcome.snapshots {
-            map.insert(s.provider_id.clone(), s.clone());
-        }
-    }
-
     // Persist the read model so a cold process — the Activity relaunched, or
     // later a home-screen widget with no app running — renders this exact
-    // last-known state without a live Tauri process. The aggregate is
-    // recomputed over the final list (the replacements above can raise a
-    // provider to a stale/unavailable failure the pre-replacement fold missed),
-    // so the stored widget colour matches the stored cards.
-    let aggregate = quota_core::refresh::aggregate_status(&outcome.snapshots, &cfg);
-    let store =
-        quota_core::snapshots::SnapshotStore::from_snapshots(outcome.snapshots.clone(), aggregate);
-    if let Err(e) = store.save(&state.config_dir) {
-        eprintln!("[mobile] persisting snapshot read model failed: {e}");
+    // last-known state without a live Tauri process. The store is written
+    // through the generation-aware merge (`merge_and_store`): the foreground
+    // composed this pass from its own possibly-stale view of `prior`, and a
+    // concurrent writer — the WorkManager worker behind the manual or periodic
+    // refresh, in this process or a widget-only one — may have persisted newer
+    // figures while these fetches were in flight. The merge keeps the fresher
+    // observation per provider, so a late partial failure here can add its
+    // error but never erase a newer success's figures. The merged list — not
+    // this pass's own outcome — is what the app keeps in memory and pushes to
+    // the webview, so the cards reflect the store the next writer will build
+    // on.
+    match quota_core::snapshots::SnapshotStore::merge_and_store(
+        &state.config_dir,
+        outcome.snapshots.clone(),
+        &cfg,
+    ) {
+        Ok(store) => {
+            *state.snapshots.write().await = store.prior_map();
+            let _ = app.emit("snapshots", &store.snapshots);
+        }
+        Err(e) => {
+            eprintln!("[mobile] persisting snapshot read model failed: {e}");
+            // The persist failed — keep this pass's outcome in memory and on
+            // screen regardless; the next pass's merge reconciles with disk.
+            {
+                let mut map = state.snapshots.write().await;
+                for s in &outcome.snapshots {
+                    map.insert(s.provider_id.clone(), s.clone());
+                }
+            }
+            let _ = app.emit("snapshots", &outcome.snapshots);
+        }
     }
-
-    let _ = app.emit("snapshots", &outcome.snapshots);
 }
 
 /// One-off fetch for the mobile Settings "Test" button, mirroring desktop's
