@@ -220,11 +220,13 @@ fn init_worker_keystore(env: &mut JNIEnv, context: &JObject) -> Result<(), Strin
 /// persisting the resulting read model and alert memory. Kept close to
 /// `mobile.rs::refresh_once` so the two never drift in what a refresh means.
 fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(), String> {
-    // This pass's attempt generation, stamped BEFORE the first fetch (see
-    // `SnapshotStore::merge_and_store`): concurrent writers — the foreground
-    // app, the periodic schedule, manual refreshes — are ordered by when they
-    // began, never by when they finished.
-    let attempt = Utc::now();
+    // This pass's attempt generation — allocated from the persisted monotonic
+    // counter under the store lock, never the wall clock (concurrent starts
+    // can collide and clock adjustments go backwards; see `next_generation`).
+    // A failed allocation fails the whole pass: an unorderable result must not
+    // be written, and WorkManager will retry.
+    let attempt = quota_core::snapshots::next_generation(dir)
+        .map_err(|e| format!("allocating refresh generation: {e}"))?;
     // The Keystore-backed store must be registered before `load_all` can decrypt
     // any stored credential. If it cannot be — a device/state where the worker's
     // context init fails — we must NOT proceed: a refresh with no decryptable

@@ -223,12 +223,19 @@ async fn refresh_manual(
 }
 
 async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
-    // This pass's attempt generation, stamped BEFORE the first fetch (see
-    // `SnapshotStore::merge_and_store`): concurrent writers are ordered by when
-    // they began, never by when they finished — a pass that began earlier can
-    // complete later, and its failure must not out-timestamp a later pass's
-    // success.
-    let attempt = chrono::Utc::now();
+    // This pass's attempt generation — allocated from the persisted monotonic
+    // counter under the store lock, never the wall clock (concurrent starts
+    // can collide and clock adjustments go backwards; see
+    // `next_generation`). Allocation failure leaves 0: an unorderable pass is
+    // treated as the oldest, so its results can never regress the model —
+    // the merge keeps the stored state for every provider it touches.
+    let attempt = match quota_core::snapshots::next_generation(&state.config_dir) {
+        Ok(generation) => generation,
+        Err(e) => {
+            eprintln!("[mobile] allocating refresh generation failed: {e}");
+            0
+        }
+    };
     let cfg = state.config.read().await.clone();
     let (ctx, failed_secrets) = state.provider_ctx_and_failed_secrets(cfg.clone());
     let prior = state.snapshots.read().await.clone();
@@ -360,15 +367,21 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
         }
         Err(e) => {
             eprintln!("[mobile] persisting snapshot read model failed: {e}");
-            // The persist failed — keep this pass's outcome in memory and on
-            // screen regardless; the next pass's merge reconciles with disk.
-            {
-                let mut map = state.snapshots.write().await;
-                for s in &outcome.snapshots {
-                    map.insert(s.provider_id.clone(), s.clone());
-                }
-            }
-            let _ = app.emit("snapshots", &outcome.snapshots);
+            // The persist failed — but the raw outcome must never reach the
+            // webview or memory: this pass may be causally older than what a
+            // concurrent writer already stored, and publishing it unmerged
+            // would visibly regress the open app. Derive the same causally
+            // merged state the locked path would have written (against the
+            // store as it currently reads, minus the write) and publish that;
+            // the next pass's merge_and_store reconciles the persist.
+            let merged = quota_core::snapshots::SnapshotStore::derive_merged(
+                &state.config_dir,
+                outcome.snapshots.clone(),
+                attempt,
+                &cfg,
+            );
+            *state.snapshots.write().await = merged.prior_map();
+            let _ = app.emit("snapshots", &merged.snapshots);
         }
     }
 }
