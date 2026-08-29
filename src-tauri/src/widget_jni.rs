@@ -300,25 +300,23 @@ fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(
     // that fires while the app is open both want the cards to move without
     // waiting for the next visibility change. In the widget-only process there
     // is no webview; persisting the read model is the whole delivery. The
-    // emitted list is the merged truth (see above), never just this worker's
-    // own outcome.
+    // published list is the merged truth (see above), never just this worker's
+    // own outcome — and publication is gated on the newest applied generation
+    // (see mobile.rs's PUBLISHED_GENERATION): a foreground pass that began
+    // later may have already published, and this worker's older emit must not
+    // regress what it delivered.
     if let Some(handle) = crate::mobile::app_handle() {
-        if let Err(e) = handle.emit("snapshots", &store.snapshots) {
-            // An emit failure means the open app missed this refresh's push and
-            // would only catch up on its next visibility change — say so rather
-            // than silently dropping the delivery (the emulator check's
-            // worker→webview assertion depends on this push landing).
-            eprintln!("[worker] emitting snapshots to the app webview failed: {e}");
-        }
-        // The worker's provenance marker, on its own event: this path is the
-        // only one that emits it (the foreground loop and entry refresh go
-        // through `refresh_once`, which never does), so a listener — and the
-        // emulator check's delivery assertion — can attribute an update to the
-        // durable work itself rather than to any refresh. Payload is the read
-        // model's own write stamp; the payload's value is incidental, the
-        // event's existence is the marker.
-        if let Err(e) = handle.emit("worker-refresh", &store.refreshed_at) {
-            eprintln!("[worker] emitting the worker-refresh marker failed: {e}");
+        if crate::mobile::publish_snapshots(handle, attempt, store.snapshots) {
+            // The worker's provenance marker, on its own event: this path is
+            // the only one that emits it (the foreground loop and entry
+            // refresh go through `refresh_once`, which never does), so a
+            // listener — and the emulator check's delivery assertion — can
+            // attribute an update to the durable work itself rather than to
+            // any refresh. It fires only when this worker's generation actually
+            // won publication; payload is the read model's own write stamp.
+            if let Err(e) = handle.emit("worker-refresh", &store.refreshed_at) {
+                eprintln!("[worker] emitting the worker-refresh marker failed: {e}");
+            }
         }
     }
     Ok(())

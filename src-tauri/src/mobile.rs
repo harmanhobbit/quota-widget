@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use tauri::{Emitter, Manager};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 /// The foreground runtime's app handle, if this process hosts the app.
 ///
@@ -45,10 +45,54 @@ pub fn app_handle() -> Option<&'static tauri::AppHandle> {
     APP_HANDLE.get()
 }
 
+/// The newest attempt generation whose results have been published to the
+/// in-memory prior map and the open webview. The durable merge (under the
+/// store lock) decides the order in which results reach disk; this gate makes
+/// the *publication* order agree with it. Without it, a slow foreground pass
+/// could store first and emit last — regressing cards a worker's newer
+/// generation had already delivered — and a persist-failure fallback could do
+/// the same against any writer that committed between its read and its emit.
+static PUBLISHED_GENERATION: std::sync::Mutex<quota_core::snapshots::PublicationGate> =
+    std::sync::Mutex::new(quota_core::snapshots::PublicationGate::new(0));
+
+/// Publish the merged read model for `generation` to the in-memory prior map
+/// and the open webview — unless an equal or newer generation was already
+/// published, in which case the result is dropped and `false` is returned.
+/// Shared by the foreground path and the WorkManager worker path (same
+/// process, same gate); pass-specific delivery markers fire only on `true`.
+fn publish_snapshots(
+    app: &tauri::AppHandle,
+    generation: u64,
+    snapshots: Vec<UsageSnapshot>,
+) -> bool {
+    {
+        let mut gate = PUBLISHED_GENERATION
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if !gate.admit(generation) {
+            return false;
+        }
+    }
+    if let Some(state) = app.try_state::<std::sync::Arc<MobileState>>() {
+        let map = snapshots
+            .iter()
+            .map(|s| (s.provider_id.clone(), s.clone()))
+            .collect();
+        *state.snapshots.write().unwrap_or_else(|p| p.into_inner()) = map;
+    }
+    let _ = app.emit("snapshots", &snapshots);
+    true
+}
+
 pub struct MobileState {
     pub config_dir: PathBuf,
     pub config: RwLock<Config>,
-    pub snapshots: RwLock<HashMap<String, UsageSnapshot>>,
+    /// The in-memory prior map, seeded from the persisted read model at
+    /// startup and republished by every refresh pass that wins the
+    /// publication gate (see [`PUBLISHED_GENERATION`]). A std lock: it is
+    /// only ever held for a clone/swap, never across an await, and the
+    /// worker path publishes from a plain JNI thread.
+    pub snapshots: std::sync::RwLock<HashMap<String, UsageSnapshot>>,
     pub alert_engine: Mutex<AlertEngine>,
     /// In-progress desktop→phone QR scan (issue #156): frames accumulate here
     /// across repeated `qr_scan_frame` calls, one per camera detection, until
@@ -98,7 +142,7 @@ struct InitialState {
 
 #[tauri::command]
 async fn get_snapshots(state: tauri::State<'_, Arc<MobileState>>) -> Result<InitialState, String> {
-    let map = state.snapshots.read().await;
+    let map = state.snapshots.read().unwrap_or_else(|p| p.into_inner());
     let cfg = state.config.read().await;
     let mut out = Vec::new();
     for p in providers_for(&cfg) {
@@ -238,7 +282,11 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
     };
     let cfg = state.config.read().await.clone();
     let (ctx, failed_secrets) = state.provider_ctx_and_failed_secrets(cfg.clone());
-    let prior = state.snapshots.read().await.clone();
+    let prior = state
+        .snapshots
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     let mut engine = state.alert_engine.lock().await;
     let mut outcome = quota_core::refresh::refresh(&ctx, &prior, &mut engine).await;
     // Persist the alert memory this pass produced (edge-triggered levels,
@@ -355,6 +403,9 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
     // this pass's own outcome — is what the app keeps in memory and pushes to
     // the webview, so the cards reflect the store the next writer will build
     // on.
+    // Publication is gated on the newest applied generation (see
+    // PUBLISHED_GENERATION): whichever pass merged last under the store lock
+    // is what memory and the webview must show, whatever the emit order.
     match quota_core::snapshots::SnapshotStore::merge_and_store(
         &state.config_dir,
         outcome.snapshots.clone(),
@@ -362,8 +413,7 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
         &cfg,
     ) {
         Ok(store) => {
-            *state.snapshots.write().await = store.prior_map();
-            let _ = app.emit("snapshots", &store.snapshots);
+            publish_snapshots(&app, attempt, store.snapshots);
         }
         Err(e) => {
             eprintln!("[mobile] persisting snapshot read model failed: {e}");
@@ -372,16 +422,16 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
             // concurrent writer already stored, and publishing it unmerged
             // would visibly regress the open app. Derive the same causally
             // merged state the locked path would have written (against the
-            // store as it currently reads, minus the write) and publish that;
-            // the next pass's merge_and_store reconciles the persist.
+            // store as it currently reads, minus the write) and publish that
+            // through the same gate; the next pass's merge_and_store
+            // reconciles the persist.
             let merged = quota_core::snapshots::SnapshotStore::derive_merged(
                 &state.config_dir,
                 outcome.snapshots.clone(),
                 attempt,
                 &cfg,
             );
-            *state.snapshots.write().await = merged.prior_map();
-            let _ = app.emit("snapshots", &merged.snapshots);
+            publish_snapshots(&app, attempt, merged.snapshots);
         }
     }
 }
@@ -841,7 +891,7 @@ pub fn run() {
             let state = Arc::new(MobileState {
                 config_dir,
                 config: RwLock::new(loaded.config),
-                snapshots: RwLock::new(persisted.prior_map()),
+                snapshots: std::sync::RwLock::new(persisted.prior_map()),
                 alert_engine: Mutex::new(alert_engine),
                 qr_collector: Mutex::new(quota_core::qr_transfer::FrameCollector::new()),
             });
