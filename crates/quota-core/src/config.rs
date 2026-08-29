@@ -880,19 +880,28 @@ impl Config {
     /// `save`/`write_split` publish atomically via temp-file-then-rename.
     /// The one-time legacy migration may write, and DOES honor the caller's
     /// held lock (see `migrate_if_needed`'s contract).
-    pub(crate) fn load_unlocked(dir: &Path) -> ConfigLoad {
-        if let Some(recovery) = Self::migrate_if_needed(dir) {
-            return ConfigLoad {
-                config: Self::default(),
-                recovery: Some(recovery),
-            };
-        }
+    /// A strictly read-only view of the current configuration: never writes,
+    /// never migrates. The lock-degraded path of [`Config::load`] uses this —
+    /// no configuration persistence may occur without the store lock, so a
+    /// legacy-only directory reads as the defaults (first-run semantics) until
+    /// a coordinated load or save migrates it.
+    fn load_read_only(dir: &Path) -> ConfigLoad {
         let shared = SharedConfig::load(dir);
         let prefs = PlatformPreferences::load(dir);
         ConfigLoad {
             config: Self::from_parts(shared.config, prefs),
             recovery: shared.recovery.map(ConfigRecovery::from),
         }
+    }
+
+    /// Migrate (if a legacy `config.json` is present) and read. The CALLER
+    /// must hold the snapshot store lock: the migration persists
+    /// configuration, and this function deliberately does not coordinate —
+    /// it is the internal half of [`Config::load`] and of the merge's
+    /// membership-authority check, both of which run under the held lock.
+    pub(crate) fn load_unlocked(dir: &Path) -> ConfigLoad {
+        Self::migrate_if_needed(dir);
+        Self::load_read_only(dir)
     }
 
     /// Read the current configuration, always yielding a usable value.
@@ -913,24 +922,31 @@ impl Config {
         // would release the lock before `load_unlocked` runs and leave the
         // migration uncoordinated again. Callers that already hold the lock
         // (`membership_authority`, under `merge_and_store`) use
-        // `load_unlocked` instead. A lock failure is pathological (the lock
-        // file cannot be opened); degrade to an uncoordinated best-effort
-        // read rather than fail the whole read.
+        // `load_unlocked` instead.
+        //
+        // A lock failure FAILS CLOSED: the read-only fallback never migrates
+        // and never persists anything — no configuration write may occur
+        // without the lock. A legacy-only directory therefore reads as the
+        // defaults (first-run semantics) until a coordinated load or save
+        // migrates it.
         let _lock = match crate::snapshots::store_lock(dir) {
             Ok(lock) => lock,
-            Err(_) => return Self::load_unlocked(dir),
+            Err(_) => return Self::load_read_only(dir),
         };
-        let loaded = Self::load_unlocked(dir);
-        if let Some(recovery) = loaded.recovery {
+        // A malformed legacy file blocks the migration and must be reported —
+        // the user's only copy is at stake — not silently read as first-run.
+        if let Some(recovery) = Self::migrate_if_needed(dir) {
             return ConfigLoad {
                 config: Self::default(),
                 recovery: Some(recovery),
             };
         }
-        loaded
+        Self::load_read_only(dir)
     }
 
     pub fn load_presence(dir: &Path) -> ConfigPresence {
+        // Coordinating load: presence distinguishes absent/corrupt/present
+        // only after the one-time migration has had its locked chance to run.
         let load = Self::load(dir);
         if let Some(recovery) = load.recovery {
             return ConfigPresence::Corrupt(recovery);

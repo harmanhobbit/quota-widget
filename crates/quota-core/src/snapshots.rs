@@ -1249,7 +1249,9 @@ mod tests {
     /// while a merge holds the store lock must WAIT — not migrate
     /// uncoordinated inside the merge's critical window. The lock holder here
     /// is the exact flock `merge_and_store` holds across its authority
-    /// comparison, merge, and save.
+    /// comparison, merge, and save. The contender RENDEZVOUSES immediately
+    /// before its lock attempt, so "signalled but not completed" proves it is
+    /// genuinely blocked at acquisition — not absent, failed, or finished.
     #[test]
     fn a_loads_migration_waits_while_the_merge_window_holds_the_lock() {
         use std::sync::mpsc;
@@ -1265,16 +1267,25 @@ mod tests {
         let guard = store_lock(dir.path()).unwrap();
 
         let dir_path = dir.path().to_path_buf();
+        // Rendezvous: signalled at the last point before the lock attempt.
+        let (rendezvous_tx, rendezvous_rx) = mpsc::channel::<()>();
         let (load_done_tx, load_done_rx) = mpsc::channel::<crate::config::ConfigLoad>();
         let _loader = std::thread::spawn(move || {
+            rendezvous_tx.send(()).unwrap();
             let load = crate::config::Config::load(&dir_path);
             let _ = load_done_tx.send(load);
         });
 
-        // Fair chance to (wrongly) migrate uncoordinated inside the window.
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // The contender has reached the rendezvous — its very next action is
+        // the blocked lock attempt. The window is genuinely held, so it can
+        // never complete; the timeout only bounds the test.
+        rendezvous_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
         assert!(
-            load_done_rx.try_recv().is_err(),
+            load_done_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err(),
             "the load's migration must wait while the merge window holds the lock",
         );
         assert!(
@@ -1297,8 +1308,12 @@ mod tests {
 
     /// THE r12 regression, contention side B: a merge and a concurrent load's
     /// migration queue on the store lock — neither runs uncoordinated
-    /// outside the critical window; the merge migrates inside its window and
-    /// the load waits, then reads the migrated configuration.
+    /// outside the critical window. Both rendezvous before their lock
+    /// attempts; while the window is held NEITHER may complete (the exact
+    /// claim this test can deterministically establish — which contender
+    /// migrates first is scheduler-owned and is not asserted). After release,
+    /// both complete, the merge's data is stored, and the migration ran
+    /// exactly once.
     #[test]
     fn a_merge_and_a_concurrent_loads_migration_queue_on_the_store_lock() {
         use std::sync::mpsc;
@@ -1308,14 +1323,17 @@ mod tests {
         let legacy_json = serde_json::to_string(&legacy).unwrap();
         std::fs::write(dir.path().join("config.json"), legacy_json).unwrap();
 
-        // Hold the window closed, then queue BOTH contenders behind it.
+        // Hold the window closed, then queue BOTH contenders behind it —
+        // each rendezvous sits immediately before its own lock attempt.
         let guard = store_lock(dir.path()).unwrap();
         let dir_path = dir.path().to_path_buf();
 
         let merge_cfg = cfg();
+        let (merge_rendezvous_tx, merge_rendezvous_rx) = mpsc::channel::<()>();
         let (merge_done_tx, merge_done_rx) = mpsc::channel::<()>();
         let merge_dir = dir_path.clone();
         let _merge = std::thread::spawn(move || {
+            merge_rendezvous_tx.send(()).unwrap();
             SnapshotStore::merge_and_store(
                 &merge_dir,
                 vec![with_fetched_at(ok("openrouter", 10.0), Utc::now())],
@@ -1326,39 +1344,96 @@ mod tests {
             let _ = merge_done_tx.send(());
         });
 
+        let (load_rendezvous_tx, load_rendezvous_rx) = mpsc::channel::<()>();
         let (load_done_tx, load_done_rx) = mpsc::channel::<crate::config::ConfigLoad>();
         let loader_dir = dir_path.clone();
         let _loader = std::thread::spawn(move || {
+            load_rendezvous_tx.send(()).unwrap();
             let load = crate::config::Config::load(&loader_dir);
             let _ = load_done_tx.send(load);
         });
 
-        // Fair chance for either to (wrongly) run outside the window.
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Both contenders are at their lock attempts.
+        merge_rendezvous_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        load_rendezvous_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+
+        // The window is genuinely held: neither contender can complete, no
+        // matter how the scheduler interleaves them.
         assert!(
-            merge_done_rx.try_recv().is_err(),
-            "the merge waits for its window"
+            merge_done_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err(),
+            "the merge waits while the window is held",
         );
         assert!(
-            load_done_rx.try_recv().is_err(),
-            "the load's migration waits for its window too — neither runs uncoordinated",
+            load_done_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err(),
+            "the load's migration waits while the window is held",
         );
         assert!(!dir_path.join("config.json.migrated").exists());
 
-        // Open the window: the merge migrates inside its own locked stretch
-        // and the load reads the migrated configuration afterwards.
+        // Open the window: both proceed (scheduler-owned order), the migration
+        // runs exactly once, and the merge's data is stored.
         drop(guard);
         merge_done_rx
             .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("the merge completes inside its window");
+            .expect("the merge completes once the window opens");
         let load = load_done_rx
             .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("the load completes, coordinated with the merge");
+            .expect("the load completes once the window opens");
         assert!(load.recovery.is_none());
         assert!(
-            dir.path().join("config.json.migrated").exists(),
+            dir_path.join("config.json.migrated").exists(),
             "exactly one migration ran, inside the coordinated window",
         );
+    }
+
+    /// Fail-closed (r13): `Config::load` when the store lock cannot be taken
+    /// must NOT persist anything — no migration, no write. The degraded
+    /// path is simulated deterministically: the lock file is replaced by a
+    /// directory, so `store_lock`'s open fails (EISDIR) and `Config::load`
+    /// takes its lock-degraded branch. A legacy-only directory then reads as
+    /// the defaults (first-run semantics, no recovery) with the legacy file
+    /// left exactly as it was.
+    #[test]
+    fn config_load_without_the_store_lock_never_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = crate::config::Config::mobile_first_run_default();
+        let legacy_json = serde_json::to_string(&legacy).unwrap();
+        let legacy_path = dir.path().join("config.json");
+        std::fs::write(&legacy_path, legacy_json).unwrap();
+        // The lock file becomes a directory: opening it for writing fails.
+        std::fs::create_dir(dir.path().join("snapshots.json.lock")).unwrap();
+
+        // The lock-degraded read.
+        let load = crate::config::Config::load(dir.path());
+
+        // Read-only: defaults, no recovery manufactured, and NOTHING written.
+        assert!(load.recovery.is_none());
+        assert!(
+            !dir.path().join("shared-config.json").exists(),
+            "no configuration file may be persisted without the store lock",
+        );
+        assert!(
+            !dir.path().join("config.json.migrated").exists(),
+            "no migration may run without the store lock",
+        );
+        assert!(
+            legacy_path.exists(),
+            "the legacy file is untouched by the lock-degraded read",
+        );
+
+        // Fail-closed symmetrically blocks configuration WRITES: a save in
+        // this state returns the same lock error instead of persisting.
+        let save_err = crate::config::Config::mobile_first_run_default()
+            .save(dir.path())
+            .unwrap_err();
+        assert_eq!(save_err.kind(), std::io::ErrorKind::IsADirectory);
     }
 
     /// Configuration persistence coordinates through the store lock: while a
