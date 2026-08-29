@@ -60,28 +60,30 @@ static PUBLISHED_GENERATION: std::sync::Mutex<quota_core::snapshots::Publication
 /// published, in which case the result is dropped and `false` is returned.
 /// Shared by the foreground path and the WorkManager worker path (same
 /// process, same gate); pass-specific delivery markers fire only on `true`.
+///
+/// The gate's verdict is held across BOTH the memory update and the emit: the
+/// publication is one critical section. Admitting and releasing before the
+/// delivery would let gen1 pause mid-publication while gen2 publishes fully
+/// and then resume, regressing what gen2 delivered — the exact race the gate
+/// exists to close.
 pub fn publish_snapshots(
     app: &tauri::AppHandle,
     generation: u64,
     snapshots: Vec<UsageSnapshot>,
 ) -> bool {
-    {
-        let mut gate = PUBLISHED_GENERATION
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        if !gate.admit(generation) {
-            return false;
+    let mut gate = PUBLISHED_GENERATION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    gate.publish(generation, || {
+        if let Some(state) = app.try_state::<std::sync::Arc<MobileState>>() {
+            let map = snapshots
+                .iter()
+                .map(|s| (s.provider_id.clone(), s.clone()))
+                .collect();
+            *state.snapshots.write().unwrap_or_else(|p| p.into_inner()) = map;
         }
-    }
-    if let Some(state) = app.try_state::<std::sync::Arc<MobileState>>() {
-        let map = snapshots
-            .iter()
-            .map(|s| (s.provider_id.clone(), s.clone()))
-            .collect();
-        *state.snapshots.write().unwrap_or_else(|p| p.into_inner()) = map;
-    }
-    let _ = app.emit("snapshots", &snapshots);
-    true
+        let _ = app.emit("snapshots", &snapshots);
+    })
 }
 
 pub struct MobileState {
@@ -177,7 +179,16 @@ async fn set_config(
     state: tauri::State<'_, Arc<MobileState>>,
     config: Config,
 ) -> Result<(), String> {
-    config.save(&state.config_dir).map_err(|e| e.to_string())?;
+    // The configuration save takes the snapshot store lock: the merge's
+    // membership-authority comparison reads the configuration under that same
+    // lock, so a coordinated config write can never land between the
+    // comparison and the merge's own save (the uncoordinated case is caught by
+    // merge_and_store's re-validation). Scoped: the lock guards one write.
+    let saved = quota_core::snapshots::store_lock(&state.config_dir)
+        .and_then(|_guard| config.save(&state.config_dir));
+    if let Err(e) = saved {
+        return Err(e.to_string());
+    }
     // Clear the alert memory of any account this config no longer enables, and
     // persist it immediately (issue #112): disabling or deleting an account
     // must start a fresh baseline when it returns, and a background worker could
@@ -274,15 +285,17 @@ async fn refresh_manual(
 async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
     // This pass's attempt generation — allocated from the persisted monotonic
     // counter under the store lock, never the wall clock (concurrent starts
-    // can collide and clock adjustments go backwards; see
-    // `next_generation`). Allocation failure leaves 0: an unorderable pass is
-    // treated as the oldest, so its results can never regress the model —
-    // the merge keeps the stored state for every provider it touches.
+    // can collide and clock adjustments go backwards; see `next_generation`).
+    // Allocation failure fails the whole pass before anything is fetched,
+    // merged, persisted, or published: an unorderable result must not be
+    // written or shown, matching the headless worker's fail-closed behaviour
+    // — silently proceeding with generation 0 (or a reused one) would make
+    // this pass's results never apply to the model.
     let attempt = match quota_core::snapshots::next_generation(&state.config_dir) {
         Ok(generation) => generation,
         Err(e) => {
-            eprintln!("[mobile] allocating refresh generation failed: {e}");
-            0
+            eprintln!("[mobile] allocating refresh generation failed, skipping this refresh: {e}");
+            return;
         }
     };
     let cfg = state.config.read().await.clone();

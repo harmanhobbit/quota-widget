@@ -234,7 +234,44 @@ impl SnapshotStore {
         cfg: &Config,
     ) -> std::io::Result<Self> {
         let _lock = acquire_store_lock(dir)?;
-        let store = Self::derive_merged(dir, incoming, attempt, cfg);
+        // The membership authority is evaluated and RE-evaluated inside the
+        // store lock: a configuration writer that coordinates through the same
+        // lock cannot interleave, and one that does not is caught by the
+        // re-validation below — a pass must never finalize membership against
+        // a configuration that changed while it was merging.
+        let authoritative = Self::membership_authority(dir, cfg);
+        let current = Self::load(dir);
+        let merged = merge_read_model(
+            &current.snapshots,
+            &current.generations,
+            authoritative,
+            incoming.clone(),
+            attempt,
+        );
+        let mut snapshots = merged.snapshots;
+        cfg.sort_snapshots(&mut snapshots);
+        let aggregate = aggregate_status(&snapshots, cfg);
+        let mut store = Self::from_snapshots(snapshots, aggregate);
+        store.generations = merged.generations;
+        if Self::membership_authority(dir, cfg) != authoritative {
+            // The configuration changed between the comparison and the save.
+            // Re-merge without membership authority: the additions and
+            // omissions above were validated against a configuration that is
+            // no longer current, so they must not decide membership.
+            let current = Self::load(dir);
+            let merged = merge_read_model(
+                &current.snapshots,
+                &current.generations,
+                false,
+                incoming,
+                attempt,
+            );
+            let mut snapshots = merged.snapshots;
+            cfg.sort_snapshots(&mut snapshots);
+            let aggregate = aggregate_status(&snapshots, cfg);
+            store = Self::from_snapshots(snapshots, aggregate);
+            store.generations = merged.generations;
+        }
         store.save(dir)?;
         Ok(store)
     }
@@ -244,6 +281,12 @@ impl SnapshotStore {
     /// membership: its outcome was composed from that configuration, so if it
     /// has since changed, its additions and omissions describe a world that no
     /// longer exists and must not erase or re-add providers.
+    ///
+    /// Called inside the store lock, twice in [`merge_and_store`] — once to
+    /// decide, once to re-validate immediately before the save — so an
+    /// uncoordinated configuration writer that changed the file mid-merge is
+    /// detected. Writers that coordinate take [`store_lock`] around their
+    /// write, making the interleave impossible in the first place.
     fn membership_authority(dir: &Path, cfg: &Config) -> bool {
         enabled_ids(cfg) == enabled_ids(&Config::load(dir).config)
     }
@@ -355,6 +398,12 @@ pub fn next_generation(dir: &Path) -> std::io::Result<u64> {
 /// order in which results reach disk; this gate makes the *publication* order
 /// agree with it, so a slow older pass — or a failed-persist fallback —
 /// cannot regress cards a newer generation already delivered.
+///
+/// [`publish`] is the protocol: admit and publish in one critical section,
+/// under the caller's mutex. Admitting and then releasing before the result
+/// reaches memory/the webview would reopen the race — gen1 admitted and
+/// paused, gen2 publishing fully, gen1 resuming and regressing what gen2
+/// delivered — so the callback runs while the gate still holds its verdict.
 #[derive(Debug)]
 pub struct PublicationGate {
     last: u64,
@@ -365,16 +414,31 @@ impl PublicationGate {
         Self { last }
     }
 
-    /// Admit `generation` iff strictly newer than everything admitted so far.
-    /// Equal or older generations are refused.
-    pub fn admit(&mut self, generation: u64) -> bool {
+    /// Publish `generation` through `publish` iff strictly newer than
+    /// everything already published, and return its result. The callback runs
+    /// while the gate's decision is held — publication and admission are one
+    /// critical section, so an equal or older generation can never interleave
+    /// between a newer one's admission and its delivery. A refused generation
+    /// returns `None` and runs nothing.
+    pub fn publish(&mut self, generation: u64, publish: impl FnOnce()) -> bool {
         if generation > self.last {
             self.last = generation;
+            publish();
             true
         } else {
             false
         }
     }
+}
+
+/// Hold the store lock for a coordinated writer outside this module —
+/// `set_config`'s configuration save. The membership-authority comparison in
+/// [`merge_and_store`] reads the configuration under this same lock, so a
+/// coordinated writer cannot land between the comparison and the merge's own
+/// save; the guard is held only for the write, and the kernel releases it if
+/// the writer dies.
+pub fn store_lock(dir: &Path) -> std::io::Result<std::fs::File> {
+    acquire_store_lock(dir)
 }
 
 /// Whether a snapshot carries any quota figures at all. A snapshot without
@@ -1175,6 +1239,92 @@ mod tests {
         assert_eq!(store.generations["claude"], 2);
     }
 
+    /// The membership-authority probe flips when the configuration changes
+    /// under the merge: a pass validated against configuration A must not
+    /// finalize membership once B is the configuration on disk. This is the
+    /// detection primitive behind merge_and_store's re-validation.
+    #[test]
+    fn config_write_between_comparison_and_save_flips_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg_a = cfg();
+        cfg_a.save(dir.path()).unwrap();
+        assert!(
+            SnapshotStore::membership_authority(dir.path(), &cfg_a),
+            "the pass's configuration matches the current one"
+        );
+
+        // A configuration write lands (coordinated or not) while the pass is
+        // merging: claude is disabled.
+        let cfg_b = cfg_enabled(&["openrouter"]);
+        cfg_b.save(dir.path()).unwrap();
+
+        assert!(
+            !SnapshotStore::membership_authority(dir.path(), &cfg_a),
+            "the re-validation sees the changed configuration and refuses authority"
+        );
+        assert!(
+            SnapshotStore::membership_authority(dir.path(), &cfg_b),
+            "a pass that observed the new configuration is authoritative"
+        );
+    }
+
+    /// A coordinated configuration writer — set_config, holding the store lock
+    /// across its save — cannot interleave with a merge: the merge blocks
+    /// until the write is released, then evaluates its authority against the
+    /// post-write configuration.
+    #[test]
+    fn a_coordinated_configuration_write_serializes_with_the_merge() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg();
+        cfg.save(dir.path()).unwrap();
+
+        // set_config's save: hold the store lock across the configuration
+        // write, and change the configuration while it is held.
+        let guard = store_lock(dir.path()).unwrap();
+        let changed = cfg_enabled(&["openrouter"]);
+        changed.save(dir.path()).unwrap();
+
+        // The merge — a pass whose observed configuration is the pre-change
+        // one — starts while the write holds the lock: it must block, so its
+        // authority comparison cannot race the write.
+        let dir_path = dir.path().to_path_buf();
+        let (done_tx, done_rx) = mpsc::channel::<SnapshotStore>();
+        let merger = std::thread::spawn(move || {
+            let store = SnapshotStore::merge_and_store(
+                &dir_path,
+                vec![with_fetched_at(ok("claude", 25.0), Utc::now())],
+                2,
+                &cfg,
+            )
+            .unwrap();
+            let _ = done_tx.send(store);
+        });
+
+        // Give the merger a fair chance to (wrongly) proceed while the write
+        // holds the lock.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            done_rx.try_recv().is_err(),
+            "the merge must wait for the coordinated configuration write"
+        );
+
+        // Release the write; the merge proceeds and evaluates its authority
+        // against the post-write configuration — the pre-change claude is not
+        // added (the current configuration does not have it).
+        drop(guard);
+        merger.join().unwrap();
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the merge completes after the write is released");
+        let store = SnapshotStore::load(dir.path());
+        assert!(
+            !store.snapshots.iter().any(|s| s.provider_id == "claude"),
+            "the pass's claude, absent from the post-write configuration, is not added",
+        );
+    }
+
     /// The publication gate admits only strictly newer generations: an
     /// out-of-order publication — a slow older pass emitting after a newer
     /// one's store+publish, or a failed-persist fallback racing a newer
@@ -1182,17 +1332,88 @@ mod tests {
     #[test]
     fn publication_gate_admits_only_strictly_newer_generations() {
         let mut gate = PublicationGate::new(0);
-        assert!(gate.admit(1), "the first generation publishes");
-        assert!(gate.admit(2), "a newer generation publishes");
+        assert!(gate.publish(1, || {}), "the first generation publishes");
+        assert!(gate.publish(2, || {}), "a newer generation publishes");
         assert!(
-            !gate.admit(1),
+            !gate.publish(1, || unreachable!(
+                "an older pass's publication must not run after a newer one"
+            )),
             "an older pass publishing after a newer one is refused"
         );
         assert!(
-            !gate.admit(2),
+            !gate.publish(2, || unreachable!(
+                "an equal generation must not re-publish"
+            )),
             "an equal generation is refused — already published"
         );
-        assert!(gate.admit(3), "the next newer generation publishes");
+        assert!(
+            gate.publish(3, || {}),
+            "the next newer generation publishes"
+        );
+    }
+
+    /// THE interleaving regression for the publication critical section: gen1
+    /// is admitted but PAUSES mid-publication; gen2 arrives, must block on the
+    /// section, and delivers only after gen1 has finished. A sequential
+    /// admission test cannot see this — the section, not the verdict alone,
+    /// is what orders concurrent publishers.
+    #[test]
+    fn publication_critical_section_orders_concurrent_publishers() {
+        use std::sync::mpsc;
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        let gate = Arc::new(std::sync::Mutex::new(PublicationGate::new(0)));
+        let order: Arc<StdMutex<Vec<&'static str>>> = Arc::new(StdMutex::new(Vec::new()));
+        let (gen1_started_tx, _gen1_started_rx) = mpsc::channel::<()>();
+        let (gen1_resume_tx, gen1_resume_rx) = mpsc::channel::<()>();
+
+        // gen1: admitted, publication paused inside the critical section.
+        let gate1 = Arc::clone(&gate);
+        let order1 = Arc::clone(&order);
+        let gen1 = std::thread::spawn(move || {
+            let mut gate = gate1.lock().unwrap();
+            gate.publish(1, || {
+                order1.lock().unwrap().push("gen1 started");
+                gen1_started_tx.send(()).unwrap();
+                gen1_resume_rx.recv().unwrap();
+                order1.lock().unwrap().push("gen1 delivered");
+            })
+        });
+
+        // Wait until gen1 is inside its critical section.
+        while !order.lock().unwrap().contains(&"gen1 started") {}
+
+        // gen2 (newer) attempts to publish while gen1 is paused: it must BLOCK
+        // on the section — not deliver first, not run concurrently.
+        let gate2 = Arc::clone(&gate);
+        let order2 = Arc::clone(&order);
+        let (gen2_done_tx, gen2_done_rx) = mpsc::channel::<bool>();
+        let _gen2 = std::thread::spawn(move || {
+            let mut gate = gate2.lock().unwrap();
+            let published = gate.publish(2, || order2.lock().unwrap().push("gen2 delivered"));
+            let _ = gen2_done_tx.send(published);
+        });
+
+        // Give gen2 a fair chance to (wrongly) complete while gen1 is paused.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            gen2_done_rx.try_recv().is_err(),
+            "gen2 must not complete while gen1's publication is in flight"
+        );
+
+        // Resume gen1: its delivery completes inside the section, then gen2
+        // publishes after it.
+        gen1_resume_tx.send(()).unwrap();
+        assert!(gen1.join().unwrap(), "gen1 publishes");
+        assert!(
+            gen2_done_rx.recv().unwrap(),
+            "gen2 publishes once the section is free"
+        );
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["gen1 started", "gen1 delivered", "gen2 delivered"],
+            "publication order follows admission, never emit timing",
+        );
     }
 
     /// The allocator fails explicitly at exhaustion instead of reusing
