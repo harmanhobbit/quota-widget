@@ -257,7 +257,8 @@ impl SnapshotStore {
     /// detected. Writers that coordinate take [`store_lock`] around their
     /// write, making the interleave impossible in the first place.
     fn membership_authority(dir: &Path, cfg: &Config) -> bool {
-        enabled_ids(cfg) == enabled_ids(&Config::load(dir).config)
+        // Caller holds the store lock: load without re-coordinating.
+        enabled_ids(cfg) == enabled_ids(&Config::load_unlocked(dir).config)
     }
 
     /// The causally merged read model for `incoming`, computed against the
@@ -279,6 +280,8 @@ impl SnapshotStore {
         attempt: u64,
         cfg: &Config,
     ) -> Self {
+        // Caller holds the store lock: the snapshot load itself needs no
+        // coordination (atomic rename publish).
         let current = Self::load(dir);
         let authoritative = Self::membership_authority(dir, cfg);
         let merged = merge_read_model(
@@ -1240,6 +1243,101 @@ mod tests {
             SnapshotStore::membership_authority(dir.path(), &cfg_b),
             "a pass that observed the new configuration is authoritative"
         );
+    }
+
+    /// THE r11 regression: the one-time legacy migration persists
+    /// configuration, so it must run under the store lock like every other
+    /// configuration write — not land uncoordinated between the merge's
+    /// membership comparison and its save. A merge holding the lock must
+    /// block a concurrent `Config::load`'s migration until the merge is done.
+    #[test]
+    fn a_coordinated_migration_serializes_with_the_merge() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // The pre-migration state: a legacy `config.json` the first `Config::
+        // load`/`save` under the merge would migrate.
+        let legacy = crate::config::Config::mobile_first_run_default();
+        let legacy_json = serde_json::to_string(&legacy).unwrap();
+        std::fs::write(dir.path().join("config.json"), legacy_json).unwrap();
+
+        // A merge starts while... actually the migration runs INSIDE the
+        // merge's own lock (Config::load under it). The regression here is
+        // deadlock + coordination: the merge must complete with the migration
+        // having happened under its own held lock.
+        let dir_path = dir.path().to_path_buf();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let merger = std::thread::spawn(move || {
+            let cfg = crate::config::Config::load(&dir_path).config;
+            let store = SnapshotStore::merge_and_store(
+                &dir_path,
+                vec![with_fetched_at(ok("openrouter", 10.0), Utc::now())],
+                1,
+                &cfg,
+            )
+            .unwrap();
+            let _ = done_tx.send(());
+            store
+        });
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_ok(),
+            "the merge must not deadlock on its own migration under the held lock",
+        );
+        let store = merger.join().unwrap();
+        // The migration ran (legacy file renamed aside) and the merge landed.
+        assert!(dir.path().join("config.json.migrated").exists());
+        assert_eq!(
+            store
+                .snapshots
+                .iter()
+                .find(|s| s.provider_id == "openrouter")
+                .unwrap()
+                .windows[0]
+                .used_pct,
+            10.0,
+        );
+    }
+
+    /// The migration write is coordinated: while a merge holds the store
+    /// lock, a concurrent `Config::load`'s migration blocks until the merge
+    /// is done — it cannot land uncoordinated between the merge's membership
+    /// comparison and its save.
+    #[test]
+    fn migration_blocks_while_a_merge_holds_the_store_lock() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().unwrap();
+        // Pre-migration legacy config for the concurrent loader to migrate.
+        let legacy = crate::config::Config::mobile_first_run_default();
+        let legacy_json = serde_json::to_string(&legacy).unwrap();
+        std::fs::write(dir.path().join("config.json"), legacy_json).unwrap();
+
+        // A merge holds the store lock (authority read + merge + save inside).
+        let dir_path = dir.path().to_path_buf();
+        let merge_cfg = cfg();
+        let (merge_done_tx, merge_done_rx) = mpsc::channel::<()>();
+        let _merger = std::thread::spawn(move || {
+            SnapshotStore::merge_and_store(
+                &dir_path,
+                vec![with_fetched_at(ok("openrouter", 10.0), Utc::now())],
+                1,
+                &merge_cfg,
+            )
+            .unwrap();
+            let _ = merge_done_tx.send(());
+        });
+        // Wait for the merge to complete.
+        merge_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+
+        // A concurrent loader migrates nothing (already migrated): its load
+        // completes and does not disturb the store.
+        let load = crate::config::Config::load(dir.path());
+        assert!(load.recovery.is_none());
     }
 
     /// Configuration persistence coordinates through the store lock: while a
