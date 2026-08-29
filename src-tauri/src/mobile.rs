@@ -142,7 +142,12 @@ struct InitialState {
 
 #[tauri::command]
 async fn get_snapshots(state: tauri::State<'_, Arc<MobileState>>) -> Result<InitialState, String> {
-    let map = state.snapshots.read().unwrap_or_else(|p| p.into_inner());
+    // The std-lock guard must be dropped before the await below: a guard held
+    // across an await makes the command's future non-Send.
+    let persisted = {
+        let map = state.snapshots.read().unwrap_or_else(|p| p.into_inner());
+        map.clone()
+    };
     let cfg = state.config.read().await;
     let mut out = Vec::new();
     for p in providers_for(&cfg) {
@@ -152,7 +157,7 @@ async fn get_snapshots(state: tauri::State<'_, Arc<MobileState>>) -> Result<Init
             .map(|c| c.enabled)
             .unwrap_or(false)
         {
-            if let Some(s) = map.get(p.id()) {
+            if let Some(s) = persisted.get(p.id()) {
                 out.push(s.clone());
             }
         }
