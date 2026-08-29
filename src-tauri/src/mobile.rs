@@ -60,7 +60,7 @@ static PUBLISHED_GENERATION: std::sync::Mutex<quota_core::snapshots::Publication
 /// published, in which case the result is dropped and `false` is returned.
 /// Shared by the foreground path and the WorkManager worker path (same
 /// process, same gate); pass-specific delivery markers fire only on `true`.
-fn publish_snapshots(
+pub fn publish_snapshots(
     app: &tauri::AppHandle,
     generation: u64,
     snapshots: Vec<UsageSnapshot>,
@@ -86,7 +86,7 @@ fn publish_snapshots(
 
 pub struct MobileState {
     pub config_dir: PathBuf,
-    pub config: RwLock<Config>,
+    pub config: tokio::sync::RwLock<Config>,
     /// The in-memory prior map, seeded from the persisted read model at
     /// startup and republished by every refresh pass that wins the
     /// publication gate (see [`PUBLISHED_GENERATION`]). A std lock: it is
@@ -890,7 +890,7 @@ pub fn run() {
             let alert_engine = AlertEngine::load(&config_dir);
             let state = Arc::new(MobileState {
                 config_dir,
-                config: RwLock::new(loaded.config),
+                config: tokio::sync::RwLock::new(loaded.config),
                 snapshots: std::sync::RwLock::new(persisted.prior_map()),
                 alert_engine: Mutex::new(alert_engine),
                 qr_collector: Mutex::new(quota_core::qr_transfer::FrameCollector::new()),
