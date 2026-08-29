@@ -1245,83 +1245,79 @@ mod tests {
         );
     }
 
-    /// THE r11 regression: the one-time legacy migration persists
-    /// configuration, so it must run under the store lock like every other
-    /// configuration write — not land uncoordinated between the merge's
-    /// membership comparison and its save. A merge holding the lock must
-    /// block a concurrent `Config::load`'s migration until the merge is done.
+    /// THE r12 regression, contention side A: a load whose migration runs
+    /// while a merge holds the store lock must WAIT — not migrate
+    /// uncoordinated inside the merge's critical window. The lock holder here
+    /// is the exact flock `merge_and_store` holds across its authority
+    /// comparison, merge, and save.
     #[test]
-    fn a_coordinated_migration_serializes_with_the_merge() {
+    fn a_loads_migration_waits_while_the_merge_window_holds_the_lock() {
         use std::sync::mpsc;
 
         let dir = tempfile::tempdir().unwrap();
-
-        // The pre-migration state: a legacy `config.json` the first `Config::
-        // load`/`save` under the merge would migrate.
+        // Pre-migration state: a legacy `config.json` whose load will migrate.
         let legacy = crate::config::Config::mobile_first_run_default();
         let legacy_json = serde_json::to_string(&legacy).unwrap();
         std::fs::write(dir.path().join("config.json"), legacy_json).unwrap();
 
-        // A merge starts while... actually the migration runs INSIDE the
-        // merge's own lock (Config::load under it). The regression here is
-        // deadlock + coordination: the merge must complete with the migration
-        // having happened under its own held lock.
+        // The merge's critical window: the same flock merge_and_store holds
+        // across its authority comparison, merge, and save.
+        let guard = store_lock(dir.path()).unwrap();
+
         let dir_path = dir.path().to_path_buf();
-        let (done_tx, done_rx) = mpsc::channel::<()>();
-        let merger = std::thread::spawn(move || {
-            let cfg = crate::config::Config::load(&dir_path).config;
-            let store = SnapshotStore::merge_and_store(
-                &dir_path,
-                vec![with_fetched_at(ok("openrouter", 10.0), Utc::now())],
-                1,
-                &cfg,
-            )
-            .unwrap();
-            let _ = done_tx.send(());
-            store
+        let (load_done_tx, load_done_rx) = mpsc::channel::<crate::config::ConfigLoad>();
+        let _loader = std::thread::spawn(move || {
+            let load = crate::config::Config::load(&dir_path);
+            let _ = load_done_tx.send(load);
         });
+
+        // Fair chance to (wrongly) migrate uncoordinated inside the window.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(
-            done_rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .is_ok(),
-            "the merge must not deadlock on its own migration under the held lock",
+            load_done_rx.try_recv().is_err(),
+            "the load's migration must wait while the merge window holds the lock",
         );
-        let store = merger.join().unwrap();
-        // The migration ran (legacy file renamed aside) and the merge landed.
-        assert!(dir.path().join("config.json.migrated").exists());
-        assert_eq!(
-            store
-                .snapshots
-                .iter()
-                .find(|s| s.provider_id == "openrouter")
-                .unwrap()
-                .windows[0]
-                .used_pct,
-            10.0,
+        assert!(
+            !dir.path().join("config.json.migrated").exists(),
+            "no uncoordinated migration ran inside the merge's window",
+        );
+
+        // Closing the window: the load proceeds, migrates under the lock, and
+        // the migration receipt proves it ran exactly once.
+        drop(guard);
+        let load = load_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the load completes once the window closes");
+        assert!(load.recovery.is_none());
+        assert!(
+            dir.path().join("config.json.migrated").exists(),
+            "the migration ran inside the coordinated window",
         );
     }
 
-    /// The migration write is coordinated: while a merge holds the store
-    /// lock, a concurrent `Config::load`'s migration blocks until the merge
-    /// is done — it cannot land uncoordinated between the merge's membership
-    /// comparison and its save.
+    /// THE r12 regression, contention side B: a merge and a concurrent load's
+    /// migration queue on the store lock — neither runs uncoordinated
+    /// outside the critical window; the merge migrates inside its window and
+    /// the load waits, then reads the migrated configuration.
     #[test]
-    fn migration_blocks_while_a_merge_holds_the_store_lock() {
+    fn a_merge_and_a_concurrent_loads_migration_queue_on_the_store_lock() {
         use std::sync::mpsc;
 
         let dir = tempfile::tempdir().unwrap();
-        // Pre-migration legacy config for the concurrent loader to migrate.
         let legacy = crate::config::Config::mobile_first_run_default();
         let legacy_json = serde_json::to_string(&legacy).unwrap();
         std::fs::write(dir.path().join("config.json"), legacy_json).unwrap();
 
-        // A merge holds the store lock (authority read + merge + save inside).
+        // Hold the window closed, then queue BOTH contenders behind it.
+        let guard = store_lock(dir.path()).unwrap();
         let dir_path = dir.path().to_path_buf();
+
         let merge_cfg = cfg();
         let (merge_done_tx, merge_done_rx) = mpsc::channel::<()>();
-        let _merger = std::thread::spawn(move || {
+        let merge_dir = dir_path.clone();
+        let _merge = std::thread::spawn(move || {
             SnapshotStore::merge_and_store(
-                &dir_path,
+                &merge_dir,
                 vec![with_fetched_at(ok("openrouter", 10.0), Utc::now())],
                 1,
                 &merge_cfg,
@@ -1329,15 +1325,40 @@ mod tests {
             .unwrap();
             let _ = merge_done_tx.send(());
         });
-        // Wait for the merge to complete.
+
+        let (load_done_tx, load_done_rx) = mpsc::channel::<crate::config::ConfigLoad>();
+        let loader_dir = dir_path.clone();
+        let _loader = std::thread::spawn(move || {
+            let load = crate::config::Config::load(&loader_dir);
+            let _ = load_done_tx.send(load);
+        });
+
+        // Fair chance for either to (wrongly) run outside the window.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            merge_done_rx.try_recv().is_err(),
+            "the merge waits for its window"
+        );
+        assert!(
+            load_done_rx.try_recv().is_err(),
+            "the load's migration waits for its window too — neither runs uncoordinated",
+        );
+        assert!(!dir_path.join("config.json.migrated").exists());
+
+        // Open the window: the merge migrates inside its own locked stretch
+        // and the load reads the migrated configuration afterwards.
+        drop(guard);
         merge_done_rx
             .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-
-        // A concurrent loader migrates nothing (already migrated): its load
-        // completes and does not disturb the store.
-        let load = crate::config::Config::load(dir.path());
+            .expect("the merge completes inside its window");
+        let load = load_done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the load completes, coordinated with the merge");
         assert!(load.recovery.is_none());
+        assert!(
+            dir.path().join("config.json.migrated").exists(),
+            "exactly one migration ran, inside the coordinated window",
+        );
     }
 
     /// Configuration persistence coordinates through the store lock: while a

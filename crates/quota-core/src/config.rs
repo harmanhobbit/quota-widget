@@ -906,33 +906,28 @@ impl Config {
     /// replaced by an empty one at the next save. Takes the snapshot store
     /// lock for the migration it may perform (see `migrate_if_needed`).
     pub fn load(dir: &Path) -> ConfigLoad {
-        // The migration this may perform persists configuration, so it runs
-        // under the snapshot store lock — the same coordination every other
-        // configuration write goes through (see `migrate_if_needed`'s
-        // contract). Scoped so the lock is released before returning; a lock
-        // failure is tolerated as it always was (the migration is retried on
-        // the next load or save).
-        // A lock failure is tolerated as it always was: the migration is
-        // retried on the next load or save.
-        if crate::snapshots::store_lock(dir).is_err() {
-            return ConfigLoad {
-                config: Self::default(),
-                recovery: None,
-            };
-        }
-        let load_unlocked = Self::load_unlocked(dir);
-        if let Some(recovery) = load_unlocked.recovery {
+        // The migration this may perform persists configuration, so the store
+        // lock's guard is BOUND for the whole load — migration and read are
+        // one critical section against configuration writes and merges.
+        // Dropping the guard after acquisition (checking only `is_err()`)
+        // would release the lock before `load_unlocked` runs and leave the
+        // migration uncoordinated again. Callers that already hold the lock
+        // (`membership_authority`, under `merge_and_store`) use
+        // `load_unlocked` instead. A lock failure is pathological (the lock
+        // file cannot be opened); degrade to an uncoordinated best-effort
+        // read rather than fail the whole read.
+        let _lock = match crate::snapshots::store_lock(dir) {
+            Ok(lock) => lock,
+            Err(_) => return Self::load_unlocked(dir),
+        };
+        let loaded = Self::load_unlocked(dir);
+        if let Some(recovery) = loaded.recovery {
             return ConfigLoad {
                 config: Self::default(),
                 recovery: Some(recovery),
             };
         }
-        let shared = SharedConfig::load(dir);
-        let prefs = PlatformPreferences::load(dir);
-        ConfigLoad {
-            config: Self::from_parts(shared.config, prefs),
-            recovery: shared.recovery.map(ConfigRecovery::from),
-        }
+        loaded
     }
 
     pub fn load_presence(dir: &Path) -> ConfigPresence {
