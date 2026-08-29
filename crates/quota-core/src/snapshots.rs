@@ -71,6 +71,16 @@ pub struct SnapshotStore {
     pub aggregate: AggregateStatus,
     /// Every enabled provider's snapshot, in configured display order.
     pub snapshots: Vec<UsageSnapshot>,
+    /// Per provider, when the refresh pass that produced the stored snapshot
+    /// **began** — its attempt generation, stamped before the first fetch and
+    /// persisted beside the snapshot (see [`merge_and_store`]). Completion
+    /// times cannot order concurrent writers: a pass that began earlier can
+    /// complete later, and its failure would then out-timestamp a later pass's
+    /// success. The generation is the causal order; a snapshot with no entry
+    /// here (a store written before this field existed) reads as the oldest
+    /// possible one, so the next writer supersedes it.
+    #[serde(default)]
+    pub generations: HashMap<String, DateTime<Utc>>,
 }
 
 impl Default for SnapshotStore {
@@ -80,6 +90,7 @@ impl Default for SnapshotStore {
             refreshed_at: None,
             aggregate: AggregateStatus::default(),
             snapshots: Vec::new(),
+            generations: HashMap::new(),
         }
     }
 }
@@ -126,6 +137,7 @@ impl SnapshotStore {
             refreshed_at: Some(now),
             aggregate,
             snapshots,
+            generations: HashMap::new(),
         }
     }
 
@@ -198,6 +210,13 @@ impl SnapshotStore {
     /// its newer *error*, never erase a newer success's figures
     /// (windows/credits included).
     ///
+    /// `attempt` is the incoming pass's generation: a timestamp captured
+    /// **before its first fetch** and persisted beside every snapshot it
+    /// produced. Completion times cannot order concurrent writers — a pass
+    /// that began earlier can complete later, and its failure would
+    /// out-timestamp a later pass's success, wrongly marking the model stale —
+    /// so causal order is the begin time, not the finish time.
+    ///
     /// The read-merge-write runs under an exclusive [`LOCK_NAME`] lock, so
     /// concurrent entries in one process — and the foreground and a widget-only
     /// worker process — serialize here instead of racing the file itself. The
@@ -213,13 +232,16 @@ impl SnapshotStore {
     pub fn merge_and_store(
         dir: &Path,
         incoming: Vec<UsageSnapshot>,
+        attempt: DateTime<Utc>,
         cfg: &Config,
     ) -> std::io::Result<Self> {
         let _lock = acquire_store_lock(dir)?;
         let current = Self::load(dir);
-        let merged = merge_read_model(current.snapshots, incoming);
+        let (merged, generations) =
+            merge_read_model(&current.snapshots, &current.generations, incoming, attempt);
         let aggregate = aggregate_status(&merged, cfg);
-        let store = Self::from_snapshots(merged, aggregate);
+        let mut store = Self::from_snapshots(merged, aggregate);
+        store.generations = generations;
         store.save(dir)?;
         Ok(store)
     }
@@ -278,77 +300,95 @@ fn has_content(s: &UsageSnapshot) -> bool {
 
 /// The fresher of two observations of the same provider, deciding which one a
 /// merge keeps. This is the rule that makes the persisted read model safe
-/// against the writer race (see [`SnapshotStore::merge_and_store`]):
+/// against the writer race (see [`SnapshotStore::merge_and_store`]). Figures
+/// and failure reason are ordered by **different clocks**, and conflating them
+/// is exactly the bug this exists to prevent:
 ///
-/// - **Both carry figures** (success or stale-preserved): the newer
-///   `fetched_at` — the figures' own success — wins. A late writer composed
-///   from stale prior state loses here, which is the point. At equal times,
-///   an errored one outranks a clean one: same figures, but the errored one is
-///   the later observation of that success (the sequential stale case — a pass
-///   that failed after a success, figures kept, error attached).
-/// - **The candidate carries no figures** (a failed first fetch): the
-///   candidate's newer *error* is adopted onto the current figures, which are
-///   never erased by an observation that produced none.
-/// - **Only the current carries no figures** (a writer that knew of no prior
-///   success failed while another had succeeded): the mirror — the candidate's
-///   figures are kept, and the current's newer failure reason adopted onto
+/// - **Figures** come from the newest successful fetch — their own
+///   `fetched_at` when both sides carry them, otherwise the only side that
+///   has them. A figure-less failure (a first fetch that failed with no prior
+///   success in its own view) never erases figures; a stale write whose
+///   figures are older than what another writer persisted cannot regress
 ///   them.
-/// - **Neither carries figures**: the newer attempt's error wins, ties to the
-///   candidate.
-fn fresher(current: UsageSnapshot, candidate: UsageSnapshot) -> UsageSnapshot {
-    match (has_content(&current), has_content(&candidate)) {
-        (true, false) => {
-            if candidate.fetched_at > current.fetched_at {
-                let mut merged = current;
-                merged.error = candidate.error;
-                merged
-            } else {
-                current
-            }
-        }
-        (false, true) => {
-            if current.fetched_at > candidate.fetched_at {
-                let mut merged = candidate;
-                merged.error = current.error;
-                merged
-            } else {
-                candidate
-            }
-        }
-        _ => {
-            let current_key = (current.fetched_at, current.error.is_some());
-            let candidate_key = (candidate.fetched_at, candidate.error.is_some());
-            if candidate_key >= current_key {
+/// - **The failure reason** comes from the newest **attempt generation** —
+///   when each pass began, stamped before its first fetch and persisted.
+///   Completion times cannot order concurrent writers: a pass that began
+///   earlier can complete later, and judging it by completion would let that
+///   failure taint a later pass's success. A newer clean success clears the
+///   error (recovery); a newer failure replaces the reason; and an older
+///   in-flight failure modifies nothing.
+fn fresher(
+    current: &UsageSnapshot,
+    current_attempt: DateTime<Utc>,
+    candidate: &UsageSnapshot,
+    candidate_attempt: DateTime<Utc>,
+) -> UsageSnapshot {
+    // Figures: the newest successful fetch's — by the figures' own fetched_at
+    // when both sides carry them, otherwise the only side that has any.
+    let figures = match (has_content(current), has_content(candidate)) {
+        (true, true) => {
+            if candidate.fetched_at >= current.fetched_at {
                 candidate
             } else {
                 current
             }
         }
-    }
+        (true, false) => current,
+        (false, true) => candidate,
+        // Neither side has figures; base the merge on the current snapshot.
+        (false, false) => current,
+    };
+    // The failure reason: the newest attempt's — a newer clean success clears
+    // it (recovery), a newer failure replaces it.
+    let newest = if candidate_attempt >= current_attempt {
+        candidate
+    } else {
+        current
+    };
+    let mut merged = figures.clone();
+    merged.error = newest.error.clone();
+    merged
 }
 
 /// Merge a freshly composed snapshot list into the current read model, per
-/// provider, by [`fresher`]. Incoming order is preserved (callers sort before
-/// merging); providers the incoming pass no longer contains keep the
-/// whole-replace semantics and drop out — an account disabled between passes
-/// must not haunt the read model.
+/// provider, by [`fresher`]. Returns the merged snapshots and the generation
+/// each kept one now carries — the newer attempt's stamp, whichever side won.
+/// Incoming order is preserved (callers sort before merging); providers the
+/// incoming pass no longer contains keep the whole-replace semantics and drop
+/// out — an account disabled between passes must not haunt the read model.
 pub fn merge_read_model(
-    current: Vec<UsageSnapshot>,
+    current: &[UsageSnapshot],
+    current_generations: &HashMap<String, DateTime<Utc>>,
     incoming: Vec<UsageSnapshot>,
-) -> Vec<UsageSnapshot> {
-    let by_id: HashMap<&str, &UsageSnapshot> = current
-        .iter()
-        .map(|s| (s.provider_id.as_str(), s))
-        .collect();
-    incoming
+    attempt: DateTime<Utc>,
+) -> (Vec<UsageSnapshot>, HashMap<String, DateTime<Utc>>) {
+    let mut generations = current_generations.clone();
+    let merged = incoming
         .into_iter()
-        .map(
-            |candidate| match by_id.get(candidate.provider_id.as_str()) {
-                Some(&current) => fresher(current.clone(), candidate),
-                None => candidate,
-            },
-        )
-        .collect()
+        .map(|candidate| {
+            let id = candidate.provider_id.clone();
+            match current.iter().find(|s| s.provider_id == id) {
+                Some(current_snapshot) => {
+                    let current_attempt = current_generations
+                        .get(&id)
+                        .copied()
+                        .unwrap_or(DateTime::<Utc>::UNIX_EPOCH);
+                    let kept = fresher(current_snapshot, current_attempt, &candidate, attempt);
+                    // Whichever side won, the kept snapshot's generation is the
+                    // newer of the two attempts — in the adopted-error cases
+                    // the observation (not the figures) is what aged.
+                    generations.insert(id, current_attempt.max(attempt));
+                    kept
+                }
+                None => {
+                    generations.insert(id, attempt);
+                    candidate
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+    generations.retain(|id, _| merged.iter().any(|s| &s.provider_id == id));
+    (merged, generations)
 }
 
 #[cfg(test)]
@@ -527,14 +567,23 @@ mod tests {
     // The foreground app, the periodic WorkManager worker, and the manual
     // durable worker each compose from their own view of `prior` and write the
     // same persisted read model. These tests pin the per-provider rule that
-    // makes those concurrent writes safe: figures are a generation (their own
-    // `fetched_at`), a figure-less failure never erases figures, and the
-    // newest error is always adopted. Timestamps are explicit, so every case
-    // is deterministic — no sleeps, no clock dependence.
+    // makes those concurrent writes safe. Causal order is the ATTEMPT
+    // generation stamped before each pass's first fetch — never the
+    // completion-time `fetched_at`, which would let a pass that began earlier
+    // but failed later out-timestamp a later pass's success. Every timestamp
+    // below is explicit, so all cases are deterministic.
 
     fn with_fetched_at(mut s: UsageSnapshot, at: DateTime<Utc>) -> UsageSnapshot {
         s.fetched_at = at;
         s
+    }
+
+    /// A store's per-provider generation map: when each producing pass began.
+    fn gen_map(entries: &[(&str, DateTime<Utc>)]) -> HashMap<String, DateTime<Utc>> {
+        entries
+            .iter()
+            .map(|(id, at)| (id.to_string(), *at))
+            .collect()
     }
 
     /// What compose produces when a later fetch fails after a success: the
@@ -547,104 +596,216 @@ mod tests {
     }
 
     /// A failed first fetch: no figures were invented, and the attempt's own
-    /// time is stamped.
+    /// completion time is stamped.
     fn failed_at(id: &str, at: DateTime<Utc>, msg: &str) -> UsageSnapshot {
         let mut s = UsageSnapshot::failed(id, id, FetchError::Network(msg.into()));
         s.fetched_at = at;
         s
     }
 
+    /// THE regression test for the merge's causal key. Request A begins first
+    /// (no prior figures for the provider), request B begins later and
+    /// persists a clean success, and A — in flight the whole time — fails
+    /// last. A's failure carries a NEWER completion timestamp than B's
+    /// figures, so only the attempt generation can keep B's cards clean: no
+    /// stale error, no stale aggregate, in either persistence order.
+    #[test]
+    fn an_older_in_flight_failure_cannot_modify_a_later_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg();
+        let a_attempt = Utc::now() - chrono::Duration::seconds(120);
+        let b_attempt = a_attempt + chrono::Duration::seconds(30);
+        // B's figures were fetched after B began; A's failure completed after
+        // B's figures were even fetched — completion order is exactly wrong.
+        let b_success =
+            with_fetched_at(ok("codex", 25.0), b_attempt + chrono::Duration::seconds(10));
+        let a_failure = failed_at(
+            "codex",
+            b_attempt + chrono::Duration::seconds(40),
+            "A failed",
+        );
+
+        // Order 1: B's success lands first; A's late failure merges second.
+        SnapshotStore::merge_and_store(dir.path(), vec![b_success.clone()], b_attempt, &cfg)
+            .unwrap();
+        let store =
+            SnapshotStore::merge_and_store(dir.path(), vec![a_failure.clone()], a_attempt, &cfg)
+                .unwrap();
+        assert_eq!(
+            store.snapshots[0].windows[0].used_pct, 25.0,
+            "B's clean figures unchanged",
+        );
+        assert!(
+            store.snapshots[0].error.is_none(),
+            "A's older in-flight failure adds no stale error",
+        );
+        assert_eq!(
+            store.aggregate.status,
+            Status::Ok,
+            "the model is not marked stale",
+        );
+        assert_eq!(
+            store.generations["codex"], b_attempt,
+            "the later attempt's generation is what persisted",
+        );
+
+        // Order 2: A's failure lands first; B's success merges after it.
+        let dir = tempfile::tempdir().unwrap();
+        SnapshotStore::merge_and_store(dir.path(), vec![a_failure], a_attempt, &cfg).unwrap();
+        let store =
+            SnapshotStore::merge_and_store(dir.path(), vec![b_success], b_attempt, &cfg).unwrap();
+        assert_eq!(store.snapshots[0].windows[0].used_pct, 25.0);
+        assert!(store.snapshots[0].error.is_none());
+        assert_eq!(store.aggregate.status, Status::Ok);
+        assert_eq!(store.generations["codex"], b_attempt);
+    }
+
+    /// A stale write composed from prior state older than what another writer
+    /// already persisted cannot regress it — its figures are causally older
+    /// (its pass began earlier), so its error is discarded with them.
     #[test]
     fn a_late_stale_write_cannot_regress_a_newer_success() {
         let t0 = Utc::now() - chrono::Duration::seconds(120);
-        let t4 = Utc::now() - chrono::Duration::seconds(30);
-        // The worker persisted a success fetched at T4; the foreground —
-        // composed from its stale in-memory prior, where codex's figures came
-        // from a T0 success — failed this pass and is writing last.
+        let t1 = t0 + chrono::Duration::seconds(10);
+        let t3 = t0 + chrono::Duration::seconds(60);
+        let t4 = t0 + chrono::Duration::seconds(90);
+        // The current store: a success fetched at T4 by a pass that began T3.
         let current = vec![with_fetched_at(ok("codex", 25.0), t4)];
+        let generations = gen_map(&[("codex", t3)]);
+        // The incoming pass began at T1, composed from a T0 success, and
+        // failed — stale figures from T0 with its error attached.
         let incoming = vec![stale_at("codex", 20.0, t0, "late failure")];
 
-        let merged = merge_read_model(current, incoming);
+        let (merged, _) = merge_read_model(&current, &generations, incoming, t1);
 
-        assert_eq!(merged.len(), 1);
         assert_eq!(
             merged[0].windows[0].used_pct, 25.0,
             "the newer success's figures survive the late stale write",
         );
         assert!(
             merged[0].error.is_none(),
-            "the late stale write adds no error to a newer success",
+            "the causally older write adds no error to a newer success",
         );
         assert_eq!(merged[0].fetched_at, t4);
     }
 
+    /// Without a race — the normal sequential stale case — the composed
+    /// failure must still attach its error to the figures (compose produced
+    /// it; the merge must not drop it in favour of the older clean success).
     #[test]
     fn a_sequential_failure_keeps_the_figures_and_attaches_the_new_error() {
-        // No race: the on-disk success is the same one compose preserved into
-        // the incoming stale snapshot. Equal timestamps, but the errored one is
-        // the later observation of that success — it must win, or the error
-        // would never reach the persisted model.
-        let t0 = Utc::now() - chrono::Duration::seconds(60);
-        let current = vec![with_fetched_at(ok("codex", 20.0), t0)];
-        let incoming = vec![stale_at("codex", 20.0, t0, "this pass failed")];
+        let t0 = Utc::now() - chrono::Duration::seconds(120);
+        let t1 = t0 + chrono::Duration::seconds(5);
+        let t2 = t0 + chrono::Duration::seconds(30);
+        // The stored success came from the pass that began T0; the failing
+        // pass began T2 and preserved the figures (fetched at T1).
+        let current = vec![with_fetched_at(ok("codex", 20.0), t1)];
+        let generations = gen_map(&[("codex", t0)]);
+        let incoming = vec![stale_at("codex", 20.0, t1, "this pass failed")];
 
-        let merged = merge_read_model(current, incoming);
+        let (merged, generations) = merge_read_model(&current, &generations, incoming, t2);
 
         assert_eq!(merged[0].windows[0].used_pct, 20.0);
         assert_eq!(
             merged[0].error,
             Some(FetchError::Network("this pass failed".into())),
         );
-        assert_eq!(merged[0].fetched_at, t0);
+        assert_eq!(merged[0].fetched_at, t1);
+        assert_eq!(
+            generations["codex"], t2,
+            "the failing pass is the newest observation"
+        );
     }
 
+    /// A figure-less failure — a first fetch that failed with no prior success
+    /// in its own view — must never erase figures another writer persisted,
+    /// when it began after them. Its newer error is adopted onto the figures.
     #[test]
     fn a_figureless_failure_never_erases_persisted_figures() {
         let t0 = Utc::now() - chrono::Duration::seconds(120);
-        let t5 = Utc::now() - chrono::Duration::seconds(30);
-        // A figure-less failure is a first fetch that failed with no prior
-        // success in its own writer's view — but another writer did have
-        // figures (a clean success, or a stale reading). The figures survive;
-        // only the newer error is adopted, whatever the current error was.
+        let t3 = t0 + chrono::Duration::seconds(30);
+        let t5 = t0 + chrono::Duration::seconds(60);
         for current in [
-            with_fetched_at(ok("codex", 20.0), t0),
-            stale_at("codex", 20.0, t0, "older failure"),
+            with_fetched_at(ok("codex", 20.0), t3),
+            stale_at("codex", 20.0, t3, "older failure"),
         ] {
-            let merged = merge_read_model(vec![current], vec![failed_at("codex", t5, "newer")]);
+            let generations = gen_map(&[("codex", t0)]);
+            let (merged, generations) = merge_read_model(
+                std::slice::from_ref(&current),
+                &generations,
+                vec![failed_at("codex", t5, "newer")],
+                t5,
+            );
             assert_eq!(
                 merged[0].windows[0].used_pct, 20.0,
                 "figures survive a figure-less failure",
             );
-            assert_eq!(merged[0].fetched_at, t0, "aged by the figures' success");
+            assert_eq!(merged[0].fetched_at, t3, "aged by the figures' success");
             assert_eq!(merged[0].error, Some(FetchError::Network("newer".into())));
+            assert_eq!(generations["codex"], t5);
         }
+    }
+
+    /// The mirror: figures persisted by an older pass survive a newer pass's
+    /// figure-less failure arriving from the other side of the merge.
+    #[test]
+    fn an_older_success_keeps_its_figures_under_a_newer_figureless_failure() {
+        let t0 = Utc::now() - chrono::Duration::seconds(120);
+        let t3 = t0 + chrono::Duration::seconds(30);
+        let t5 = t0 + chrono::Duration::seconds(60);
+        // The store holds a figure-less failure from the newer pass; the older
+        // pass's success — slow to persist — merges into it.
+        let current = vec![failed_at("codex", t5, "newer failure")];
+        let generations = gen_map(&[("codex", t5)]);
+        let incoming = vec![with_fetched_at(ok("codex", 20.0), t3)];
+
+        let (merged, generations) = merge_read_model(&current, &generations, incoming, t0);
+
+        assert_eq!(
+            merged[0].windows[0].used_pct, 20.0,
+            "figures are never erased by a figure-less observation",
+        );
+        assert_eq!(
+            merged[0].error,
+            Some(FetchError::Network("newer failure".into())),
+            "the newer attempt's failure reason is adopted onto the figures",
+        );
+        assert_eq!(generations["codex"], t5);
     }
 
     #[test]
     fn a_newer_success_recovers_a_stale_reading() {
         let t0 = Utc::now() - chrono::Duration::seconds(120);
-        let t4 = Utc::now() - chrono::Duration::seconds(30);
-        let current = vec![stale_at("codex", 20.0, t0, "old failure")];
-        let incoming = vec![with_fetched_at(ok("codex", 30.0), t4)];
+        let t1 = t0 + chrono::Duration::seconds(10);
+        let t2 = t0 + chrono::Duration::seconds(40);
+        let t3 = t0 + chrono::Duration::seconds(50);
+        let current = vec![stale_at("codex", 20.0, t2, "old failure")];
+        let generations = gen_map(&[("codex", t1)]);
+        let incoming = vec![with_fetched_at(ok("codex", 30.0), t3)];
 
-        let merged = merge_read_model(current, incoming);
+        let (merged, _) = merge_read_model(
+            &current,
+            &generations,
+            incoming,
+            t2 + chrono::Duration::seconds(10),
+        );
 
         assert_eq!(merged[0].windows[0].used_pct, 30.0);
         assert!(merged[0].error.is_none(), "recovered: the error clears");
-        assert_eq!(merged[0].fetched_at, t4);
+        assert_eq!(merged[0].fetched_at, t3);
     }
 
     #[test]
     fn an_older_success_does_not_regress_a_newer_stale_reading() {
         let t0 = Utc::now() - chrono::Duration::seconds(120);
-        let t4 = Utc::now() - chrono::Duration::seconds(30);
-        // The mirror race: a writer bringing an older success (its fetches
-        // started long ago) must not displace the newer stale reading another
-        // writer already persisted.
+        let t1 = t0 + chrono::Duration::seconds(10);
+        let t3 = t0 + chrono::Duration::seconds(60);
+        let t4 = t0 + chrono::Duration::seconds(90);
         let current = vec![stale_at("codex", 30.0, t4, "newer failure")];
-        let incoming = vec![with_fetched_at(ok("codex", 20.0), t0)];
+        let generations = gen_map(&[("codex", t3)]);
+        let incoming = vec![with_fetched_at(ok("codex", 20.0), t1)];
 
-        let merged = merge_read_model(current, incoming);
+        let (merged, _) = merge_read_model(&current, &generations, incoming, t1);
 
         assert_eq!(merged[0].windows[0].used_pct, 30.0);
         assert_eq!(
@@ -656,15 +817,14 @@ mod tests {
 
     #[test]
     fn merge_preserves_incoming_order_and_drops_absent_providers() {
+        let now = Utc::now();
         let current = vec![ok("claude", 90.0), ok("codex", 20.0), ok("openrouter", 5.0)];
+        let generations = gen_map(&[("claude", now), ("codex", now), ("openrouter", now)]);
         // The incoming pass no longer contains openrouter (its account was
         // disabled between passes) and is in its own configured order.
-        let incoming = vec![
-            with_fetched_at(ok("codex", 21.0), Utc::now()),
-            ok("claude", 91.0),
-        ];
+        let incoming = vec![with_fetched_at(ok("codex", 21.0), now), ok("claude", 91.0)];
 
-        let merged = merge_read_model(current, incoming);
+        let (merged, generations) = merge_read_model(&current, &generations, incoming, now);
 
         assert_eq!(
             merged
@@ -673,6 +833,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["codex", "claude"],
             "incoming order preserved; absent providers drop out",
+        );
+        assert!(
+            !generations.contains_key("openrouter"),
+            "a dropped provider's generation drops with it",
         );
     }
 
@@ -686,25 +850,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = cfg();
         let t0 = Utc::now() - chrono::Duration::seconds(120);
-        let t4 = Utc::now() - chrono::Duration::seconds(60);
-        let t5 = Utc::now() - chrono::Duration::seconds(30);
+        let t4 = t0 + chrono::Duration::seconds(60);
+        let t5 = t0 + chrono::Duration::seconds(90);
 
-        // Writer 1 — the WorkManager worker: composed from fresh priors, both
-        // accounts succeeded at T4.
+        // Writer 1 — the WorkManager worker: its pass began at T4, both
+        // accounts succeeded.
         let worker = vec![
             with_fetched_at(ok("openrouter", 10.0), t4),
             with_fetched_at(ok("claude", 25.0), t4),
         ];
-        SnapshotStore::merge_and_store(dir.path(), worker, &cfg).unwrap();
+        SnapshotStore::merge_and_store(dir.path(), worker, t4, &cfg).unwrap();
 
         // Writer 2 — the foreground, composed from its stale in-memory prior:
         // openrouter succeeded again at T5, but claude's fetch failed after
-        // the worker's and composes as stale from its old T0 reading.
+        // the worker's and composes as stale from its old T0 reading. Its pass
+        // began at T5 — causally newer than the worker's.
         let foreground = vec![
             with_fetched_at(ok("openrouter", 12.0), t5),
             stale_at("claude", 20.0, t0, "late failure"),
         ];
-        let store = SnapshotStore::merge_and_store(dir.path(), foreground, &cfg).unwrap();
+        let store = SnapshotStore::merge_and_store(dir.path(), foreground, t5, &cfg).unwrap();
 
         assert_eq!(
             store
@@ -724,22 +889,34 @@ mod tests {
             .unwrap();
         assert_eq!(
             claude.windows[0].used_pct, 25.0,
-            "the worker's newer success survives the late stale write",
+            "the worker's figures survive — but the newer failure's error attaches",
         );
-        assert!(claude.error.is_none());
+        assert!(
+            claude.error.is_some(),
+            "the newer pass's failure is the latest observation"
+        );
         assert_eq!(
             store.aggregate.status,
-            Status::Ok,
-            "the persisted colour reflects the merged list, not the late stale write",
+            Status::Stale,
+            "the stored colour reflects the merged list, whose newest observation failed",
         );
 
-        // The mirror: the worker's stale write arriving after the foreground's
-        // newer figures must not regress them either.
+        // The mirror: a pass that began later still wins the figures it
+        // fetched; and a stale write from a pass that began EARLIER cannot
+        // regress newer figures — but its failure, being the newest
+        // observation of an account it began before another pass succeeded
+        // on, is judged by its own generation.
         let late_worker = vec![
-            with_fetched_at(ok("openrouter", 9.0), t4),
+            with_fetched_at(ok("openrouter", 9.0), t5),
             stale_at("claude", 18.0, t0, "stale worker"),
         ];
-        let store = SnapshotStore::merge_and_store(dir.path(), late_worker, &cfg).unwrap();
+        let store = SnapshotStore::merge_and_store(
+            dir.path(),
+            late_worker,
+            t5 + chrono::Duration::seconds(1),
+            &cfg,
+        )
+        .unwrap();
 
         assert_eq!(
             store
@@ -749,16 +926,28 @@ mod tests {
                 .unwrap()
                 .windows[0]
                 .used_pct,
-            12.0,
-            "an older success does not regress a newer one",
+            9.0,
+            "the newer pass's success lands",
         );
         let claude = store
             .snapshots
             .iter()
             .find(|s| s.provider_id == "claude")
             .unwrap();
-        assert_eq!(claude.windows[0].used_pct, 25.0);
-        assert!(claude.error.is_none());
-        assert_eq!(store.aggregate.status, Status::Ok);
+        assert_eq!(
+            claude.windows[0].used_pct, 25.0,
+            "the newer figures (the worker's t4 success) are not regressed by older ones",
+        );
+        assert_eq!(
+            claude.error,
+            Some(FetchError::Network("stale worker".into())),
+            "the newest attempt's failure reason is what the model carries",
+        );
+        assert_eq!(claude.fetched_at, t4, "aged by the figures' own success");
+        assert_eq!(
+            store.aggregate.status,
+            Status::Stale,
+            "the newest attempt failed, so the model is honestly stale",
+        );
     }
 }

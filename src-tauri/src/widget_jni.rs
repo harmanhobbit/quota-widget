@@ -220,6 +220,11 @@ fn init_worker_keystore(env: &mut JNIEnv, context: &JObject) -> Result<(), Strin
 /// persisting the resulting read model and alert memory. Kept close to
 /// `mobile.rs::refresh_once` so the two never drift in what a refresh means.
 fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(), String> {
+    // This pass's attempt generation, stamped BEFORE the first fetch (see
+    // `SnapshotStore::merge_and_store`): concurrent writers — the foreground
+    // app, the periodic schedule, manual refreshes — are ordered by when they
+    // began, never by when they finished.
+    let attempt = Utc::now();
     // The Keystore-backed store must be registered before `load_all` can decrypt
     // any stored credential. If it cannot be — a device/state where the worker's
     // context init fails — we must NOT proceed: a refresh with no decryptable
@@ -284,7 +289,7 @@ fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(
     // the aggregate is folded over the merged list so the stored colour matches
     // the stored cards.
     cfg.sort_snapshots(&mut outcome.snapshots);
-    let store = SnapshotStore::merge_and_store(dir, outcome.snapshots, &cfg)
+    let store = SnapshotStore::merge_and_store(dir, outcome.snapshots, attempt, &cfg)
         .map_err(|e| format!("storing snapshots: {e}"))?;
 
     // When the foreground app is alive in this process, its webview learns

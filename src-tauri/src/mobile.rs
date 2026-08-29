@@ -223,6 +223,12 @@ async fn refresh_manual(
 }
 
 async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
+    // This pass's attempt generation, stamped BEFORE the first fetch (see
+    // `SnapshotStore::merge_and_store`): concurrent writers are ordered by when
+    // they began, never by when they finished — a pass that began earlier can
+    // complete later, and its failure must not out-timestamp a later pass's
+    // success.
+    let attempt = chrono::Utc::now();
     let cfg = state.config.read().await.clone();
     let (ctx, failed_secrets) = state.provider_ctx_and_failed_secrets(cfg.clone());
     let prior = state.snapshots.read().await.clone();
@@ -345,6 +351,7 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
     match quota_core::snapshots::SnapshotStore::merge_and_store(
         &state.config_dir,
         outcome.snapshots.clone(),
+        attempt,
         &cfg,
     ) {
         Ok(store) => {
