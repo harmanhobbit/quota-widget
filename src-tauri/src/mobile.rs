@@ -179,16 +179,11 @@ async fn set_config(
     state: tauri::State<'_, Arc<MobileState>>,
     config: Config,
 ) -> Result<(), String> {
-    // The configuration save takes the snapshot store lock: the merge's
-    // membership-authority comparison reads the configuration under that same
-    // lock, so a coordinated config write can never land between the
-    // comparison and the merge's own save (the uncoordinated case is caught by
-    // merge_and_store's re-validation). Scoped: the lock guards one write.
-    let saved = quota_core::snapshots::store_lock(&state.config_dir)
-        .and_then(|_guard| config.save(&state.config_dir));
-    if let Err(e) = saved {
-        return Err(e.to_string());
-    }
+    // Config::save takes the snapshot store lock itself: every configuration
+    // persistence is coordinated with the merge's membership-authority
+    // comparison — a save can never land between that comparison and the
+    // merge's own save of the read model.
+    config.save(&state.config_dir).map_err(|e| e.to_string())?;
     // Clear the alert memory of any account this config no longer enables, and
     // persist it immediately (issue #112): disabling or deleting an account
     // must start a fresh baseline when it returns, and a background worker could
@@ -439,17 +434,32 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
             // webview or memory: this pass may be causally older than what a
             // concurrent writer already stored, and publishing it unmerged
             // would visibly regress the open app. Derive the same causally
-            // merged state the locked path would have written (against the
-            // store as it currently reads, minus the write) and publish that
-            // through the same gate; the next pass's merge_and_store
-            // reconciles the persist.
-            let merged = quota_core::snapshots::SnapshotStore::derive_merged(
-                &state.config_dir,
-                outcome.snapshots.clone(),
-                attempt,
-                &cfg,
-            );
-            publish_snapshots(&app, attempt, merged.snapshots);
+            // merged state the locked path would have written and publish
+            // that through the same gate — with the store lock held across
+            // BOTH the derivation and the publication, so no configuration
+            // write can land between the membership check and what the
+            // webview is given (the derivation and publication are one
+            // atomic stretch against configuration writes, exactly like the
+            // locked path). If the lock itself cannot be taken, publish
+            // nothing: the cards keep their current state and the next pass
+            // reconciles.
+            match quota_core::snapshots::store_lock(&state.config_dir) {
+                Ok(_lock) => {
+                    let merged = quota_core::snapshots::SnapshotStore::derive_merged(
+                        &state.config_dir,
+                        outcome.snapshots.clone(),
+                        attempt,
+                        &cfg,
+                    );
+                    publish_snapshots(&app, attempt, merged.snapshots);
+                }
+                Err(lock_err) => {
+                    eprintln!(
+                        "[mobile] taking the store lock for the fallback derivation failed, \
+                         skipping publication: {lock_err}"
+                    );
+                }
+            }
         }
     }
 }

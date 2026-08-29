@@ -947,6 +947,13 @@ impl Config {
         if let Some(recovery) = SharedConfig::recovery_state(dir) {
             return Err(refuse_overwrite(&ConfigRecovery::from(recovery)));
         }
+        // EVERY configuration persistence coordinates through the snapshot
+        // store lock: the merge's membership-authority comparison reads this
+        // file under that lock, so a save must never land between the
+        // comparison and the merge's own save of the read model. Holding the
+        // lock here closes that window structurally — for every caller,
+        // coordinated or not.
+        let _store_lock = crate::snapshots::store_lock(dir)?;
         self.write_split(dir)
     }
 
@@ -976,9 +983,11 @@ impl Config {
             Self::migrate_if_needed(dir);
         }
         let Some(_) = SharedConfig::recovery_state(dir) else {
+            let _store_lock = crate::snapshots::store_lock(dir)?;
             self.write_split(dir)?;
             return Ok(None);
         };
+        let _store_lock = crate::snapshots::store_lock(dir)?;
         let (shared, prefs) = self.split();
         let kept = shared
             .save_after_recovery(dir)?

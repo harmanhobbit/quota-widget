@@ -234,44 +234,13 @@ impl SnapshotStore {
         cfg: &Config,
     ) -> std::io::Result<Self> {
         let _lock = acquire_store_lock(dir)?;
-        // The membership authority is evaluated and RE-evaluated inside the
-        // store lock: a configuration writer that coordinates through the same
-        // lock cannot interleave, and one that does not is caught by the
-        // re-validation below — a pass must never finalize membership against
-        // a configuration that changed while it was merging.
-        let authoritative = Self::membership_authority(dir, cfg);
-        let current = Self::load(dir);
-        let merged = merge_read_model(
-            &current.snapshots,
-            &current.generations,
-            authoritative,
-            incoming.clone(),
-            attempt,
-        );
-        let mut snapshots = merged.snapshots;
-        cfg.sort_snapshots(&mut snapshots);
-        let aggregate = aggregate_status(&snapshots, cfg);
-        let mut store = Self::from_snapshots(snapshots, aggregate);
-        store.generations = merged.generations;
-        if Self::membership_authority(dir, cfg) != authoritative {
-            // The configuration changed between the comparison and the save.
-            // Re-merge without membership authority: the additions and
-            // omissions above were validated against a configuration that is
-            // no longer current, so they must not decide membership.
-            let current = Self::load(dir);
-            let merged = merge_read_model(
-                &current.snapshots,
-                &current.generations,
-                false,
-                incoming,
-                attempt,
-            );
-            let mut snapshots = merged.snapshots;
-            cfg.sort_snapshots(&mut snapshots);
-            let aggregate = aggregate_status(&snapshots, cfg);
-            store = Self::from_snapshots(snapshots, aggregate);
-            store.generations = merged.generations;
-        }
+        // The membership authority inside derive_merged reads the
+        // configuration under this same lock, and `Config::save` — the only
+        // way configuration reaches disk — takes it too. The whole
+        // read-merge-validate-write is therefore atomic against configuration
+        // writes: no window exists between the authority comparison and the
+        // save for ANY writer, coordinated or not.
+        let store = Self::derive_merged(dir, incoming, attempt, cfg);
         store.save(dir)?;
         Ok(store)
     }
@@ -292,7 +261,12 @@ impl SnapshotStore {
     }
 
     /// The causally merged read model for `incoming`, computed against the
-    /// store as it currently reads — **without writing**. The locked
+    /// store as it currently reads — **without writing**. The caller MUST hold
+    /// [`store_lock`] across this call and across whatever publication of the
+    /// result follows: the membership authority inside reads the
+    /// configuration, and holding the lock makes that observation, the merge
+    /// and the publication one atomic stretch against configuration writes
+    /// (which all take the same lock through `Config::save`). The locked
     /// [`merge_and_store`] is this plus the save; a failed store write falls
     /// back to this so the in-memory state and the open webview derive the
     /// same merged truth instead of ever publishing an unmerged older result.
@@ -1268,60 +1242,143 @@ mod tests {
         );
     }
 
-    /// A coordinated configuration writer — set_config, holding the store lock
-    /// across its save — cannot interleave with a merge: the merge blocks
-    /// until the write is released, then evaluates its authority against the
-    /// post-write configuration.
+    /// Configuration persistence coordinates through the store lock: while a
+    /// merge or fallback derivation holds it (its membership check and save
+    /// live inside that window), a configuration write — which takes the same
+    /// lock inside `Config::save` — cannot land. THE regression for the
+    /// config-write-between-comparison-and-save race.
     #[test]
-    fn a_coordinated_configuration_write_serializes_with_the_merge() {
+    fn configuration_persistence_coordinates_through_the_store_lock() {
         use std::sync::mpsc;
 
         let dir = tempfile::tempdir().unwrap();
         let cfg = cfg();
         cfg.save(dir.path()).unwrap();
 
-        // set_config's save: hold the store lock across the configuration
-        // write, and change the configuration while it is held.
+        // The merge (or fallback derivation) holds the store lock across its
+        // authority comparison, merge, and save.
         let guard = store_lock(dir.path()).unwrap();
-        let changed = cfg_enabled(&["openrouter"]);
-        changed.save(dir.path()).unwrap();
 
-        // The merge — a pass whose observed configuration is the pre-change
-        // one — starts while the write holds the lock: it must block, so its
-        // authority comparison cannot race the write.
+        // A configuration write starts while that window is held: `Config::
+        // save` takes the same lock, so it must block until the window closes.
         let dir_path = dir.path().to_path_buf();
-        let (done_tx, done_rx) = mpsc::channel::<SnapshotStore>();
-        let merger = std::thread::spawn(move || {
-            let store = SnapshotStore::merge_and_store(
-                &dir_path,
-                vec![with_fetched_at(ok("claude", 25.0), Utc::now())],
-                2,
-                &cfg,
-            )
-            .unwrap();
-            let _ = done_tx.send(store);
+        let (write_done_tx, write_done_rx) = mpsc::channel::<()>();
+        let _writer = std::thread::spawn(move || {
+            let changed = cfg_enabled(&["openrouter"]);
+            changed.save(&dir_path).unwrap();
+            let _ = write_done_tx.send(());
         });
 
-        // Give the merger a fair chance to (wrongly) proceed while the write
-        // holds the lock.
+        // Give the writer a fair chance to (wrongly) land inside the window.
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(
-            done_rx.try_recv().is_err(),
-            "the merge must wait for the coordinated configuration write"
+            write_done_rx.try_recv().is_err(),
+            "a configuration write must not land while the merge holds the store lock"
         );
 
-        // Release the write; the merge proceeds and evaluates its authority
-        // against the post-write configuration — the pre-change claude is not
-        // added (the current configuration does not have it).
+        // Closing the window lets the write through.
         drop(guard);
-        merger.join().unwrap();
-        done_rx
+        write_done_rx
             .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("the merge completes after the write is released");
-        let store = SnapshotStore::load(dir.path());
+            .expect("the configuration write completes once the lock is released");
+    }
+
+    /// The fallback's derivation is atomic against configuration writes: with
+    /// the store lock held across the derivation (as mobile.rs's
+    /// persist-failure path does), a concurrent write blocks; the derivation
+    /// evaluates its membership authority against the configuration as of its
+    /// own locked window, and a write landing after it is honored only by the
+    /// NEXT pass.
+    #[test]
+    fn the_fallback_derivation_is_atomic_against_a_configuration_write() {
+        use std::sync::mpsc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let now = Utc::now();
+
+        // A newer pass (generation 2) stored openrouter and claude, observing
+        // the configuration with both enabled.
+        let cfg_wide = cfg();
+        cfg_wide.save(dir.path()).unwrap();
+        SnapshotStore::merge_and_store(
+            dir.path(),
+            vec![
+                with_fetched_at(ok("openrouter", 12.0), now),
+                with_fetched_at(ok("claude", 25.0), now),
+            ],
+            2,
+            &cfg_wide,
+        )
+        .unwrap();
+
+        // The fallback for an older pass (generation 1, same observed
+        // configuration) takes the store lock across its derivation.
+        let guard = store_lock(dir.path()).unwrap();
+
+        // A configuration write (claude disabled) attempts to land
+        // concurrently: it must block — the derivation's membership check and
+        // its result are one atomic stretch against it.
+        let dir_path = dir.path().to_path_buf();
+        let (write_done_tx, write_done_rx) = mpsc::channel::<()>();
+        let _writer = std::thread::spawn(move || {
+            let cfg_narrow = cfg_enabled(&["openrouter"]);
+            cfg_narrow.save(&dir_path).unwrap();
+            let _ = write_done_tx.send(());
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(
-            !store.snapshots.iter().any(|s| s.provider_id == "claude"),
-            "the pass's claude, absent from the post-write configuration, is not added",
+            write_done_rx.try_recv().is_err(),
+            "a configuration write cannot land during the fallback's locked derivation"
+        );
+
+        // The derivation: the older pass's figures lose per provider to the
+        // newer generation, and the membership stays consistent with the
+        // configuration as of the locked window (both providers present).
+        let merged = SnapshotStore::derive_merged(
+            dir.path(),
+            vec![
+                with_fetched_at(ok("openrouter", 9.0), now),
+                with_fetched_at(ok("claude", 18.0), now),
+            ],
+            1,
+            &cfg_wide,
+        );
+        assert_eq!(
+            merged
+                .snapshots
+                .iter()
+                .find(|s| s.provider_id == "openrouter")
+                .unwrap()
+                .windows[0]
+                .used_pct,
+            12.0,
+            "the newer generation's figures win per provider",
+        );
+        assert!(
+            merged.snapshots.iter().any(|s| s.provider_id == "claude"),
+            "membership is consistent with the configuration as of the locked window",
+        );
+
+        // Release the window: the write lands, and a newer pass observing it
+        // removes claude by its own authoritative decision.
+        drop(guard);
+        write_done_rx.recv().unwrap();
+        let cfg_narrow = cfg_enabled(&["openrouter"]);
+        let store = SnapshotStore::merge_and_store(
+            dir.path(),
+            vec![with_fetched_at(ok("openrouter", 14.0), now)],
+            3,
+            &cfg_narrow,
+        )
+        .unwrap();
+        assert_eq!(
+            store
+                .snapshots
+                .iter()
+                .map(|s| s.provider_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["openrouter"],
+            "the post-write pass's membership decision is authoritative",
         );
     }
 
