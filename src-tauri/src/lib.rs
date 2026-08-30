@@ -22,6 +22,12 @@ mod updates;
 mod mobile;
 #[cfg(mobile)]
 mod mobile_signin;
+// Rust → JVM calls into the native host's WorkManager scheduler (issue #111).
+// Android-only, like `widget_jni`: the `jni` dependency is scoped to
+// `cfg(target_os = "android")` in Cargo.toml and the scheduler class itself
+// lives in the Kotlin host (`src-tauri/android-widget/`).
+#[cfg(target_os = "android")]
+mod android_schedule;
 // The native Glance home-screen widget host's JNI entry points (issue #113).
 // Android-only: it is the sole JNI caller, and the `jni` dependency is scoped
 // to `cfg(target_os = "android")` in Cargo.toml.

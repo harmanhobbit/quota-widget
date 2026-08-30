@@ -830,6 +830,14 @@ impl Config {
     /// rather than a `shared-config.json` that was never created. A directory
     /// that has already migrated (`shared-config.json` present) or never had
     /// a legacy file at all returns `None` immediately and touches nothing.
+    /// One-time migration of a legacy `config.json` into the split
+    /// shared-config + preferences files. The caller MUST hold the snapshot
+    /// store lock: this persists configuration, and every configuration write
+    /// is coordinated with the merge's membership validation through that
+    /// lock (`Config::save`, `save_after_recovery` — the same rule as r10).
+    /// Callers inside an already-held lock (`load`, reached under the lock
+    /// from `membership_authority`) simply pass it through; taking the lock
+    /// here would self-deadlock a `flock`-based mutex.
     fn migrate_if_needed(dir: &Path) -> Option<ConfigRecovery> {
         if dir.join(crate::shared_config::FILE_NAME).exists() {
             return None;
@@ -865,13 +873,19 @@ impl Config {
     /// be read or parsed runs on defaults *and* reports a [`ConfigRecovery`],
     /// because quietly treating it as a first run is how a working setup gets
     /// replaced by an empty one at the next save.
-    pub fn load(dir: &Path) -> ConfigLoad {
-        if let Some(recovery) = Self::migrate_if_needed(dir) {
-            return ConfigLoad {
-                config: Self::default(),
-                recovery: Some(recovery),
-            };
-        }
+    /// Read the current configuration WITHOUT coordinating through the store
+    /// lock. For callers already holding that lock (`membership_authority`,
+    /// reached under it from `merge_and_store`) — taking it here would
+    /// self-deadlock a `flock`-based mutex. Reads are safe without the lock:
+    /// `save`/`write_split` publish atomically via temp-file-then-rename.
+    /// The one-time legacy migration may write, and DOES honor the caller's
+    /// held lock (see `migrate_if_needed`'s contract).
+    /// A strictly read-only view of the current configuration: never writes,
+    /// never migrates. The lock-degraded path of [`Config::load`] uses this —
+    /// no configuration persistence may occur without the store lock, so a
+    /// legacy-only directory reads as the defaults (first-run semantics) until
+    /// a coordinated load or save migrates it.
+    fn load_read_only(dir: &Path) -> ConfigLoad {
         let shared = SharedConfig::load(dir);
         let prefs = PlatformPreferences::load(dir);
         ConfigLoad {
@@ -880,33 +894,59 @@ impl Config {
         }
     }
 
-    /// Whether a *persisted, healthy* shared configuration exists, refusing to
-    /// ever report the built-in defaults as if they were the user's config.
+    /// Migrate (if a legacy `config.json` is present) and read. The CALLER
+    /// must hold the snapshot store lock: the migration persists
+    /// configuration, and this function deliberately does not coordinate —
+    /// it is the internal half of [`Config::load`] and of the merge's
+    /// membership-authority check, both of which run under the held lock.
+    pub(crate) fn load_unlocked(dir: &Path) -> ConfigLoad {
+        Self::migrate_if_needed(dir);
+        Self::load_read_only(dir)
+    }
+
+    /// Read the current configuration, always yielding a usable value.
     ///
-    /// Two callers need this, and both must never act on
-    /// [`Config::default`]'s pre-enabled Claude/Codex accounts:
-    ///
-    /// - the headless refresh (the widget's WorkManager job, `widget_jni.rs`),
-    ///   which would otherwise *fetch and persist* a read model for accounts the
-    ///   user never configured;
-    /// - the widget's cold read (`widget_view::render`), which would otherwise
-    ///   *render* readings for those same substituted defaults.
-    ///
-    /// Plain [`Config::load`] cannot serve them: it always yields a usable
-    /// `Config`, and its `recovery` is `None` for **both** a valid file and no
-    /// file at all — so a *missing* shared config is indistinguishable from a
-    /// healthy one by `recovery` alone, and silently becomes the defaults. This
-    /// splits those apart:
-    ///
-    /// - [`ConfigPresence::Present`] only for a healthy, persisted shared config;
-    /// - [`ConfigPresence::Absent`] when no shared config has ever been written
-    ///   (a first run — nothing configured, no credentials to read);
-    /// - [`ConfigPresence::Corrupt`] when a shared config exists but cannot be
-    ///   read or parsed.
-    ///
-    /// The foreground app does not use this: it makes its own first-run decision
-    /// (`Config::mobile_first_run_default`) and surfaces recovery to the user.
+    /// Three outcomes: no data directory (or one that migrated cleanly) is a
+    /// first run or an ordinary load on the established defaults; a valid
+    /// shared configuration loads as-is; a shared configuration — or, before
+    /// the one-time migration, a legacy `config.json` — that exists but cannot
+    /// be read or parsed runs on defaults *and* reports a [`ConfigRecovery`],
+    /// because quietly treating it as a first run is how a working setup gets
+    /// replaced by an empty one at the next save. Takes the snapshot store
+    /// lock for the migration it may perform (see `migrate_if_needed`).
+    pub fn load(dir: &Path) -> ConfigLoad {
+        // The migration this may perform persists configuration, so the store
+        // lock's guard is BOUND for the whole load — migration and read are
+        // one critical section against configuration writes and merges.
+        // Dropping the guard after acquisition (checking only `is_err()`)
+        // would release the lock before `load_unlocked` runs and leave the
+        // migration uncoordinated again. Callers that already hold the lock
+        // (`membership_authority`, under `merge_and_store`) use
+        // `load_unlocked` instead.
+        //
+        // A lock failure FAILS CLOSED: the read-only fallback never migrates
+        // and never persists anything — no configuration write may occur
+        // without the lock. A legacy-only directory therefore reads as the
+        // defaults (first-run semantics) until a coordinated load or save
+        // migrates it.
+        let _lock = match crate::snapshots::store_lock(dir) {
+            Ok(lock) => lock,
+            Err(_) => return Self::load_read_only(dir),
+        };
+        // A malformed legacy file blocks the migration and must be reported —
+        // the user's only copy is at stake — not silently read as first-run.
+        if let Some(recovery) = Self::migrate_if_needed(dir) {
+            return ConfigLoad {
+                config: Self::default(),
+                recovery: Some(recovery),
+            };
+        }
+        Self::load_read_only(dir)
+    }
+
     pub fn load_presence(dir: &Path) -> ConfigPresence {
+        // Coordinating load: presence distinguishes absent/corrupt/present
+        // only after the one-time migration has had its locked chance to run.
         let load = Self::load(dir);
         if let Some(recovery) = load.recovery {
             return ConfigPresence::Corrupt(recovery);
@@ -941,6 +981,14 @@ impl Config {
     /// and writes nothing. Replacing it is a separate, explicit act —
     /// [`Config::save_after_recovery`].
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
+        // EVERY configuration persistence coordinates through the snapshot
+        // store lock — including the one-time migration this may perform:
+        // it persists configuration (the split shared-config files), and an
+        // uncoordinated write here could interleave with the merge's
+        // membership validation. The lock covers the migration AND the save,
+        // so neither can land between the merge's membership comparison and
+        // its own save of the read model.
+        let _store_lock = crate::snapshots::store_lock(dir)?;
         if let Some(recovery) = Self::migrate_if_needed(dir) {
             return Err(refuse_overwrite(&recovery));
         }
@@ -960,6 +1008,12 @@ impl Config {
     /// post-migration unreadable `shared-config.json` — whichever one is
     /// actually blocking is the one moved aside.
     pub fn save_after_recovery(&self, dir: &Path) -> std::io::Result<Option<PathBuf>> {
+        // One store lock across everything this can write — the migration,
+        // the legacy backup, and the recovery save: the merge's membership
+        // validation reads the configuration under that same lock, so none of
+        // these may interleave with it (r10's coordination, extended to the
+        // r11 gap: migration ran BEFORE the lock was taken).
+        let _store_lock = crate::snapshots::store_lock(dir)?;
         // Pre-migration: an outstanding unreadable legacy `config.json` is the
         // thing to recover from. A valid legacy file (or none at all) just
         // migrates transparently, same as `load`/`save`, before falling

@@ -11,10 +11,11 @@
 //!   JSON the host draws — the cold, credential-free read.
 //! - `nativeConfigOptions` / `nativeSaveInstance` / `nativeRemoveInstance` drive
 //!   the placement configuration activity.
-//! - `nativeRefresh` is the body of the one-time durable WorkManager job the
-//!   widget's refresh action enqueues: it performs a real headless refresh
-//!   (load config, decrypt Keystore secrets, fetch, persist the read model) so
-//!   the work finishes after the short-lived broadcast receiver has exited.
+//! - `nativeRefresh` is the body of every durable refresh work item — the
+//!   one-time job the widget's refresh action and the app's manual refresh
+//!   enqueue, and the periodic ~15-minute schedule (issue #111): a real
+//!   headless refresh (load config, decrypt Keystore secrets, fetch, persist
+//!   the read model) that runs to completion with no activity open.
 //!
 //! All the projection, flattening, redaction and persistence logic lives in
 //! `quota-core` and is exercised by that crate's Linux unit tests; this file is
@@ -32,6 +33,7 @@ use chrono::{TimeZone, Utc};
 use jni::objects::{JClass, JObject, JString};
 use jni::sys::{jdouble, jlong, jstring};
 use jni::JNIEnv;
+use tauri::Emitter;
 
 use quota_core::alerts::AlertEngine;
 use quota_core::config::{Config, ConfigPresence};
@@ -153,18 +155,19 @@ pub extern "system" fn Java_tech_allaway_quotawidget_widget_WidgetBridge_nativeR
     to_jstring(&mut env, &result)
 }
 
-/// `WidgetBridge.nativeRefresh(dir)`: the body of the widget's one-time durable
-/// WorkManager job. Performs a real headless refresh — load config, decrypt the
-/// Keystore-backed secrets, fetch every enabled account, and persist the read
-/// model — so a widget's manual refresh produces fresh data even with no
-/// activity open. Returns an empty string on success, else the error.
+/// `WidgetBridge.nativeRefresh(dir)`: the body of every durable refresh work
+/// item — the one-time job the widget's refresh action and the app's manual
+/// refresh enqueue, and the periodic ~15-minute schedule (issue #111). Performs
+/// a real headless refresh — load config, decrypt the Keystore-backed secrets,
+/// fetch every enabled account, and persist the read model — so a refresh
+/// produces fresh data even with no activity open. Returns an empty string on
+/// success, else the error.
 ///
-/// The refresh itself is the shared `quota_core::refresh::refresh`; this mirrors
-/// the foreground host's `refresh_once` (`mobile.rs`) minus the webview emit,
-/// which is exactly what ADR-0006 means by the native scheduler owning refresh
-/// opportunities while the behaviour stays shared. The periodic ~15-minute
-/// scheduling of this same work is issue #111's; this entry point is the unit
-/// of durable work #113's refresh action enqueues.
+/// The refresh itself is the shared `quota_core::refresh::refresh`; this
+/// mirrors the foreground host's `refresh_once` (`mobile.rs`), and when this
+/// process hosts the app its webview is told about the result the same way
+/// (`mobile::app_handle`). That is exactly what ADR-0006 means by the native
+/// scheduler owning refresh *opportunities* while the behaviour stays shared.
 ///
 /// `context` is the worker's Android `Context` (its `applicationContext`), used
 /// to reach the Keystore from this activity-less background process — see
@@ -217,6 +220,13 @@ fn init_worker_keystore(env: &mut JNIEnv, context: &JObject) -> Result<(), Strin
 /// persisting the resulting read model and alert memory. Kept close to
 /// `mobile.rs::refresh_once` so the two never drift in what a refresh means.
 fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(), String> {
+    // This pass's attempt generation — allocated from the persisted monotonic
+    // counter under the store lock, never the wall clock (concurrent starts
+    // can collide and clock adjustments go backwards; see `next_generation`).
+    // A failed allocation fails the whole pass: an unorderable result must not
+    // be written, and WorkManager will retry.
+    let attempt = quota_core::snapshots::next_generation(dir)
+        .map_err(|e| format!("allocating refresh generation: {e}"))?;
     // The Keystore-backed store must be registered before `load_all` can decrypt
     // any stored credential. If it cannot be — a device/state where the worker's
     // context init fails — we must NOT proceed: a refresh with no decryptable
@@ -271,13 +281,43 @@ fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(
         return Err(format!("saving alert memory: {e}"));
     }
 
-    // Configured display order, then persist the read model every cold widget
-    // reads. The aggregate is folded once here so the widget need not recompute
-    // it (matching `mobile.rs`).
+    // Configured display order, then merge-and-store the read model every cold
+    // widget reads. The merge matters here more than anywhere else: this worker
+    // races the foreground app's own refreshes — in this process or, for a
+    // widget-only cold start, in another one — and its fetches were composed
+    // from the priors it loaded at start. A whole-file overwrite could regress
+    // a success the app persisted while these fetches ran (or vice versa); the
+    // generation-aware merge keeps the fresher observation per provider, and
+    // the aggregate is folded over the merged list so the stored colour matches
+    // the stored cards.
     cfg.sort_snapshots(&mut outcome.snapshots);
-    let aggregate = quota_core::refresh::aggregate_status(&outcome.snapshots, &cfg);
-    let store = SnapshotStore::from_snapshots(outcome.snapshots, aggregate);
-    store
-        .save(dir)
-        .map_err(|e| format!("saving snapshots: {e}"))
+    let store = SnapshotStore::merge_and_store(dir, outcome.snapshots, attempt, &cfg)
+        .map_err(|e| format!("storing snapshots: {e}"))?;
+
+    // When the foreground app is alive in this process, its webview learns
+    // about the new read model exactly as it does from `refresh_once`'s emit —
+    // a manual refresh enqueued from the app (issue #111) and a periodic tick
+    // that fires while the app is open both want the cards to move without
+    // waiting for the next visibility change. In the widget-only process there
+    // is no webview; persisting the read model is the whole delivery. The
+    // published list is the merged truth (see above), never just this worker's
+    // own outcome — and publication is gated on the newest applied generation
+    // (see mobile.rs's PUBLISHED_GENERATION): a foreground pass that began
+    // later may have already published, and this worker's older emit must not
+    // regress what it delivered.
+    if let Some(handle) = crate::mobile::app_handle() {
+        if crate::mobile::publish_snapshots(handle, attempt, store.snapshots) {
+            // The worker's provenance marker, on its own event: this path is
+            // the only one that emits it (the foreground loop and entry
+            // refresh go through `refresh_once`, which never does), so a
+            // listener — and the emulator check's delivery assertion — can
+            // attribute an update to the durable work itself rather than to
+            // any refresh. It fires only when this worker's generation actually
+            // won publication; payload is the read model's own write stamp.
+            if let Err(e) = handle.emit("worker-refresh", &store.refreshed_at) {
+                eprintln!("[worker] emitting the worker-refresh marker failed: {e}");
+            }
+        }
+    }
+    Ok(())
 }

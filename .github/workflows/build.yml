@@ -199,12 +199,6 @@ jobs:
       # here — the same reason the manifest patch above is reapplied every run.
       - name: Install the Glance home-screen widget host
         run: node scripts/patch-android-glance-widget.mjs
-      # The widget host's Kotlin projection-parsing unit tests (issue #113's
-      # "native JVM/unit tests"). They need no emulator, so they run before the
-      # APK build; a failure here fails the job.
-      - name: Widget host unit tests (JVM)
-        working-directory: src-tauri/gen/android
-        run: ./gradlew :app:testDebugUnitTest --no-daemon
       - name: Build debug APK
         # OPENROUTER_CI_KEY is read via `option_env!` at compile time by the
         # `#[cfg(debug_assertions)]` half of `ci_test_key()` in
@@ -220,6 +214,26 @@ jobs:
           # app, without depending on Tauri's env var alone. See vite.config.js.
           QUOTA_WIDGET_MOBILE: '1'
         run: npm run tauri android build -- --debug --target x86_64
+      # The widget host's Kotlin unit tests (#113's parse tests, #111's
+      # schedule drift guard). They need no emulator, but they DO need the
+      # Gradle project to be configurable, and the generated settings.gradle
+      # applies 'tauri.settings.gradle' unconditionally — a file the tauri CLI
+      # only writes during `tauri android build/dev`, never at init. Running
+      # Gradle before the APK build therefore fails at configuration time
+      # ("Could not read script ... tauri.settings.gradle") before compiling a
+      # single Kotlin file, which is exactly what this step's first dispatch
+      # after #113 hit. So they run after the build: the same gate, in an
+      # order Gradle can actually evaluate. A failure here still fails the
+      # job.
+      #
+      # The task name must name a flavor: the generated project's abi
+      # dimension splits :app's unit-test tasks into testArm…/testUniversal…,
+      # so the bare abbreviation `testDebugUnitTest` is ambiguous and Gradle
+      # refuses it. One flavor suffices — these are pure-JVM tests over
+      # shared sources, no ABI in sight.
+      - name: Widget host unit tests (JVM)
+        working-directory: src-tauri/gen/android
+        run: ./gradlew :app:testUniversalDebugUnitTest --no-daemon
       # Gradle's exact variant directory name isn't pinned here on purpose —
       # glob it, rather than guess a path that silently drifts. The emulator
       # step below installs this path directly off the runner.

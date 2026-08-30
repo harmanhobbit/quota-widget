@@ -16,6 +16,11 @@ export const setSecret = (provider, value) => invoke('set_secret', { provider, v
 export const hasSecret = (provider) => invoke('has_secret', { provider });
 export const clearSecret = (provider) => invoke('clear_secret', { provider });
 export const refreshNow = () => invoke('refresh_now');
+// The manual refresh (issue #111): durable one-time work on the native host,
+// so the fetch survives the app being dismissed right after the tap. The
+// foreground loop deliberately keeps using `refreshNow` — while the app is
+// visible the fetch is supposed to run in-process, immediately.
+export const refreshManual = () => invoke('refresh_manual');
 export const testProvider = (provider) => invoke('test_provider', { provider });
 export const startClaudeSignin = (provider) => invoke('start_claude_signin', { provider });
 export const finishClaudeSignin = (provider, code) => invoke('finish_claude_signin', { provider, code });

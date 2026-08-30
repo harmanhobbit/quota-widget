@@ -25,14 +25,76 @@ use quota_core::providers::{providers_for, ProviderCtx};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tauri::{Emitter, Manager};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
+
+/// The foreground runtime's app handle, if this process hosts the app.
+///
+/// Background refresh work — the periodic ~15-minute job and the manual
+/// one-time refresh (issue #111) — lands in `widget_jni.rs`'s headless refresh
+/// whichever host enqueued it. When the app is alive in this same process, its
+/// webview must hear about the new read model exactly as it does from
+/// `refresh_once` (the `snapshots` event); when the process hosts only the
+/// widget there is no webview, and persisting the read model is the whole
+/// delivery. `widget_jni` checks this handle to tell the two apart.
+static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// The app handle if the Tauri runtime is alive in this process, else `None`.
+pub fn app_handle() -> Option<&'static tauri::AppHandle> {
+    APP_HANDLE.get()
+}
+
+/// The newest attempt generation whose results have been published to the
+/// in-memory prior map and the open webview. The durable merge (under the
+/// store lock) decides the order in which results reach disk; this gate makes
+/// the *publication* order agree with it. Without it, a slow foreground pass
+/// could store first and emit last — regressing cards a worker's newer
+/// generation had already delivered — and a persist-failure fallback could do
+/// the same against any writer that committed between its read and its emit.
+static PUBLISHED_GENERATION: std::sync::Mutex<quota_core::snapshots::PublicationGate> =
+    std::sync::Mutex::new(quota_core::snapshots::PublicationGate::new(0));
+
+/// Publish the merged read model for `generation` to the in-memory prior map
+/// and the open webview — unless an equal or newer generation was already
+/// published, in which case the result is dropped and `false` is returned.
+/// Shared by the foreground path and the WorkManager worker path (same
+/// process, same gate); pass-specific delivery markers fire only on `true`.
+///
+/// The gate's verdict is held across BOTH the memory update and the emit: the
+/// publication is one critical section. Admitting and releasing before the
+/// delivery would let gen1 pause mid-publication while gen2 publishes fully
+/// and then resume, regressing what gen2 delivered — the exact race the gate
+/// exists to close.
+pub fn publish_snapshots(
+    app: &tauri::AppHandle,
+    generation: u64,
+    snapshots: Vec<UsageSnapshot>,
+) -> bool {
+    let mut gate = PUBLISHED_GENERATION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    gate.publish(generation, || {
+        if let Some(state) = app.try_state::<std::sync::Arc<MobileState>>() {
+            let map = snapshots
+                .iter()
+                .map(|s| (s.provider_id.clone(), s.clone()))
+                .collect();
+            *state.snapshots.write().unwrap_or_else(|p| p.into_inner()) = map;
+        }
+        let _ = app.emit("snapshots", &snapshots);
+    })
+}
 
 pub struct MobileState {
     pub config_dir: PathBuf,
-    pub config: RwLock<Config>,
-    pub snapshots: RwLock<HashMap<String, UsageSnapshot>>,
+    pub config: tokio::sync::RwLock<Config>,
+    /// The in-memory prior map, seeded from the persisted read model at
+    /// startup and republished by every refresh pass that wins the
+    /// publication gate (see [`PUBLISHED_GENERATION`]). A std lock: it is
+    /// only ever held for a clone/swap, never across an await, and the
+    /// worker path publishes from a plain JNI thread.
+    pub snapshots: std::sync::RwLock<HashMap<String, UsageSnapshot>>,
     pub alert_engine: Mutex<AlertEngine>,
     /// In-progress desktop→phone QR scan (issue #156): frames accumulate here
     /// across repeated `qr_scan_frame` calls, one per camera detection, until
@@ -82,7 +144,12 @@ struct InitialState {
 
 #[tauri::command]
 async fn get_snapshots(state: tauri::State<'_, Arc<MobileState>>) -> Result<InitialState, String> {
-    let map = state.snapshots.read().await;
+    // The std-lock guard must be dropped before the await below: a guard held
+    // across an await makes the command's future non-Send.
+    let persisted = {
+        let map = state.snapshots.read().unwrap_or_else(|p| p.into_inner());
+        map.clone()
+    };
     let cfg = state.config.read().await;
     let mut out = Vec::new();
     for p in providers_for(&cfg) {
@@ -92,7 +159,7 @@ async fn get_snapshots(state: tauri::State<'_, Arc<MobileState>>) -> Result<Init
             .map(|c| c.enabled)
             .unwrap_or(false)
         {
-            if let Some(s) = map.get(p.id()) {
+            if let Some(s) = persisted.get(p.id()) {
                 out.push(s.clone());
             }
         }
@@ -112,6 +179,10 @@ async fn set_config(
     state: tauri::State<'_, Arc<MobileState>>,
     config: Config,
 ) -> Result<(), String> {
+    // Config::save takes the snapshot store lock itself: every configuration
+    // persistence is coordinated with the merge's membership-authority
+    // comparison — a save can never land between that comparison and the
+    // merge's own save of the read model.
     config.save(&state.config_dir).map_err(|e| e.to_string())?;
     // Clear the alert memory of any account this config no longer enables, and
     // persist it immediately (issue #112): disabling or deleting an account
@@ -159,8 +230,11 @@ fn clear_secret(state: tauri::State<'_, Arc<MobileState>>, provider: String) -> 
 
 /// One pass of the shared refresh operation, presented the same way
 /// `poller.rs` does for desktop (update snapshots, emit to the webview) but
-/// with none of desktop's tray icon / notification presentation — Android's
-/// alerts and background scheduling are later tickets.
+/// with none of desktop's tray icon / notification presentation. This is the
+/// foreground host's path — it runs only while the app is visible (entry and
+/// the visibility-gated loop; the manual button goes through `refresh_manual`
+/// so its work is durable). Background refresh opportunities belong to the
+/// native host's WorkManager schedule (issue #111, ADR-0006).
 #[tauri::command]
 async fn refresh_now(
     app: tauri::AppHandle,
@@ -170,10 +244,62 @@ async fn refresh_now(
     Ok(())
 }
 
+/// The app's manual refresh (issue #111): enqueue one-time durable WorkManager
+/// work rather than fetch inline, so the refresh can finish independently of
+/// the activity — the user is free to background or dismiss the app the moment
+/// the tap lands and the fresh data still arrives. The worker persists the
+/// read model and, when this process still hosts the app, announces it to the
+/// webview with the same `snapshots` event `refresh_once` uses (see
+/// `widget_jni::headless_refresh`).
+///
+/// Only the *foreground refresh loop* and entry refresh keep fetching
+/// in-process via [`refresh_now`] — those run while the app is visible, where
+/// an immediate in-process fetch is the point. If the durable enqueue itself
+/// fails (a JNI/scheduler problem), fall back to the in-process refresh: a
+/// failed tap must not simply do nothing.
+#[tauri::command]
+async fn refresh_manual(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<MobileState>>,
+) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    match crate::android_schedule::enqueue_manual_refresh() {
+        Ok(()) => {
+            // The durable unit is now WorkManager's; surface the handoff, so a
+            // device log distinguishes "enqueued and finished out-of-band"
+            // from "fell back to the in-process fetch" below.
+            eprintln!("[mobile] manual refresh enqueued as durable work");
+            return Ok(());
+        }
+        Err(e) => eprintln!("[mobile] enqueueing manual refresh failed: {e}"),
+    }
+    refresh_once(&app, &state).await;
+    Ok(())
+}
+
 async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
+    // This pass's attempt generation — allocated from the persisted monotonic
+    // counter under the store lock, never the wall clock (concurrent starts
+    // can collide and clock adjustments go backwards; see `next_generation`).
+    // Allocation failure fails the whole pass before anything is fetched,
+    // merged, persisted, or published: an unorderable result must not be
+    // written or shown, matching the headless worker's fail-closed behaviour
+    // — silently proceeding with generation 0 (or a reused one) would make
+    // this pass's results never apply to the model.
+    let attempt = match quota_core::snapshots::next_generation(&state.config_dir) {
+        Ok(generation) => generation,
+        Err(e) => {
+            eprintln!("[mobile] allocating refresh generation failed, skipping this refresh: {e}");
+            return;
+        }
+    };
     let cfg = state.config.read().await.clone();
     let (ctx, failed_secrets) = state.provider_ctx_and_failed_secrets(cfg.clone());
-    let prior = state.snapshots.read().await.clone();
+    let prior = state
+        .snapshots
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     let mut engine = state.alert_engine.lock().await;
     let mut outcome = quota_core::refresh::refresh(&ctx, &prior, &mut engine).await;
     // Persist the alert memory this pass produced (edge-triggered levels,
@@ -277,27 +403,65 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
     // want the list render-ready.
     cfg.sort_snapshots(&mut outcome.snapshots);
 
-    {
-        let mut map = state.snapshots.write().await;
-        for s in &outcome.snapshots {
-            map.insert(s.provider_id.clone(), s.clone());
-        }
-    }
-
     // Persist the read model so a cold process — the Activity relaunched, or
     // later a home-screen widget with no app running — renders this exact
-    // last-known state without a live Tauri process. The aggregate is
-    // recomputed over the final list (the replacements above can raise a
-    // provider to a stale/unavailable failure the pre-replacement fold missed),
-    // so the stored widget colour matches the stored cards.
-    let aggregate = quota_core::refresh::aggregate_status(&outcome.snapshots, &cfg);
-    let store =
-        quota_core::snapshots::SnapshotStore::from_snapshots(outcome.snapshots.clone(), aggregate);
-    if let Err(e) = store.save(&state.config_dir) {
-        eprintln!("[mobile] persisting snapshot read model failed: {e}");
+    // last-known state without a live Tauri process. The store is written
+    // through the generation-aware merge (`merge_and_store`): the foreground
+    // composed this pass from its own possibly-stale view of `prior`, and a
+    // concurrent writer — the WorkManager worker behind the manual or periodic
+    // refresh, in this process or a widget-only one — may have persisted newer
+    // figures while these fetches were in flight. The merge keeps the fresher
+    // observation per provider, so a late partial failure here can add its
+    // error but never erase a newer success's figures. The merged list — not
+    // this pass's own outcome — is what the app keeps in memory and pushes to
+    // the webview, so the cards reflect the store the next writer will build
+    // on.
+    // Publication is gated on the newest applied generation (see
+    // PUBLISHED_GENERATION): whichever pass merged last under the store lock
+    // is what memory and the webview must show, whatever the emit order.
+    match quota_core::snapshots::SnapshotStore::merge_and_store(
+        &state.config_dir,
+        outcome.snapshots.clone(),
+        attempt,
+        &cfg,
+    ) {
+        Ok(store) => {
+            publish_snapshots(&app, attempt, store.snapshots);
+        }
+        Err(e) => {
+            eprintln!("[mobile] persisting snapshot read model failed: {e}");
+            // The persist failed — but the raw outcome must never reach the
+            // webview or memory: this pass may be causally older than what a
+            // concurrent writer already stored, and publishing it unmerged
+            // would visibly regress the open app. Derive the same causally
+            // merged state the locked path would have written and publish
+            // that through the same gate — with the store lock held across
+            // BOTH the derivation and the publication, so no configuration
+            // write can land between the membership check and what the
+            // webview is given (the derivation and publication are one
+            // atomic stretch against configuration writes, exactly like the
+            // locked path). If the lock itself cannot be taken, publish
+            // nothing: the cards keep their current state and the next pass
+            // reconciles.
+            match quota_core::snapshots::store_lock(&state.config_dir) {
+                Ok(_lock) => {
+                    let merged = quota_core::snapshots::SnapshotStore::derive_merged(
+                        &state.config_dir,
+                        outcome.snapshots.clone(),
+                        attempt,
+                        &cfg,
+                    );
+                    publish_snapshots(&app, attempt, merged.snapshots);
+                }
+                Err(lock_err) => {
+                    eprintln!(
+                        "[mobile] taking the store lock for the fallback derivation failed, \
+                         skipping publication: {lock_err}"
+                    );
+                }
+            }
+        }
     }
-
-    let _ = app.emit("snapshots", &outcome.snapshots);
 }
 
 /// One-off fetch for the mobile Settings "Test" button, mirroring desktop's
@@ -637,6 +801,23 @@ pub fn run() {
             if let Err(e) = crate::secrets::init_store() {
                 eprintln!("[mobile] keystore init failed: {e}");
             }
+            // Remember the foreground runtime so the durable refresh work (the
+            // periodic job and the manual one-time refresh, issue #111) can
+            // reach this process's webview with its `snapshots` event — see
+            // `widget_jni::headless_refresh`. Set before anything schedules
+            // work; the widget-only process never runs this, so its handle
+            // stays absent there.
+            let _ = APP_HANDLE.set(app.handle().clone());
+            // Issue #111: the best-effort periodic refresh is native host work
+            // (ADR-0006) — make sure the ~15-minute WorkManager schedule exists
+            // at every app start. Idempotent on the Kotlin side (unique work,
+            // KEEP), and a failure here degrades to foreground-only refresh
+            // rather than aborting startup: the same guarantee the widget
+            // receiver path gives by calling `ensurePeriodic` itself.
+            #[cfg(target_os = "android")]
+            if let Err(e) = crate::android_schedule::ensure_periodic() {
+                eprintln!("[mobile] scheduling periodic background refresh failed: {e}");
+            }
             let config_dir = app
                 .path()
                 .app_config_dir()
@@ -703,6 +884,13 @@ pub fn run() {
                         .config
                         .providers
                         .insert("openrouter".to_string(), account);
+                    // Silences the foreground visibility loop for the emulator
+                    // check (scripts/android-emulator-check.sh): with an hourly
+                    // interval it cannot fire mid-check, so the card's data age
+                    // only advances, and the age reset after the check's tap is
+                    // attributable to exactly one thing — the manual refresh's
+                    // durable worker pushing snapshots to the open webview.
+                    loaded.config.poll_interval_secs = 3600;
                     if let Err(e) = loaded.config.save(&config_dir) {
                         eprintln!("[ci-seed] saving seeded config failed: {e}");
                     }
@@ -730,8 +918,8 @@ pub fn run() {
             let alert_engine = AlertEngine::load(&config_dir);
             let state = Arc::new(MobileState {
                 config_dir,
-                config: RwLock::new(loaded.config),
-                snapshots: RwLock::new(persisted.prior_map()),
+                config: tokio::sync::RwLock::new(loaded.config),
+                snapshots: std::sync::RwLock::new(persisted.prior_map()),
                 alert_engine: Mutex::new(alert_engine),
                 qr_collector: Mutex::new(quota_core::qr_transfer::FrameCollector::new()),
             });
@@ -751,6 +939,7 @@ pub fn run() {
             has_secret,
             clear_secret,
             refresh_now,
+            refresh_manual,
             test_provider,
             start_claude_signin,
             finish_claude_signin,

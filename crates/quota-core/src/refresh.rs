@@ -208,7 +208,7 @@ pub fn aggregate_status(snapshots: &[UsageSnapshot], cfg: &Config) -> AggregateS
 mod tests {
     use super::*;
     use crate::config::ProviderConfig;
-    use crate::model::{FetchError, UsageWindow};
+    use crate::model::{Credits, FetchError, UsageWindow};
 
     fn window(id: &str, pct: f64) -> UsageWindow {
         UsageWindow {
@@ -367,7 +367,8 @@ mod tests {
     }
 
     /// A snapshot with no prior successful reading has nothing to preserve, so
-    /// a failed first fetch stays visibly failed rather than fabricating data.
+    /// a failed first fetch stays visibly failed rather than fabricating data —
+    /// carrying exactly the error the fetch produced, never a stale one.
     #[test]
     fn a_failed_first_fetch_has_nothing_to_preserve() {
         let cfg = cfg_with(crate::config::SortOrder::Manual);
@@ -375,7 +376,135 @@ mod tests {
         let mut engine = AlertEngine::default();
         let outcome = compose(vec![failed("claude")], &cfg, &prior, &mut engine, vec![]);
         assert!(outcome.snapshots[0].windows.is_empty());
-        assert!(outcome.snapshots[0].error.is_some());
+        assert_eq!(
+            outcome.snapshots[0].error,
+            Some(FetchError::Network("boom".into())),
+        );
+    }
+
+    /// A *partial* failure against the persisted read model, through the seams
+    /// the hosts actually run (issue #111's stale-reading criterion). One pass
+    /// succeeds for two accounts and is persisted; a cold process reloads the
+    /// store as `prior` and the next pass fails for codex while succeeding for
+    /// claude. The failed account must keep its persisted figures — windows
+    /// *and* credits — with the new error attached, aged by its original
+    /// `fetched_at`; the succeeded account re-stamps as current. And because
+    /// the hosts persist every pass (`from_snapshots` + `save` is the exact
+    /// sequence in `mobile.rs::refresh_once` and `widget_jni.rs
+    /// ::headless_refresh`), the store written by the failing pass must reload
+    /// with precisely that state: that file is what a cold app or widget next
+    /// renders.
+    #[test]
+    fn partial_failure_keeps_persisted_figures_stale_while_the_rest_stays_current() {
+        use crate::snapshots::SnapshotStore;
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = cfg_with(crate::config::SortOrder::Manual);
+
+        let credits = Credits {
+            balance: 42.0,
+            label: None,
+            unit: "USD".into(),
+            used: None,
+            granted: None,
+            est_tokens_remaining: None,
+        };
+        let codex_ok = UsageSnapshot::ok("codex", "Codex", vec![window("w", 20.0)], Some(credits));
+        let claude_ok = ok("claude", 10.0);
+        let first = compose(
+            vec![codex_ok, claude_ok],
+            &cfg,
+            &HashMap::new(),
+            &mut AlertEngine::default(),
+            vec![],
+        );
+        SnapshotStore::from_outcome(&first)
+            .save(dir.path())
+            .unwrap();
+
+        // The process dies. A cold process reloads the persisted store as
+        // `prior`; this pass codex's fetch fails, claude's succeeds anew. (The
+        // two-millisecond pause keeps the two passes' timestamps ordered by
+        // construction — the assertions below compare them exactly, and must
+        // not depend on the clock's resolution.)
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let prior = SnapshotStore::load(dir.path()).prior_map();
+        let second = compose(
+            vec![failed("codex"), ok("claude", 30.0)],
+            &cfg,
+            &prior,
+            &mut AlertEngine::default(),
+            vec![],
+        );
+
+        let persisted_codex = prior.get("codex").unwrap();
+        let codex = second
+            .snapshots
+            .iter()
+            .find(|s| s.provider_id == "codex")
+            .unwrap();
+        assert_eq!(
+            codex.windows, persisted_codex.windows,
+            "kept the persisted window figures",
+        );
+        assert_eq!(
+            codex.credits, persisted_codex.credits,
+            "kept the persisted credits",
+        );
+        assert!(codex.error.is_some(), "carries the new failure");
+        assert_eq!(
+            codex.error,
+            Some(FetchError::Network("boom".into())),
+            "the attached failure is exactly the one this pass's fetch produced",
+        );
+        assert_eq!(
+            codex.fetched_at, persisted_codex.fetched_at,
+            "aged by the original success, not re-stamped as current",
+        );
+
+        let claude = second
+            .snapshots
+            .iter()
+            .find(|s| s.provider_id == "claude")
+            .unwrap();
+        assert!(claude.error.is_none());
+        assert_eq!(claude.windows[0].used_pct, 30.0);
+        assert!(
+            claude.fetched_at > prior.get("claude").unwrap().fetched_at,
+            "a success re-stamps as current, never as an older reading",
+        );
+
+        // Persist the failing pass the way the hosts do, then read the store
+        // back cold: the stale figures must still be there, aged and errored.
+        let aggregate = aggregate_status(&second.snapshots, &cfg);
+        SnapshotStore::from_snapshots(second.snapshots.clone(), aggregate)
+            .save(dir.path())
+            .unwrap();
+        let third = SnapshotStore::load(dir.path());
+        let codex = third
+            .snapshots
+            .iter()
+            .find(|s| s.provider_id == "codex")
+            .unwrap();
+        assert_eq!(codex.windows, persisted_codex.windows);
+        assert_eq!(codex.credits, persisted_codex.credits);
+        assert_eq!(
+            codex.error,
+            Some(FetchError::Network("boom".into())),
+            "the persisted store carries exactly the failure that caused the staleness",
+        );
+        assert_eq!(codex.fetched_at, persisted_codex.fetched_at);
+        let claude = third
+            .snapshots
+            .iter()
+            .find(|s| s.provider_id == "claude")
+            .unwrap();
+        assert!(claude.error.is_none());
+        assert_eq!(claude.windows[0].used_pct, 30.0);
+        assert_eq!(
+            third.aggregate.status,
+            Status::Stale,
+            "the persisted aggregate reflects the stale account",
+        );
     }
 
     /// An account that opted out of the icon (`tray_color: false`) never moves

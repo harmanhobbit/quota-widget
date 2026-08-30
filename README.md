@@ -141,6 +141,15 @@ are narrower: built-in sign-in for Claude and Codex, a pasted portal session coo
 for Hermes, and pasted API keys for every direct-HTTPS provider. Desktop CLI files,
 local commands, SSH and Tailscale are not available on Android.
 
+On Android the app refreshes as soon as you switch to it and then at your chosen
+interval while it is on screen, stopping the moment it is backgrounded. While it
+is not in use, a scheduled background job aims to refresh roughly every 15
+minutes — a best-effort target, not a guarantee: Android decides when background
+work actually runs (and may defer it under battery pressure), so figures can be
+older than that. A failed refresh keeps the last successful readings on display,
+marked stale with their age, and home-screen widgets read that same last-known
+data whether or not the app is running.
+
 Android Settings also has a **Credential export** section for moving accounts
 between devices or keeping a backup. **Export accounts…** writes every account to
 an encrypted `.qwb` file sealed with a passphrase you choose: pasted API keys
