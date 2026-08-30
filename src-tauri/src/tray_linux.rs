@@ -5,6 +5,7 @@ use crate::{tray, AppState};
 use ksni::TrayMethods;
 use quota_core::model::Status;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, PhysicalPosition};
 
 struct QuotaTray {
@@ -83,27 +84,78 @@ fn handle() -> &'static Mutex<Option<ksni::Handle<QuotaTray>>> {
     HANDLE.get_or_init(|| Mutex::new(None))
 }
 
+// The StatusNotifierWatcher a tray registers against is not guaranteed to be on
+// the session bus when the app starts. Under Plasma 6 the watcher name
+// `org.kde.StatusNotifierWatcher` is owned by kded6, which starts *after*
+// `graphical-session.target` is reached — so an app launched by the session can
+// win the race and either find no watcher at all or catch it mid-activation and
+// get a transient `org.freedesktop.DBus.Error.NoReply: Remote peer
+// disconnected`. `spawn()` makes exactly one registration attempt, so a
+// momentary absence used to become a permanent window fallback for the whole
+// session. Retry with capped exponential backoff so a late watcher is picked up.
+const RETRY_BUDGET: Duration = Duration::from_secs(30);
+const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
+const MAX_BACKOFF: Duration = Duration::from_secs(5);
+
 pub fn create_tray(app: AppHandle, _state: Arc<AppState>) {
     let fallback = app.clone();
     tauri::async_runtime::spawn(async move {
-        match (QuotaTray {
-            app,
-            status: Status::Stale,
-            fill: 1.0,
-            lines: "Quota Widget — waiting for first poll".into(),
-        })
-        .spawn()
-        .await
-        {
-            Ok(h) => *handle().lock().unwrap() = Some(h),
-            Err(e) => {
-                // Launch is tray-first, which only works if there is a tray.
-                // A desktop with no StatusNotifierItem host would otherwise
-                // leave a running process with no way to reach it, so the main
-                // window becomes the point of access instead.
-                eprintln!("failed to start Linux tray: {e}; showing the main window instead");
-                tray::show_popup(&fallback, None);
+        // Retry initial registration until it succeeds or the budget is spent.
+        // Once it succeeds we do *not* need to watch for the watcher restarting
+        // mid-session (e.g. a kded6 restart): ksni's own service loop already
+        // subscribes to NameOwnerChanged for org.kde.StatusNotifierWatcher and
+        // re-registers when it reappears. This loop only closes the startup gap.
+        let start = Instant::now();
+        let mut backoff = INITIAL_BACKOFF;
+        let mut attempt = 0u32;
+        let registered = loop {
+            attempt += 1;
+            let tray = QuotaTray {
+                app: app.clone(),
+                status: Status::Stale,
+                fill: 1.0,
+                lines: "Quota Widget — waiting for first poll".into(),
+            };
+            match tray.spawn().await {
+                Ok(h) => break Some(h),
+                Err(e) => {
+                    // Bound the retrying so a genuinely tray-less desktop still
+                    // reaches the window fallback in reasonable time rather than
+                    // spinning forever.
+                    let remaining = RETRY_BUDGET.saturating_sub(start.elapsed());
+                    if remaining.is_zero() {
+                        eprintln!(
+                            "failed to start Linux tray after {attempt} attempt(s) \
+                             over {:?} ({e}); showing the main window instead",
+                            start.elapsed()
+                        );
+                        break None;
+                    }
+                    eprintln!(
+                        "Linux tray registration attempt {attempt} failed ({e}); \
+                         retrying in {backoff:?}"
+                    );
+                    // Async sleep only — no block_on: a sync zbus path here would
+                    // build a nested multi-thread runtime inside this tokio worker
+                    // and panic (see the ksni note in Cargo.toml).
+                    tokio::time::sleep(backoff.min(remaining)).await;
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                }
             }
+        };
+
+        match registered {
+            Some(h) => {
+                if attempt > 1 {
+                    eprintln!("Linux tray registered on attempt {attempt}");
+                }
+                *handle().lock().unwrap() = Some(h);
+            }
+            // Launch is tray-first, which only works if there is a tray. A
+            // desktop with no StatusNotifierItem host would otherwise leave a
+            // running process with no way to reach it, so the main window
+            // becomes the point of access instead.
+            None => tray::show_popup(&fallback, None),
         }
     });
 }
