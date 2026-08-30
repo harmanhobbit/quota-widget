@@ -134,6 +134,47 @@ rustPlatform.buildRustPackage rec {
       || { echo "ERROR: esbuild's platform binary is unusable after npm rebuild"; exit 1; }
 
     npm run build
+
+    # A Nix build log isn't a TTY, so cargo can't draw its progress bar (it
+    # needs a line to rewrite) and falls back to one bare `Compiling <crate>`
+    # line per unit — 400-odd of them, with no sense of how far along the build
+    # is. Number them on the way out instead: `[123/584] Compiling serde`.
+    #
+    # Redirect this shell's own output through the filter rather than piping
+    # cargo into it: `runHook postBuild` fires cargoInstallPostBuildHook, which
+    # sets `bins` for cargoInstallHook to copy into $out/bin. A pipeline would
+    # run all of that in a subshell, losing `bins` — and cargoInstallHook's
+    # `xargs -r` plus `rmdir --ignore-fail-on-non-empty` turn that into an
+    # empty $out with a zero exit rather than an error.
+    #
+    # `total` is every package in Cargo.lock, so it over-counts: the lock also
+    # covers the Windows- and Android-only dependencies a Linux build never
+    # compiles, and the counter stops short of it (~421) rather than landing
+    # on it. An exact figure needs `cargo build --unit-graph`, still nightly.
+    cargoProgressFifo="$NIX_BUILD_TOP/cargo-progress.fifo"
+    mkfifo "$cargoProgressFifo"
+    awk -v total="$(grep -c '^name = ' Cargo.lock)" '
+      /^[[:space:]]*Compiling /{
+        sub(/^[[:space:]]+/, "")
+        printf "[%*d/%d] %s\n", length(total), ++n, total, $0
+        fflush()
+        next
+      }
+      { print; fflush() }
+    ' < "$cargoProgressFifo" &
+    cargoProgressPid=$!
+    exec 3>&1
+    exec > "$cargoProgressFifo" 2>&1
+  '';
+
+  # Restore the real stdout and let awk drain before the install phase runs.
+  # cargoBuildHook pops back to the source root before calling this, and the
+  # `wait` is what makes the last numbered line reliably reach the log.
+  postBuild = ''
+    exec 1>&3 2>&3
+    exec 3>&-
+    wait "$cargoProgressPid"
+    rm -f "$cargoProgressFifo"
   '';
 
   buildAndTestSubdir = "src-tauri";
