@@ -1,5 +1,6 @@
 use crate::config::{AlertToggles, Config, Thresholds};
 use crate::model::UsageSnapshot;
+use crate::refresh::RefreshOutcome;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -86,7 +87,7 @@ pub fn presentation(event: &AlertEvent, toggles: &AlertToggles) -> AlertPresenta
 /// (which owns notification posting per ADR-0006) sets the visibility and the
 /// public version from these fields; desktop, whose notifications are never
 /// lock-screened, uses `title`/`body` and ignores the public pair.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationContent {
     pub title: String,
     pub body: String,
@@ -109,6 +110,48 @@ pub fn notification_content(event: &AlertEvent) -> NotificationContent {
         public_title: "Quota alert".into(),
         public_body: "Open Quota Widget to view details".into(),
     }
+}
+
+/// One alert a host should actually post, after [`presentation`] filtering:
+/// the account it came from (the notification's stable identity on Android,
+/// where re-posting replaces rather than stacks), how loud it is, and the
+/// full/public [`NotificationContent`] pair. Serialized because the Android
+/// bridge marshals the whole plan to Kotlin as one JSON array — the wire shape
+/// is guarded by `plan_notifications`' tests and the Kotlin-side parse test.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlannedNotification {
+    pub provider_id: String,
+    pub level: AlertLevel,
+    pub content: NotificationContent,
+}
+
+/// Turn one refresh's alert events into the notifications a host should post:
+/// each event is run through [`presentation`] (per-account toggles plus the
+/// baseline rule), and only the ones allowed to notify are kept, each with its
+/// [`notification_content`]. Everything the Android host needs to post is
+/// decided here, in the crate with the tests; the host only marshals.
+pub fn plan_notifications(outcome: &RefreshOutcome, cfg: &Config) -> Vec<PlannedNotification> {
+    outcome
+        .alerts
+        .iter()
+        .filter_map(|event| {
+            let toggles = cfg.effective_alerts(&event.provider_id);
+            presentation(event, &toggles)
+                .notify
+                .then(|| PlannedNotification {
+                    provider_id: event.provider_id.clone(),
+                    level: event.level,
+                    content: notification_content(event),
+                })
+        })
+        .collect()
+}
+
+/// [`plan_notifications`] flattened to the JSON the Android bridge hands to
+/// Kotlin. Empty plan serializes to `[]`, which the Kotlin side treats as "post
+/// nothing" without any special case.
+pub fn plan_notifications_json(outcome: &RefreshOutcome, cfg: &Config) -> String {
+    serde_json::to_string(&plan_notifications(outcome, cfg)).unwrap_or_else(|_| "[]".into())
 }
 
 /// Whether the host should contextually request the Android 13+ notification
@@ -770,5 +813,124 @@ mod tests {
             });
         }
         assert!(!should_request_notification_permission(&quiet, true, false));
+    }
+
+    // ---- Notification planning (issue #112) --------------------------------
+
+    fn outcome_with(events: Vec<AlertEvent>) -> RefreshOutcome {
+        RefreshOutcome {
+            alerts: events,
+            ..Default::default()
+        }
+    }
+
+    fn crossing(toast: bool) -> (Config, RefreshOutcome) {
+        // A genuine crossing at warn, on an account whose toast toggle is
+        // `toast`, against a quiet baseline.
+        let mut cfg = Config::default();
+        cfg.providers.get_mut("claude").unwrap().alerts = Some(AlertToggles {
+            toast,
+            tray_color: true,
+            auto_popup: false,
+        });
+        let mut eng = AlertEngine::default();
+        eng.evaluate(&snap(10.0), &cfg);
+        let outcome = outcome_with(eng.evaluate(&snap(85.0), &cfg));
+        (cfg, outcome)
+    }
+
+    #[test]
+    fn a_toasted_crossing_plans_full_and_public_content() {
+        let (cfg, outcome) = crossing(true);
+        let plan = plan_notifications(&outcome, &cfg);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].provider_id, "claude");
+        assert_eq!(plan[0].level, AlertLevel::Warn);
+        // Full form names the provider and the figure; public form does not.
+        assert!(plan[0].content.title.contains("Claude"));
+        assert!(plan[0].content.body.contains("85%"));
+        assert_eq!(plan[0].content.public_title, "Quota alert");
+        assert_eq!(
+            plan[0].content.public_body,
+            "Open Quota Widget to view details"
+        );
+    }
+
+    #[test]
+    fn a_crossing_with_toast_off_is_not_planned() {
+        let (cfg, outcome) = crossing(false);
+        assert!(plan_notifications(&outcome, &cfg).is_empty());
+        assert_eq!(plan_notifications_json(&outcome, &cfg), "[]");
+    }
+
+    #[test]
+    fn the_baseline_rule_filters_the_plan() {
+        let cfg = Config::default(); // claude enabled, toast on
+                                     // A baseline warning must not notify even with toast on ...
+        let mut eng = AlertEngine::default();
+        let baseline_warn = eng.evaluate(&snap(85.0), &cfg);
+        assert!(plan_notifications(&outcome_with(baseline_warn), &cfg).is_empty());
+        // ... but a baseline critical is news and is planned.
+        let mut eng = AlertEngine::default();
+        let baseline_critical = eng.evaluate(&snap(97.0), &cfg);
+        assert_eq!(
+            plan_notifications(&outcome_with(baseline_critical), &cfg).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn each_account_is_planned_against_its_own_toggles() {
+        let mut cfg = Config::default();
+        cfg.providers.get_mut("claude").unwrap().alerts = Some(AlertToggles {
+            toast: true,
+            tray_color: true,
+            auto_popup: false,
+        });
+        cfg.providers.get_mut("codex").unwrap().alerts = Some(AlertToggles {
+            toast: false,
+            tray_color: true,
+            auto_popup: false,
+        });
+        let mut eng = AlertEngine::default();
+        eng.evaluate(&snap(10.0), &cfg); // quiet baseline for claude
+        let codex = UsageSnapshot::ok(
+            "codex",
+            "Codex",
+            vec![UsageWindow {
+                label: "5-hour".into(),
+                used_pct: 10.0,
+                ..Default::default()
+            }],
+            None,
+        );
+        eng.evaluate(&codex, &cfg); // quiet baseline for codex
+        let outcome = outcome_with(
+            [
+                // claude crosses (planned); codex crosses (toast off — not planned).
+                eng.evaluate(&snap(96.0), &cfg),
+                eng.evaluate(&codex, &cfg),
+            ]
+            .concat(),
+        );
+        let plan = plan_notifications(&outcome, &cfg);
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].provider_id, "claude");
+    }
+
+    /// The bridge marshals this exact JSON to Kotlin (see
+    /// `android_notifications.rs`); guard the wire names the Kotlin parse reads.
+    #[test]
+    fn the_plan_json_carries_the_wire_fields_kotlin_parses() {
+        let (cfg, outcome) = crossing(true);
+        let json = plan_notifications_json(&outcome, &cfg);
+        assert!(json.contains("\"provider_id\":\"claude\""));
+        assert!(json.contains("\"level\":\"warn\""));
+        assert!(json.contains("\"public_title\""));
+        assert!(json.contains("\"public_body\""));
+        assert!(json.contains("\"content\""));
+        // ...and it round-trips as the plan it came from.
+        let back: Vec<PlannedNotification> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, plan_notifications(&outcome, &cfg));
     }
 }

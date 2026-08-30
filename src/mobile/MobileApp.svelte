@@ -32,6 +32,9 @@
     cancelSignin,
     getPendingSignins,
     getOpener,
+    notificationPermissionState,
+    requestNotificationPermission,
+    openNotificationSettings,
   } from '../lib/host.js';
   import { runCredentialTest } from './credentialTest.js';
   import { foregroundRefresh } from './foregroundRefresh.js';
@@ -98,6 +101,24 @@
   // URL is regenerated on every start; that's the case the paste-only UI
   // stays for.
   let claudeUrls = $state({});
+
+  // The system's own view of the notification permission ('granted'/'denied'),
+  // read live whenever Settings opens (issue #112). Null = unknown or
+  // unavailable (off Android, or the bridge errored) — the Settings row
+  // simply does not render then.
+  let notificationState = $state(null);
+
+  function loadNotificationState() {
+    notificationPermissionState()
+      .then((s) => (notificationState = s))
+      .catch(() => (notificationState = null));
+  }
+
+  // Fresh whenever the settings view opens, so the row reflects what the
+  // system says now rather than what it said at app launch.
+  $effect(() => {
+    if (view === 'settings') loadNotificationState();
+  });
 
   function headlineOptionsFor(id, account) {
     const kind = account.kind ?? id;
@@ -332,8 +353,15 @@
   });
 
   function onVisibilityChange() {
-    if (document.visibilityState === 'visible') fg.enter();
-    else fg.leave();
+    if (document.visibilityState === 'visible') {
+      fg.enter();
+      // Returning from the system notification settings (or any system
+      // surface) may have changed the permission: re-read it so the Settings
+      // row is not stale.
+      loadNotificationState();
+    } else {
+      fg.leave();
+    }
   }
 
   onMount(() => {
@@ -377,6 +405,17 @@
     listen('worker-refresh', () =>
       console.log('[quota-widget] worker refresh delivered to this webview'),
     ).then((u) => unlisten.push(u));
+    // The one contextual POST_NOTIFICATIONS ask (issue #112): Rust emits this
+    // exactly when its durable one-shot decision says a request is due (first
+    // successful account, notifications wanted, never asked before). Firing
+    // the system dialog from here keeps the request in the foreground app's
+    // hands; the Rust command persists "requested" on success, so this event
+    // can ever lead to one dialog, and a denial never re-prompts.
+    listen('notification-permission-prompt', () => {
+      requestNotificationPermission()
+        .then(loadNotificationState)
+        .catch((e) => console.warn('[quota-widget] notification permission request failed:', e));
+    }).then((u) => unlisten.push(u));
 
     // Start the foreground loop if we launched visible (the usual case), and
     // follow the app in and out of the foreground thereafter. Rust already ran
@@ -520,6 +559,14 @@
           on later, open Android Settings → Apps → Quota&nbsp;Widget →
           Notifications.
         </p>
+        {#if notificationState}
+          <p class="note">
+            System permission: <strong>{notificationState === 'granted' ? 'granted' : 'denied'}</strong>.{#if notificationState === 'denied'} Alerts stay off until you allow them there — the app will not ask again.{/if}
+          </p>
+          <button class="link" onclick={() => openNotificationSettings().catch(() => {})}>
+            Open Android notification settings
+          </button>
+        {/if}
       </section>
       <section>
         <h2>Background refresh</h2>

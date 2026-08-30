@@ -28,6 +28,12 @@ mod mobile_signin;
 // lives in the Kotlin host (`src-tauri/android-widget/`).
 #[cfg(target_os = "android")]
 mod android_schedule;
+// Rust → JVM calls that hand a refresh's notification plan to the native host's
+// `AlertNotifier` (issue #112). Android-only for the same reasons as
+// `android_schedule`: the `jni` dependency is Android-scoped and the posting
+// class lives in the Kotlin host.
+#[cfg(target_os = "android")]
+mod android_notifications;
 // The native Glance home-screen widget host's JNI entry points (issue #113).
 // Android-only: it is the sole JNI caller, and the `jni` dependency is scoped
 // to `cfg(target_os = "android")` in Cargo.toml.

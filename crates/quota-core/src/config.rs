@@ -359,6 +359,14 @@ pub struct Config {
     /// a deferral is never final. Meaningless off Linux and on non-AppImage
     /// builds, which never ask.
     pub desktop_integration_prompted: bool,
+    /// Whether Android has put the one POST_NOTIFICATIONS runtime-permission
+    /// request to the user (issue #112). Like the desktop-integration flag
+    /// above, it records that the request was *issued*, not what was answered:
+    /// a denial must be remembered as firmly as a grant, because the decision
+    /// is one-time — refresh and widgets keep working either way, and Settings
+    /// (not a re-prompt) is the recovery path. Meaningless off Android and on
+    /// Android versions below 13, where the permission does not exist.
+    pub notification_permission_requested: bool,
     /// Display order for the account list. Defaults to `Manual`, so an existing
     /// config.json that predates this field keeps its hand-arranged order.
     pub sort_order: SortOrder,
@@ -416,6 +424,7 @@ impl Default for Config {
             scroll_opacity_invert: false,
             check_updates: true,
             desktop_integration_prompted: false,
+            notification_permission_requested: false,
             sort_order: SortOrder::default(),
             sort_basis: SortBasis::default(),
             mini_anchor: MiniAnchor::default(),
@@ -780,6 +789,7 @@ impl Config {
             scroll_opacity_invert: prefs.scroll_opacity_invert,
             check_updates: prefs.check_updates,
             desktop_integration_prompted: prefs.desktop_integration_prompted,
+            notification_permission_requested: prefs.notification_permission_requested,
             sort_order: shared.sort_order,
             sort_basis: shared.sort_basis,
             mini_anchor: prefs.mini_anchor,
@@ -1881,6 +1891,28 @@ mod tests {
         };
         cfg.save(dir.path()).unwrap();
         assert!(load(dir.path()).desktop_integration_prompted);
+    }
+
+    /// The one-time Android notification-permission decision (#112) survives a
+    /// save — and an upgrade from a file predating the field reads as "not yet
+    /// requested", never as "already asked".
+    #[test]
+    fn a_recorded_notification_permission_request_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            notification_permission_requested: true,
+            ..Default::default()
+        };
+        cfg.save(dir.path()).unwrap();
+        assert!(load(dir.path()).notification_permission_requested);
+        assert!(!Config::default().notification_permission_requested);
+        // The split/round-trip that `import_credentials` uses preserves it too.
+        let (shared, prefs) = cfg.split();
+        assert!(prefs.notification_permission_requested);
+        assert!(
+            Config::from_parts(shared, prefs).notification_permission_requested,
+            "from_parts must carry the flag back into the combined shape"
+        );
     }
 
     /// Every pre-v2 headline setting has to land on the equivalent list, or an

@@ -68,7 +68,9 @@ pub struct RefreshOutcome {
     pub aggregate: AggregateStatus,
     /// Threshold crossings and low-balance events from this pass, in the order
     /// they were evaluated. Presentation (notify / open a window) is decided
-    /// by [`alerts::presentation`], which the host still calls per event.
+    /// by [`alerts::presentation`]; [`alerts::plan_notifications`] applies it
+    /// and produces the ready-to-post full/public content, so hosts that post
+    /// notifications need no per-event logic of their own.
     pub alerts: Vec<AlertEvent>,
     /// Every credential rotation an adapter asked to persist during this pass,
     /// and whether the host's write succeeded. A failed write is not itself a
