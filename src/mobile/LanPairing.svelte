@@ -32,8 +32,10 @@
   // The address the user typed on the send side; the receive side fetches
   // this device's own addresses into `pairAddresses` instead.
   let pairAddress = $state('');
-  // This device's address(es) as ready-to-type `ip:port` strings; fetched
-  // when the receive flow opens, and only shown on the receive side.
+  // This device's address(es) as ready-to-type bare IPv4 strings — the
+  // shell's fixed pairing port is appended when the sender dials, so the
+  // user never types one; fetched when the receive flow opens, and only
+  // shown on the receive side.
   let pairAddresses = $state([]);
   let pairBusy = $state(false);
   let pairWaiting = $state(false);
@@ -178,7 +180,7 @@
       <!-- Enabled while sending on purpose: a stalled receiver must not
            leave the user watching a spinner they cannot leave. Cancel
            aborts the exchange at the shell and resets the panel. -->
-      <button disabled={pairBusy} onclick={closePairing}>Cancel</button>
+      <button onclick={closePairing}>Cancel</button>
     </div>
     <p class="note">The other device shows its address while it waits to receive.</p>
   {:else}

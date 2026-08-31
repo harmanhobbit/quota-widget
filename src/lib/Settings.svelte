@@ -192,9 +192,10 @@
   let pairMode = $state(''); // '', 'send', 'receive'
   let pairCode = $state('');
   let pairAddress = $state('');
-  // This device's address(es) as ready-to-type `ip:port` strings; fetched
-  // when a role is chosen, not at Settings mount, and only shown on the
-  // receive side.
+  // This device's address(es) as ready-to-type bare IPv4 strings — the
+  // shell's fixed pairing port is appended when the sender dials, so the
+  // user never types one; fetched when a role is chosen, not at Settings
+  // mount, and only shown on the receive side.
   let pairAddresses = $state([]);
   let pairBusy = $state(false);
   let pairWaiting = $state(false);

@@ -927,8 +927,9 @@ mod tests {
         );
     }
 
-    /// The unchanged-on-wrong-code guarantee holds for any host: the mock's
-    /// apply step never runs, so nothing it owns moved.
+    /// The unchanged-on-wrong-code guarantee holds for any host: the sender
+    /// sees the mismatch error (the same one a real user's send reports), the
+    /// mock's apply step never runs, so nothing it owns moved.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_wrong_code_never_reaches_a_mock_host_apply() {
         let app = tauri::test::mock_builder()
@@ -944,22 +945,30 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         receive_start_session(app.handle(), receiver.clone(), "123456".into(), listener).unwrap();
 
-        send_session(&sender, "999999".into(), addr.to_string())
-            .await
-            .unwrap();
+        assert_eq!(
+            send_session(&sender, "999999".into(), addr.to_string()).await,
+            Err("The pairing code did not match. Nothing was transferred.".to_string())
+        );
 
-        assert_eq!(receiver.inner.lock().unwrap().received, None);
-        // The failed session still freed the slot for the next one.
-        assert!(!receiver.slot.lock().unwrap().is_armed());
+        // The failure event is the synchronization point: the receive task
+        // disarms its slot in the same tail that emits it, so only after the
+        // event arrives is "the slot is free" guaranteed rather than racy.
         let payload: serde_json::Value =
             serde_json::from_str(&rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap())
                 .unwrap();
         assert_eq!(payload["ok"], serde_json::Value::Bool(false));
+
+        assert_eq!(receiver.inner.lock().unwrap().received, None);
+        // The failed session still freed the slot for the next one.
+        assert!(!receiver.slot.lock().unwrap().is_armed());
     }
 
     /// An apply failure is the receiver's own outcome, not a cancelled
-    /// session: the sender is told the transfer was rejected, the receiver
-    /// keeps the bundle in memory but its slot is spent.
+    /// session: the pairing acknowledgement precedes the receiver's apply
+    /// (`receive_bundle` acks the opened bundle before returning it), so the
+    /// sender is told the transfer landed and learns nothing of what happens
+    /// after — the failure reaches only the receiver's own event, and the
+    /// receiver's slot is spent.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_apply_failure_is_reported_to_both_sides() {
         let app = tauri::test::mock_builder()
@@ -976,10 +985,12 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         receive_start_session(app.handle(), receiver.clone(), "123456".into(), listener).unwrap();
 
-        let sent = send_session(&sender, "123456".into(), addr.to_string()).await;
+        // Ok: the receiver acked the opened bundle before applying, so the
+        // sender's success means "the other device has the bundle" — its
+        // apply is past the socket and cannot be reported back.
         assert_eq!(
-            sent,
-            Err("The other device could not accept the transfer. Nothing was moved.".to_string())
+            send_session(&sender, "123456".into(), addr.to_string()).await,
+            Ok(())
         );
 
         let payload: serde_json::Value =

@@ -172,10 +172,12 @@ Android phone. One device chooses **Send to another device**, the other
 enter the same 6-digit code. The code never crosses the network: it authenticates
 the two devices to each other and derives the transfer's encryption key, so a
 device that doesn't know it gets a single guess per attempt and a wrong code
-transfers nothing. The receiving device shows an address like
-`192.168.1.20:45454` for the sending one to type — on the phone this is its
-Wi-Fi address, shown while it waits; if Android won't reveal it to the app, the
-note points you to the phone's own network settings to look it up. Both devices
+transfers nothing. The receiving device shows its address — e.g.
+`192.168.1.20` — for the sending one to type; the transfer's fixed port (45454)
+is applied automatically, so a plain IP is all that is needed. On the phone
+this is its Wi-Fi address, shown while it waits; if Android won't reveal it to
+the app, the note points you to the phone's own network settings to look it
+up. Both devices
 must be on the same network — Windows shows its usual firewall prompt the first
 time a device waits to receive. The same move-and-report rules apply as the
 file transfer: pasted keys work immediately on arrival (into the Android
