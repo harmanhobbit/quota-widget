@@ -163,22 +163,32 @@ stored is not added, so it never looks set up when it isn't. A wrong passphrase
 or a corrupt file is refused without touching your existing accounts, and a lost
 passphrase makes the file unrecoverable: nothing else holds the key.
 
-Desktop Settings has a **Pair with another device** section that moves the same
-set of accounts live over your local network — no server in between. One desktop
-chooses **Send to another device**, the other **Receive on this device**; both
+Desktop Settings has a **Pair with another device** section, and Android Settings
+a **Pair over the network** section in the same place as its credential export,
+that move the same set of accounts live over your local network — no server in
+between. Any two of these devices can pair: two desktops, or a desktop and an
+Android phone. One device chooses **Send to another device**, the other
+**Receive on this device** (the phone says **Receive on this phone**); both
 enter the same 6-digit code. The code never crosses the network: it authenticates
 the two devices to each other and derives the transfer's encryption key, so a
 device that doesn't know it gets a single guess per attempt and a wrong code
-transfers nothing. The receiving desktop shows an address like
-`192.168.1.20:45454` for the sending one to type. Both desktops must be on the
-same network — Windows shows its usual firewall prompt the first time a device
-waits to receive. The same move-and-report rules apply as the file transfer:
-pasted keys work immediately on arrival, OAuth and cookie accounts (Claude,
-Codex, Grok, Hermes Portal) arrive awaiting sign-in, the receiving desktop
-reports what happened (added / updated / needs sign-in / could-not-store), and a
-cancelled, interrupted or wrong-coded attempt leaves the receiver exactly as it
-was. A code arms one transfer attempt only; generate a fresh one for the next
-transfer.
+transfers nothing. The receiving device shows its address — e.g.
+`192.168.1.20` — for the sending one to type; the transfer's fixed port (45454)
+is applied automatically, so a plain IP is all that is needed. On the phone
+this is its Wi-Fi address, shown while it waits; if Android won't reveal it to
+the app, the note points you to the phone's own network settings to look it
+up. Both devices
+must be on the same network — Windows shows its usual firewall prompt the first
+time a device waits to receive. The same move-and-report rules apply as the
+file transfer: pasted keys work immediately on arrival (into the Android
+Keystore when the receiver is a phone), OAuth and cookie accounts (Claude,
+Codex, Grok, Hermes Portal) arrive awaiting sign-in, the receiving device
+reports what happened (added / updated / needs sign-in / could-not-store — on
+the phone, worded like its file and QR imports), and a cancelled, interrupted or
+wrong-coded attempt leaves the receiver exactly as it was. A code arms one
+transfer attempt only; generate a fresh one for the next transfer. Leaving the
+pairing screen on either device cancels an in-flight or armed session and frees
+the other device to start a new one.
 
 Accounts can be moved up and down in Settings; that order is saved and is the
 order used in the full popup, mini summary, and tray tooltip. Each account can

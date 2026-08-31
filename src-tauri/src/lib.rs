@@ -5,7 +5,9 @@ mod credential_transfer;
 mod desktop;
 #[cfg(not(mobile))]
 mod grok_oauth;
-#[cfg(not(mobile))]
+// LAN pairing (issues #154/#155) is host-shared: desktop and Android both
+// register the same `lan_pairing_*` commands over this one module, each
+// supplying its own state type through `PairingState`/`PairingHost`.
 mod lan_pairing;
 mod oauth;
 #[cfg(not(mobile))]

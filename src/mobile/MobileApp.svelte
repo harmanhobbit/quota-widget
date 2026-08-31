@@ -15,6 +15,7 @@
   import SimpleKeyAccount from '../lib/shared/SimpleKeyAccount.svelte';
   import OAuthAccount from './OAuthAccount.svelte';
   import CredentialTransfer from './CredentialTransfer.svelte';
+  import LanPairing from './LanPairing.svelte';
   import {
     getSnapshots,
     setConfig,
@@ -535,6 +536,7 @@
         {/each}
       </section>
       <CredentialTransfer onImported={handleImported} />
+      <LanPairing onImported={handleImported} />
       <section>
         <h2>Ordering</h2>
         <Ordering bind:sortOrder={config.sort_order} bind:sortBasis={config.sort_basis} />

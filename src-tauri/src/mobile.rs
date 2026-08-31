@@ -29,6 +29,8 @@ use std::sync::{Arc, OnceLock};
 use tauri::{Emitter, Manager};
 use tokio::sync::Mutex;
 
+use crate::lan_pairing;
+
 /// The foreground runtime's app handle, if this process hosts the app.
 ///
 /// Background refresh work — the periodic ~15-minute job and the manual
@@ -100,6 +102,11 @@ pub struct MobileState {
     /// across repeated `qr_scan_frame` calls, one per camera detection, until
     /// `qr_scan_finish` opens and applies the reassembled bundle.
     pub qr_collector: Mutex<quota_core::qr_transfer::FrameCollector>,
+    /// The one armed LAN pairing session, whichever role it is (issues
+    /// #154/#155): a receive wait or a send in flight. The same slot type,
+    /// session rules and command set desktop uses — `lan_pairing.rs` owns
+    /// them once for both hosts through `PairingHost`/`PairingState`.
+    pub lan_pairing: std::sync::Mutex<crate::lan_pairing::SessionSlot>,
 }
 
 impl MobileState {
@@ -754,20 +761,42 @@ async fn import_credentials(
 /// `import_credentials` (bytes from a picked file, #152) and `qr_scan_finish`
 /// (bytes reassembled from scanned QR frames, #156) — everything past "here
 /// are the sealed bytes and a passphrase" is identical between the two
-/// transports.
+/// transports, and is now also exactly what the LAN pairing receiver does
+/// with the bundle its PAKE channel already opened (`apply_opened_bundle`,
+/// #155).
 ///
 /// The sealed bytes are opened *before* anything is touched, so a wrong
 /// passphrase or a corrupt/tampered payload is refused with existing
-/// accounts exactly as they were. Pasted keys are written to the Android
-/// Keystore through the same `secrets` backend Settings uses; `apply_bundle`
-/// leaves an account out of the configuration when its key cannot be stored,
-/// so a Keystore failure never leaves an account looking configured when it
-/// is not.
+/// accounts exactly as they were.
 async fn apply_sealed_bytes(
     app: &tauri::AppHandle,
     state: &Arc<MobileState>,
     bytes: &[u8],
     passphrase: &str,
+) -> Result<quota_core::transfer::ApplyReport, String> {
+    let bundle = quota_core::seal::open(bytes, passphrase).map_err(|e| e.to_string())?;
+    apply_opened_bundle(app, state, &bundle).await
+}
+
+/// Merge an **already-opened** bundle into the current configuration — the
+/// apply/commit seam every mobile transport shares (issue #155): the picked
+/// file (#152) and the reassembled QR scan (#156) open their sealed bytes
+/// with a passphrase and land here, and the LAN pairing receiver (#155)
+/// arrives here directly, the PAKE channel key having already opened the
+/// bundle inside `quota_core::pairing::receive_bundle`.
+///
+/// The recovery check is the first thing after the open, so in every case a
+/// configuration the app cannot persist is refused before any secret is
+/// written into a state the accounts themselves could not be saved into.
+/// Pasted keys are written to the Android Keystore through the same
+/// `secrets` backend Settings uses; `apply_bundle` leaves an account out of
+/// the configuration when its key cannot be stored, so a Keystore failure
+/// never leaves an account looking configured when it is not — the honest
+/// could-not-store outcome the summary reports.
+async fn apply_opened_bundle<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &Arc<MobileState>,
+    bundle: &quota_core::transfer::CredentialBundle,
 ) -> Result<quota_core::transfer::ApplyReport, String> {
     // A configuration in recovery (an unreadable file the app is carefully
     // not overwriting) must fail here, before any secret is written into a
@@ -781,17 +810,16 @@ async fn apply_sealed_bytes(
             recovery.detail
         ));
     }
-    let bundle = quota_core::seal::open(bytes, passphrase).map_err(|e| e.to_string())?;
     let cfg = state.config.read().await.clone();
     let (mut shared, prefs) = cfg.split();
     let dir = state.config_dir.clone();
-    let report = quota_core::transfer::apply_bundle(&bundle, &mut shared, |key, value| {
+    let report = quota_core::transfer::apply_bundle(bundle, &mut shared, |key, value| {
         crate::secrets::set(&dir, key, value)
     });
     // A transferred account keeps its source's settings verbatim, including a
     // desktop `auth_mode: "cli"` that cannot work on Android. Rewrite it to the
     // built-in sign-in before this config is persisted, so a phone that just
-    // scanned a desktop bundle doesn't land a permanently-stuck account.
+    // received a desktop bundle doesn't land a permanently-stuck account.
     quota_core::config::coerce_cli_auth_mode_to_oauth(&mut shared.providers);
     // Persist only when at least one account actually landed: an import whose
     // every account failed to store leaves the configuration file untouched.
@@ -808,6 +836,36 @@ async fn apply_sealed_bytes(
         let _ = app.emit("config", &updated);
     }
     Ok(report)
+}
+
+// ---- LAN pairing (issue #155) ----------------------------------------------
+//
+// The same live transport desktop pairing uses, one desktop↔phone or
+// desktop↔desktop exchange at a time. The session rules — one armed slot per
+// code, bounded and cancelable either role, disarm-before-apply — live in
+// `lan_pairing.rs` written once for both hosts; this host only supplies the
+// two things it alone knows: how to gather its accounts into a bundle, and
+// `apply_opened_bundle` as the receiver's landing place.
+
+impl crate::lan_pairing::PairingHost for Arc<MobileState> {
+    fn pairing_slot(&self) -> &std::sync::Mutex<crate::lan_pairing::SessionSlot> {
+        &self.lan_pairing
+    }
+
+    async fn build_bundle(&self) -> quota_core::transfer::CredentialBundle {
+        let cfg = self.config.read().await.clone();
+        let (shared, _prefs) = cfg.split();
+        let dir = self.config_dir.clone();
+        quota_core::transfer::build_bundle(&shared, |key| crate::secrets::get(&dir, key))
+    }
+
+    async fn apply_received<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        bundle: &quota_core::transfer::CredentialBundle,
+    ) -> Result<quota_core::transfer::ApplyReport, String> {
+        apply_opened_bundle(app, self, bundle).await
+    }
 }
 
 // ---- Desktop→phone QR transfer (issue #156) --------------------------------
@@ -1033,6 +1091,7 @@ pub fn run() {
                 snapshots: std::sync::RwLock::new(persisted.prior_map()),
                 alert_engine: Mutex::new(alert_engine),
                 qr_collector: Mutex::new(quota_core::qr_transfer::FrameCollector::new()),
+                lan_pairing: std::sync::Mutex::new(crate::lan_pairing::SessionSlot::default()),
             });
             app.manage(state.clone());
             // Opens directly to the usage list, so the first thing on screen
@@ -1067,6 +1126,15 @@ pub fn run() {
             qr_scan_reset,
             qr_scan_frame,
             qr_scan_finish,
+            // LAN pairing (issues #154/#155): the same commands desktop
+            // registers, written once in `lan_pairing.rs` against this
+            // host's state. The receiver reports through the `lan-pairing`
+            // event, exactly as on desktop.
+            lan_pairing::lan_pairing_address,
+            lan_pairing::lan_pairing_generate_code,
+            lan_pairing::lan_pairing_send,
+            lan_pairing::lan_pairing_receive_start,
+            lan_pairing::lan_pairing_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running quota-widget (mobile)");
