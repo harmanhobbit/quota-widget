@@ -1497,10 +1497,11 @@
       {/if}
     </section>
 
-    <!-- LAN desktop pairing (issue #154): the live transport for the same
-         bundle the backup file and QR code move. One device sends, the other
-         receives; both type the same 6-digit code, which the PAKE turns into
-         the transfer's encryption key — the code itself never crosses the
+    <!-- LAN device pairing (issues #154/#155): the live transport for the same
+         bundle the backup file and QR code move, between two desktops or a
+         desktop and an Android phone. One device sends, the other receives;
+         both type the same 6-digit code, which the PAKE turns into the
+         transfer's encryption key — the code itself never crosses the
          network. -->
     <section class="lan-pairing">
       <h2>Pair with another device</h2>
@@ -1510,10 +1511,10 @@
           <button class="small" onclick={() => openPairing('receive')}>Receive on this device…</button>
         </div>
         <p class="note">
-          Move every account to another desktop over your local network — no server in
-          between. Both devices enter the same 6-digit code. Pasted keys work
-          immediately; OAuth and cookie accounts (Claude, Codex, Grok, Hermes Portal)
-          arrive awaiting sign-in.
+          Move every account to another device over your local network — desktop
+          or Android — no server in between. Both devices enter the same 6-digit
+          code. Pasted keys work immediately; OAuth and cookie accounts (Claude,
+          Codex, Grok, Hermes Portal) arrive awaiting sign-in.
         </p>
       {:else if pairMode === 'send'}
         <label class="field">Pairing code

@@ -80,12 +80,13 @@ export const qrScanReset = () => invoke('qr_scan_reset');
 export const qrScanFrame = (text) => invoke('qr_scan_frame', { text });
 export const qrScanFinish = (passphrase) => invoke('qr_scan_finish', { passphrase });
 
-// LAN desktop pairing (issue #154). Desktop-only commands: the receiver arms
-// a code and waits (the outcome arrives on the `lan-pairing` event, not as
-// the command's return), the sender dials the receiver's address, and the
-// cancel aborts the one armed session whichever role it is — a send that a
-// stalled receiver is holding open included. The handshake, sealing and
-// transfer live in quota_core::pairing behind these.
+// LAN device pairing (issues #154/#155). The same command set is registered
+// by both shells — desktop and Android share the one Rust module — so the
+// receiver arms a code and waits (the outcome arrives on the `lan-pairing`
+// event, not as the command's return), the sender dials the receiver's
+// address, and the cancel aborts the one armed session whichever role it is —
+// a send that a stalled receiver is holding open included. The handshake,
+// sealing and transfer live in quota_core::pairing behind these.
 export const lanPairingAddresses = () => invoke('lan_pairing_address');
 export const lanPairingGenerateCode = () => invoke('lan_pairing_generate_code');
 export const lanPairingSend = (code, address) => invoke('lan_pairing_send', { code, address });

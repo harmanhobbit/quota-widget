@@ -1,5 +1,8 @@
-//! IPC for LAN desktop pairing (issue #154): the live transport for the one
-//! credential bundle (ADR-0008).
+//! IPC for LAN device pairing (issues #154/#155): the live transport for the
+//! one credential bundle (ADR-0008), between two desktops or a desktop and an
+//! Android phone. One module, one command set, both hosts: the session rules
+//! here are written once and each host supplies its own state through
+//! [`PairingHost`] / [`PairingState`].
 //!
 //! Everything that matters happens in `quota_core` and is already tested
 //! there: `transfer` builds and applies the bundle, `pake` authenticates the
@@ -7,20 +10,19 @@
 //! small-order shares), `seal` encrypts under the derived channel key, and
 //! `pairing` drives the whole exchange over any byte stream with its own
 //! stall timeouts and one-attempt-per-connection rules. This file is the thin
-//! socket adapter around those: it supplies the bundle's ingredients, binds
-//! and dials, and folds a received bundle back into the running config
-//! through the same path as the file import.
+//! socket adapter around those: it binds and dials, and hands each host the
+//! two things only the host knows — how to gather its accounts into a bundle,
+//! and where to fold a received one.
 //!
 //! Session rules the adapter owns, per `pairing`'s contract:
 //!
-//! - **One session per code, either role.** The slot in
-//!   [`AppState::lan_pairing`] holds the one armed session — a receive wait
-//!   or a send in flight — tagged with a generation so a finishing session
-//!   can free only its own slot and never one a later session armed. A
-//!   receive session arms exactly one code and accepts exactly one
-//!   connection, whatever the outcome; the frontend then clears the code so a
-//!   new session needs a fresh one. An attacker therefore gets a single
-//!   online guess per code — see `quota_core::pake`.
+//! - **One session per code, either role.** The slot in the host state holds
+//!   the one armed session — a receive wait or a send in flight — tagged with
+//!   a generation so a finishing session can free only its own slot and never
+//!   one a later session armed. A receive session arms exactly one code and
+//!   accepts exactly one connection, whatever the outcome; the frontend then
+//!   clears the code so a new session needs a fresh one. An attacker
+//!   therefore gets a single online guess per code — see `quota_core::pake`.
 //! - **Both roles are bounded and cancelable.** A send runs under the same
 //!   whole-exchange deadline a receive does, and `lan_pairing_cancel` aborts
 //!   the armed session whichever role it is — a peer that dribbles bytes or
@@ -36,16 +38,86 @@
 //! discovery protocol would add a dependency and a second attack surface for
 //! a one-shot transfer between two devices the user is sitting at.
 
-use crate::credential_transfer::apply_and_commit;
-use crate::secrets;
-use crate::AppState;
 use quota_core::pairing::{self, PairingError};
 use quota_core::transfer::{self, ApplyReport};
 use rand::Rng;
+use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 use tauri::Emitter;
+
+#[cfg(not(mobile))]
+use crate::credential_transfer::apply_and_commit;
+#[cfg(not(mobile))]
+use crate::secrets;
+#[cfg(not(mobile))]
+use crate::AppState;
+// Desktop's host state is `Arc<AppState>` (see `PairingState`), so the impl
+// below needs the alias in scope; mobile builds name it fully-qualified in
+// `mobile.rs` instead, which is why this import is desktop-only.
+#[cfg(not(mobile))]
+use std::sync::Arc;
+
+/// The managed state the pairing commands run against: desktop's
+/// [`AppState`](crate::AppState) or the Android host's
+/// [`MobileState`](crate::mobile::MobileState). The commands below are
+/// written once against this alias and compile for whichever host includes
+/// them.
+#[cfg(mobile)]
+pub type PairingState = std::sync::Arc<crate::mobile::MobileState>;
+#[cfg(not(mobile))]
+pub type PairingState = std::sync::Arc<AppState>;
+
+/// The per-host halves of a pairing session, so the session rules in this
+/// file stay written once for desktop and Android alike: a sender needs its
+/// accounts gathered into a bundle, a receiver needs somewhere to fold the
+/// received bundle into. Each host implements this over its own state type;
+/// a mock in this file's tests is the third implementer, which is what keeps
+/// the session logic provable without a real host.
+pub trait PairingHost: Clone + Send + Sync + 'static {
+    /// The one armed pairing session, whichever role it is.
+    fn pairing_slot(&self) -> &std::sync::Mutex<SessionSlot>;
+
+    /// Build the outgoing bundle from this device's accounts: the shared
+    /// configuration plus each pasted key, OAuth/cookie accounts as shells
+    /// (ADR-0008).
+    fn build_bundle(&self) -> impl Future<Output = transfer::CredentialBundle> + Send;
+
+    /// Fold a received, already-authenticated bundle into the running
+    /// configuration. Called only once `pairing::receive_bundle` has returned
+    /// `Ok`, which is why every error here is an apply failure rather than a
+    /// security question.
+    fn apply_received<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        bundle: &transfer::CredentialBundle,
+    ) -> impl Future<Output = Result<ApplyReport, String>> + Send;
+}
+
+/// Desktop's halves (issue #154): the bundle comes from the running config
+/// plus the desktop secret store, and a received bundle folds in through the
+/// same `apply_and_commit` tail the file import uses.
+#[cfg(not(mobile))]
+impl PairingHost for Arc<AppState> {
+    fn pairing_slot(&self) -> &std::sync::Mutex<SessionSlot> {
+        &self.lan_pairing
+    }
+
+    async fn build_bundle(&self) -> transfer::CredentialBundle {
+        let cfg = self.config.read().await.clone();
+        let (shared, _prefs) = cfg.split();
+        let dir = self.config_dir.clone();
+        transfer::build_bundle(&shared, |key| secrets::get(&dir, key))
+    }
+
+    async fn apply_received<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        bundle: &transfer::CredentialBundle,
+    ) -> Result<ApplyReport, String> {
+        apply_and_commit(app, self, bundle).await
+    }
+}
 
 /// The fixed port the receiver listens on. The sender only has to type the
 /// address; a well-known port is what makes that possible. Unassigned by
@@ -159,8 +231,8 @@ fn parse_target(address: &str) -> Option<SocketAddr> {
 
 /// Reserve a generation for a new session, refusing while one is armed.
 /// Sync, so its std MutexGuard never appears in an async body.
-fn reserve_session(state: &AppState) -> Result<u64, String> {
-    let mut slot = state.lan_pairing.lock().unwrap();
+fn reserve_session(slot: &std::sync::Mutex<SessionSlot>) -> Result<u64, String> {
+    let mut slot = slot.lock().unwrap();
     if slot.is_armed() {
         return Err(
             "A pairing is already in progress on this device — cancel it first.".to_string(),
@@ -170,8 +242,12 @@ fn reserve_session(state: &AppState) -> Result<u64, String> {
 }
 
 /// Arm the session once its task exists. Sync, like `reserve_session`.
-fn arm_session(state: &AppState, generation: u64, handle: tauri::async_runtime::JoinHandle<()>) {
-    state.lan_pairing.lock().unwrap().arm(generation, handle);
+fn arm_session(
+    slot: &std::sync::Mutex<SessionSlot>,
+    generation: u64,
+    handle: tauri::async_runtime::JoinHandle<()>,
+) {
+    slot.lock().unwrap().arm(generation, handle);
 }
 
 /// Sender side: build the bundle from this device's accounts, dial the
@@ -181,9 +257,8 @@ fn arm_session(state: &AppState, generation: u64, handle: tauri::async_runtime::
 /// bounded by [`EXCHANGE_TIMEOUT`] no matter what the peer does. Returns once
 /// the receiver confirmed it opened the sealed bundle; the receiver's own
 /// summary is shown there.
-#[tauri::command]
-pub async fn lan_pairing_send(
-    state: tauri::State<'_, Arc<AppState>>,
+pub async fn send_session<H: PairingHost>(
+    state: &H,
     code: String,
     address: String,
 ) -> Result<(), String> {
@@ -192,17 +267,13 @@ pub async fn lan_pairing_send(
         format!("'{address}' is not an IPv4 address — use the one the other device is showing")
     })?;
 
-    let cfg = state.config.read().await.clone();
-    let (shared, _prefs) = cfg.split();
-    let dir = state.config_dir.clone();
-    let bundle = transfer::build_bundle(&shared, |key| secrets::get(&dir, key));
+    let bundle = state.build_bundle().await;
 
-    let state = state.inner().clone();
     let task_state = state.clone();
     // The slot's std MutexGuard is not Send, so it must never appear in this
     // async body: reserve and arm run inside sync helpers whose guards live
     // and die outside the generator.
-    let generation = reserve_session(&state)?;
+    let generation = reserve_session(state.pairing_slot())?;
 
     // The result travels by channel rather than the task's return value, so
     // that an aborted task — whose result nobody waits for — reads as the
@@ -214,14 +285,26 @@ pub async fn lan_pairing_send(
         // Whatever the outcome, this session has done its one job; free the
         // slot unless a later session armed since. (On abort this tail never
         // runs — the Cancel command took the handle before aborting.)
-        task_state.lan_pairing.lock().unwrap().disarm(generation);
+        task_state.pairing_slot().lock().unwrap().disarm(generation);
         let _ = result_tx.send(result);
     });
-    arm_session(&state, generation, worker);
+    arm_session(state.pairing_slot(), generation, worker);
 
     result_rx
         .await
         .map_err(|_| "Transfer cancelled — nothing was sent.".to_string())?
+}
+
+/// The send command, shared by desktop and Android through [`PairingState`].
+#[tauri::command]
+pub async fn lan_pairing_send(
+    state: tauri::State<'_, PairingState>,
+    code: String,
+    address: String,
+) -> Result<(), String> {
+    // `State` is a borrow wrapper, not the host itself: `.inner()` is what
+    // hands `send_session` the `&PairingState` the `PairingHost` bound needs.
+    send_session(state.inner(), code, address).await
 }
 
 /// Dial and exchange under one whole-exchange deadline, so no receiver
@@ -267,7 +350,7 @@ fn could_not_reach(target: SocketAddr) -> String {
 #[tauri::command]
 pub fn lan_pairing_receive_start<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
-    state: tauri::State<'_, Arc<AppState>>,
+    state: tauri::State<'_, PairingState>,
     code: String,
 ) -> Result<(), String> {
     pairing::validate_code(&code).map_err(|e| e.to_string())?;
@@ -277,29 +360,31 @@ pub fn lan_pairing_receive_start<R: tauri::Runtime>(
         .map_err(|_| {
             format!("The pairing port {PAIRING_PORT} is already in use on this device.")
         })?;
-    arm_receive(app, state.inner().clone(), code, listener)
+    receive_start_session(&app, state.inner().clone(), code, listener)
 }
 
 /// Arm one receive session over `listener` — the seam shared by the command
 /// (which binds the well-known port) and the tests (which bind an ephemeral
 /// one so sessions can run in parallel).
-fn arm_receive<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
-    state: Arc<AppState>,
+pub fn receive_start_session<H: PairingHost, R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: H,
     code: String,
     listener: std::net::TcpListener,
 ) -> Result<(), String> {
     // A separate handle for the task, so the slot lock below never borrows
-    // across the spawn.
+    // across the spawn. The handle is cloned rather than borrowed because the
+    // task outlives this call — it is the armed session's owner.
+    let app = app.clone();
     let task_state = state.clone();
-    let generation = reserve_session(&state)?;
+    let generation = reserve_session(state.pairing_slot())?;
     let handle = tauri::async_runtime::spawn(async move {
         let result = receive_session(&task_state, &app, &code, listener, generation).await;
         // The code has done its one job, whatever happened; free the slot so
         // another session can be armed. (On abort this tail never runs — the
         // Cancel command took the handle before aborting — so a stale slot is
         // impossible either way.)
-        task_state.lan_pairing.lock().unwrap().disarm(generation);
+        task_state.pairing_slot().lock().unwrap().disarm(generation);
         let payload = match result {
             Ok(report) => serde_json::json!({ "ok": true, "report": report }),
             Err(error) => serde_json::json!({ "ok": false, "error": error }),
@@ -308,15 +393,15 @@ fn arm_receive<R: tauri::Runtime>(
         // event itself was already emitted by the commit inside the session.
         let _ = app.emit("lan-pairing", payload);
     });
-    arm_session(&state, generation, handle);
+    arm_session(state.pairing_slot(), generation, handle);
     Ok(())
 }
 
 /// Receiver side, step two: the armed session — accept exactly one
 /// connection, exchange, and only then commit. Every early return happens
 /// before anything on this device is touched.
-async fn receive_session<R: tauri::Runtime>(
-    state: &Arc<AppState>,
+async fn receive_session<H: PairingHost, R: tauri::Runtime>(
+    state: &H,
     app: &tauri::AppHandle<R>,
     code: &str,
     listener: std::net::TcpListener,
@@ -342,17 +427,14 @@ async fn receive_session<R: tauri::Runtime>(
     // Past this point the exchange has succeeded, so the session disarms
     // itself: from here on a Cancel is a no-op rather than a way to interrupt
     // a half-written merge.
-    state.lan_pairing.lock().unwrap().disarm(generation);
-    apply_and_commit(app, state, &bundle).await
+    state.pairing_slot().lock().unwrap().disarm(generation);
+    state.apply_received(app, &bundle).await
 }
 
-/// Cancel the armed pairing session, whichever role it is (a receive wait or
-/// a send in flight). Aborts only the not-yet-applied part: a session frees
-/// its slot before its apply step, so a late Cancel is a no-op rather than a
-/// way to interrupt a half-written merge.
+/// The cancel command, shared by desktop and Android through [`PairingState`].
 #[tauri::command]
-pub fn lan_pairing_cancel(state: tauri::State<'_, Arc<AppState>>) {
-    state.lan_pairing.lock().unwrap().cancel();
+pub fn lan_pairing_cancel(state: tauri::State<'_, PairingState>) {
+    state.inner().pairing_slot().lock().unwrap().cancel();
 }
 
 /// A fresh 6-digit code for a receive session, shown for the user to type on
@@ -457,13 +539,7 @@ mod tests {
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        arm_receive(
-            app.handle().clone(),
-            state.clone(),
-            "123456".into(),
-            listener,
-        )
-        .unwrap();
+        receive_start_session(app.handle(), state.clone(), "123456".into(), listener).unwrap();
         assert!(state.lan_pairing.lock().unwrap().is_armed());
 
         let expected = sample_bundle("Personal");
@@ -511,13 +587,7 @@ mod tests {
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        arm_receive(
-            app.handle().clone(),
-            state.clone(),
-            "123456".into(),
-            listener,
-        )
-        .unwrap();
+        receive_start_session(app.handle(), state.clone(), "123456".into(), listener).unwrap();
 
         let sender = tokio::spawn(async move {
             let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -555,13 +625,7 @@ mod tests {
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        arm_receive(
-            app.handle().clone(),
-            state.clone(),
-            "123456".into(),
-            listener,
-        )
-        .unwrap();
+        receive_start_session(app.handle(), state.clone(), "123456".into(), listener).unwrap();
         assert!(state.lan_pairing.lock().unwrap().is_armed());
 
         lan_pairing_cancel(app.state::<Arc<AppState>>().clone());
@@ -603,13 +667,7 @@ mod tests {
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        arm_receive(
-            app.handle().clone(),
-            state.clone(),
-            "123456".into(),
-            listener,
-        )
-        .unwrap();
+        receive_start_session(app.handle(), state.clone(), "123456".into(), listener).unwrap();
         let sender = tokio::spawn(async move {
             let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
             pairing::send_bundle(&mut stream, "123456", &sample_bundle("Personal"))
@@ -632,13 +690,9 @@ mod tests {
 
         // The freed slot accepts the next session immediately.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        assert!(arm_receive(
-            app.handle().clone(),
-            state.clone(),
-            "654321".into(),
-            listener
-        )
-        .is_ok());
+        assert!(
+            receive_start_session(app.handle(), state.clone(), "654321".into(), listener).is_ok()
+        );
         lan_pairing_cancel(app.state::<Arc<AppState>>().clone());
     }
 
@@ -646,21 +700,10 @@ mod tests {
     async fn a_second_session_is_refused_while_one_is_armed() {
         let (app, state, _dir) = mock_app();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        arm_receive(
-            app.handle().clone(),
-            state.clone(),
-            "123456".into(),
-            listener,
-        )
-        .unwrap();
+        receive_start_session(app.handle(), state.clone(), "123456".into(), listener).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let err = arm_receive(
-            app.handle().clone(),
-            state.clone(),
-            "654321".into(),
-            listener,
-        )
-        .unwrap_err();
+        let err = receive_start_session(app.handle(), state.clone(), "654321".into(), listener)
+            .unwrap_err();
         assert!(err.contains("already in progress"), "{err}");
         lan_pairing_cancel(app.state::<Arc<AppState>>().clone());
     }
@@ -782,5 +825,168 @@ mod tests {
         assert_eq!(parse_target(" 10.0.0.2 "), parse_target("10.0.0.2"));
         assert_eq!(parse_target("not an address"), None);
         assert_eq!(parse_target(""), None);
+    }
+
+    // ---- The session core against a mock host (issue #155) ------------------
+    //
+    // The desktop tests above prove the session rules with the real desktop
+    // host; these prove them with a host that is neither desktop's
+    // `AppState` nor any real state type at all — the shape the Android
+    // host's `PairingHost` impl plugs into. If the session core secretly
+    // depended on something desktop-specific, these would be the tests to
+    // catch it.
+
+    /// What a mock host gathers and folds: an optional outgoing bundle and a
+    /// place to remember what it received, plus a fault to inject into the
+    /// apply step.
+    #[derive(Default)]
+    struct MockInner {
+        outgoing: Option<CredentialBundle>,
+        received: Option<CredentialBundle>,
+        apply_error: Option<String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct MockHost {
+        slot: Arc<std::sync::Mutex<SessionSlot>>,
+        inner: Arc<std::sync::Mutex<MockInner>>,
+    }
+
+    impl PairingHost for MockHost {
+        fn pairing_slot(&self) -> &std::sync::Mutex<SessionSlot> {
+            // The slot lives behind an Arc so `Clone` hands every task the
+            // same one, exactly as the real hosts' `Arc<…>` states do.
+            &self.slot
+        }
+
+        async fn build_bundle(&self) -> CredentialBundle {
+            self.inner
+                .lock()
+                .unwrap()
+                .outgoing
+                .clone()
+                .unwrap_or_default()
+        }
+
+        async fn apply_received<R: tauri::Runtime>(
+            &self,
+            _app: &tauri::AppHandle<R>,
+            bundle: &CredentialBundle,
+        ) -> Result<ApplyReport, String> {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(err) = inner.apply_error.clone() {
+                return Err(err);
+            }
+            let report = ApplyReport {
+                accounts: bundle
+                    .accounts
+                    .keys()
+                    .map(|k| (k.clone(), quota_core::transfer::ApplyOutcome::Added))
+                    .collect(),
+            };
+            inner.received = Some(bundle.clone());
+            Ok(report)
+        }
+    }
+
+    /// A full exchange through the shared session functions only —
+    /// `send_session` on the sending host, `receive_start_session` on the
+    /// receiving one — with no real host involved on either side.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_full_exchange_between_two_mock_hosts_moves_the_bundle() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let rx = capture_events(&app);
+
+        let sender = MockHost::default();
+        sender.inner.lock().unwrap().outgoing = Some(sample_bundle("From the mock"));
+        let receiver = MockHost::default();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        receive_start_session(app.handle(), receiver.clone(), "123456".into(), listener).unwrap();
+        assert!(receiver.slot.lock().unwrap().is_armed());
+
+        send_session(&sender, "123456".into(), addr.to_string())
+            .await
+            .unwrap();
+
+        // The receiving host really folded the bundle in, and the sending
+        // host's outgoing bundle is what arrived.
+        let received = receiver.inner.lock().unwrap().received.clone();
+        assert_eq!(received, Some(sample_bundle("From the mock")));
+        assert!(!receiver.slot.lock().unwrap().is_armed());
+        let payload: serde_json::Value =
+            serde_json::from_str(&rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap())
+                .unwrap();
+        assert_eq!(payload["ok"], serde_json::Value::Bool(true));
+        assert_eq!(
+            payload["report"]["accounts"]["openrouter"]["outcome"],
+            "added"
+        );
+    }
+
+    /// The unchanged-on-wrong-code guarantee holds for any host: the mock's
+    /// apply step never runs, so nothing it owns moved.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_wrong_code_never_reaches_a_mock_host_apply() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let rx = capture_events(&app);
+
+        let sender = MockHost::default();
+        sender.inner.lock().unwrap().outgoing = Some(sample_bundle("Personal"));
+        let receiver = MockHost::default();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        receive_start_session(app.handle(), receiver.clone(), "123456".into(), listener).unwrap();
+
+        send_session(&sender, "999999".into(), addr.to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(receiver.inner.lock().unwrap().received, None);
+        // The failed session still freed the slot for the next one.
+        assert!(!receiver.slot.lock().unwrap().is_armed());
+        let payload: serde_json::Value =
+            serde_json::from_str(&rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap())
+                .unwrap();
+        assert_eq!(payload["ok"], serde_json::Value::Bool(false));
+    }
+
+    /// An apply failure is the receiver's own outcome, not a cancelled
+    /// session: the sender is told the transfer was rejected, the receiver
+    /// keeps the bundle in memory but its slot is spent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_apply_failure_is_reported_to_both_sides() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let rx = capture_events(&app);
+
+        let sender = MockHost::default();
+        sender.inner.lock().unwrap().outgoing = Some(sample_bundle("Personal"));
+        let receiver = MockHost::default();
+        receiver.inner.lock().unwrap().apply_error = Some("could not store the key".into());
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        receive_start_session(app.handle(), receiver.clone(), "123456".into(), listener).unwrap();
+
+        let sent = send_session(&sender, "123456".into(), addr.to_string()).await;
+        assert_eq!(
+            sent,
+            Err("The other device could not accept the transfer. Nothing was moved.".to_string())
+        );
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap())
+                .unwrap();
+        assert_eq!(payload["ok"], serde_json::Value::Bool(false));
+        assert_eq!(payload["error"], "could not store the key");
+        assert!(!receiver.slot.lock().unwrap().is_armed());
     }
 }

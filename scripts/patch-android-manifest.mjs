@@ -19,6 +19,14 @@
 //    notification path silently no-ops. Declaring it requests nothing by
 //    itself — the one-time runtime ask is decided in `mobile.rs` /
 //    `should_request_notification_permission`.
+//
+// 3. Issue #155: the INTERNET permission, for the LAN pairing sockets. Tauri's
+//    generated template does ship it, but the pairing transport dials and
+//    listens on real sockets, so this is where the app's own connectivity
+//    requirement is made a guarantee rather than an assumption about what the
+//    template happens to include this release — the same belt-and-braces as
+//    the patches above. Without it every socket open fails silently at the
+//    platform level and pairing reads as "unreachable" everywhere.
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const path = 'src-tauri/gen/android/app/src/main/AndroidManifest.xml';
@@ -54,6 +62,22 @@ if (/android\.permission\.POST_NOTIFICATIONS/.test(xml)) {
   xml = patched;
   changed = true;
   console.log(`patched ${path}: added the POST_NOTIFICATIONS uses-permission`);
+}
+
+if (/android\.permission\.INTERNET/.test(xml)) {
+  console.log(`${path} already declares INTERNET — leaving it untouched.`);
+} else {
+  const patched = xml.replace(
+    /<application\b/,
+    '<uses-permission android:name="android.permission.INTERNET" />\n    <application',
+  );
+  if (patched === xml) {
+    console.error(`could not find an <application> tag to patch in ${path}`);
+    process.exit(1);
+  }
+  xml = patched;
+  changed = true;
+  console.log(`patched ${path}: added the INTERNET uses-permission`);
 }
 
 if (changed) writeFileSync(path, xml);

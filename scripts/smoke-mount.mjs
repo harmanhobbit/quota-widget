@@ -1922,6 +1922,103 @@ const CASES = [
       }
     },
   },
+  // LAN pairing on the phone (issue #155), end to end through the shell: the
+  // receive flow arms the generated code (the same commands desktop's
+  // Settings drives — the session rules live once in Rust `lan_pairing.rs`),
+  // the `lan-pairing` event lands the four-way named-list summary this
+  // component shares with the file/QR imports, a failed attempt leaves an
+  // explanatory message, and Cancel reaches the shell. The address fallback,
+  // code burning and single-use semantics mirror the desktop case above.
+  {
+    file: 'src/mobile/MobileApp.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, providers: { openrouter: provider({ enabled: true }) } },
+    verify: async ({ target, flushSync, emit }) => {
+      const button = (text) => [...target.querySelectorAll('button')].find((b) => b.textContent.trim() === text);
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+
+      const section = target.querySelector('.lan-pairing');
+      if (!section) throw new Error('the mobile settings did not offer LAN pairing');
+      const pair = (text) => [...section.querySelectorAll('button')].find((b) => b.textContent.trim() === text);
+      const codeInput = () => section.querySelector('input[inputmode="numeric"]');
+
+      // Receive: this phone shows its address, arms the generated code.
+      globalThis.__SMOKE_LAN_ADDRESS__ = ['192.168.1.20'];
+      pair('Receive on this phone…').click();
+      await settle(flushSync);
+      if (!section.textContent.includes('192.168.1.20')) {
+        throw new Error(`the receive flow did not show the device address: ${section.textContent}`);
+      }
+      pair('Generate').click();
+      await settle(flushSync);
+      if (codeInput()?.value !== '428194') {
+        throw new Error(`Generate did not fill the code input: ${codeInput()?.value}`);
+      }
+      pair('Wait for the sender').click();
+      await settle(flushSync);
+      const calls = globalThis.__SMOKE_TRANSFER_CALLS__;
+      if (!calls.includes('lan_pairing_receive_start:428194')) {
+        throw new Error(`arming did not reach lan_pairing_receive_start: ${calls.join(',')}`);
+      }
+      if (!section.textContent.includes('Waiting for the other device')) {
+        throw new Error('an armed session did not say it was waiting');
+      }
+
+      // The armed session's one outcome: the named-list summary the file/QR
+      // imports render, the waiting state cleared, and the code burned.
+      await emit('lan-pairing', {
+        ok: true,
+        report: {
+          accounts: {
+            elevenlabs: { outcome: 'added' },
+            'openrouter#1': { outcome: 'updated' },
+            claude: { outcome: 'needs_onboarding' },
+            deepseek: { outcome: 'could_not_store', reason: 'keystore locked' },
+          },
+        },
+      });
+      await settle(flushSync);
+      const summary = [...section.querySelectorAll('.import-summary p')].map((p) => p.textContent).join(' ');
+      for (const text of [
+        'Added: elevenlabs',
+        'Updated: openrouter#1',
+        'Needs sign-in: claude',
+        'Could not store deepseek: keystore locked. The account was not added.',
+      ]) {
+        if (!summary.includes(text)) throw new Error(`the receive summary is missing "${text}": ${summary}`);
+      }
+      if (codeInput()?.value !== '') {
+        throw new Error('the armed code survived its session — it must be single-use');
+      }
+
+      // A failed attempt (wrong code upstream, stall, whatever) reads as a
+      // message, not a summary, and still spends the code.
+      pair('Generate').click();
+      await settle(flushSync);
+      pair('Wait for the sender').click();
+      await settle(flushSync);
+      await emit('lan-pairing', { ok: false, error: 'The transfer stalled — nothing was changed.' });
+      await settle(flushSync);
+      if (section.querySelector('.import-summary')) {
+        throw new Error('a stale summary survived into a failed attempt');
+      }
+      if (!section.textContent.includes('The transfer stalled — nothing was changed.')) {
+        throw new Error(`the failure was not explained: ${section.textContent}`);
+      }
+
+      // A cancelled session reaches the shell.
+      pair('Generate').click();
+      await settle(flushSync);
+      pair('Wait for the sender').click();
+      await settle(flushSync);
+      pair('Cancel').click();
+      await settle(flushSync);
+      if (!calls.includes('lan_pairing_cancel')) {
+        throw new Error('Cancel did not reach lan_pairing_cancel');
+      }
+    },
+  },
 ];
 
 function stubTauri() {
