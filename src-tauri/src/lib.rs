@@ -123,12 +123,14 @@ mod desktop_app {
         /// banner on screen so they can. A plain `Mutex` because the tray and the
         /// window event loop are sync.
         pub config_recovery: std::sync::Mutex<Option<ConfigRecovery>>,
-        /// The armed LAN pairing receive session, if any (issue #154). At most one
-        /// at a time: the session's handle lives here from `receive_start` until
-        /// the session ends or is cancelled, and the session disarms itself before
-        /// its apply step so a Cancel can never land mid-write. A plain `Mutex`
-        /// because the commands that touch it are short and sync.
-        pub lan_pairing: std::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+        /// The armed LAN pairing session, whichever role it is (issue #154): a
+        /// receive wait or a send in flight. At most one at a time, tagged with
+        /// a generation so a finishing session frees only its own slot. The
+        /// session disarms itself before its apply step, so a Cancel can never
+        /// land mid-write; both roles run under a whole-exchange deadline and
+        /// are abortable by `lan_pairing_cancel`. A plain `Mutex` because the
+        /// commands that touch it are short and sync.
+        pub lan_pairing: std::sync::Mutex<crate::lan_pairing::SessionSlot>,
     }
 
     /// The frontend's first request needs both pieces of startup state. Keeping
@@ -673,7 +675,7 @@ mod desktop_app {
         }
         let state = Arc::new(AppState {
             config_recovery: std::sync::Mutex::new(loaded.recovery),
-            lan_pairing: std::sync::Mutex::new(None),
+            lan_pairing: std::sync::Mutex::new(crate::lan_pairing::SessionSlot::default()),
             config_dir,
             hide_on_blur: std::sync::atomic::AtomicBool::new(config.hide_on_blur),
             mini_pinned: std::sync::atomic::AtomicBool::new(false),
@@ -747,7 +749,7 @@ mod desktop_app {
                 lan_pairing::lan_pairing_generate_code,
                 lan_pairing::lan_pairing_send,
                 lan_pairing::lan_pairing_receive_start,
-                lan_pairing::lan_pairing_receive_cancel,
+                lan_pairing::lan_pairing_cancel,
             ])
             .setup(move |app| {
                 // Launch is tray-first: both windows are configured `visible: false`

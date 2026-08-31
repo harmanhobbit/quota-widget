@@ -105,6 +105,13 @@ tauri-plugin-dialog = { version = "2", default-features = false, features = ["xd
 # frontend ("Could not connect to localhost").
 custom-protocol = ["tauri/custom-protocol"]
 
+[dev-dependencies]
+# The pairing session tests (issue #154) drive the real commands — arm,
+# cancel, disarm — against a mock Tauri runtime with a temp config dir, so a
+# cancelled or failed session provably leaves the receiver untouched.
+tauri = { version = "2", features = ["test"] }
+tempfile = "3"
+
 [lib]
 name = "quota_widget_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

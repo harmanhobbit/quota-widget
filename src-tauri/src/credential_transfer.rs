@@ -41,8 +41,8 @@ pub async fn export_credential_bundle(
 /// folds it in exactly the way `set_config` does, so a transfer's result is
 /// indistinguishable from an ordinary save. An unreadable config.json being
 /// kept for recovery blocks this write like any other.
-pub(crate) async fn apply_and_commit(
-    app: &tauri::AppHandle,
+pub(crate) async fn apply_and_commit<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     state: &Arc<AppState>,
     bundle: &transfer::CredentialBundle,
 ) -> Result<ApplyReport, String> {

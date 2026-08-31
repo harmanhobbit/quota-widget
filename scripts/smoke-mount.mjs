@@ -1782,9 +1782,32 @@ const CASES = [
         throw new Error('a successful send showed no confirmation');
       }
 
-      // Receiver: Generate fills the code, arming consumes exactly it.
-      button('Cancel').click();
+      // Sender: a send held open by a stalled receiver is cancelable —
+      // Cancel reaches the shell, the pending send rejects, and the panel
+      // comes back ready to use instead of spinning forever.
+      globalThis.__SMOKE_LAN_SEND_HANG__ = true;
+      fill(['654321', '192.168.1.20']);
+      button('Send accounts').click();
       flushSync();
+      const sending = [...target.querySelectorAll('.lan-pairing button')].find((b) => b.textContent.trim() === 'Sending…');
+      if (!sending || sending.disabled !== true) {
+        throw new Error('an in-flight send showed no disabled Sending… button');
+      }
+      const sendCancel = [...target.querySelectorAll('.lan-pairing button')].find((b) => b.textContent.trim() === 'Cancel');
+      if (sendCancel.disabled) {
+        throw new Error('Cancel is disabled while sending — the stall would be unescapable');
+      }
+      sendCancel.click();
+      await settle(flushSync);
+      if (!calls().includes('lan_pairing_cancel')) {
+        throw new Error(`Cancel during a send did not reach lan_pairing_cancel: ${calls().join(',')}`);
+      }
+      if (target.querySelector('.lan-pairing input')) {
+        throw new Error('cancelling a send left the send form open');
+      }
+      globalThis.__SMOKE_LAN_SEND_HANG__ = false;
+
+      // Receiver: Generate fills the code, arming consumes exactly it.
       button('Receive on this device…').click();
       await settle(flushSync); // the address lookup resolves after the click
       if (!target.querySelector('.lan-pairing .device-code')?.textContent.includes('192.168.1.20:45454')) {
@@ -1836,8 +1859,8 @@ const CASES = [
       await settle(flushSync);
       button('Cancel').click();
       await settle(flushSync);
-      if (!calls().includes('lan_pairing_receive_cancel')) {
-        throw new Error('Cancel did not reach lan_pairing_receive_cancel');
+      if (!calls().includes('lan_pairing_cancel')) {
+        throw new Error('Cancel did not reach lan_pairing_cancel');
       }
       if (target.querySelector('.lan-pairing .note')?.textContent.includes('Waiting for the other device')) {
         throw new Error('a cancelled session is still shown as waiting');
@@ -2034,13 +2057,22 @@ export async function invoke(cmd, args) {
     case 'lan_pairing_send':
       (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push(\`lan_pairing_send:\${args.code}:\${args.address}\`);
       if (globalThis.__SMOKE_LAN_SEND_ERROR__) throw new Error(globalThis.__SMOKE_LAN_SEND_ERROR__);
+      // A stalled receiver: the command stays pending until the shell's
+      // cancel aborts it, which surfaces as a rejection — the same shape the
+      // real command's oneshot produces.
+      if (globalThis.__SMOKE_LAN_SEND_HANG__) {
+        return new Promise((_, reject) => { globalThis.__SMOKE_LAN_SEND_REJECT__ = reject; });
+      }
       return null;
     case 'lan_pairing_receive_start':
       (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push(\`lan_pairing_receive_start:\${args.code}\`);
       if (globalThis.__SMOKE_LAN_START_ERROR__) throw new Error(globalThis.__SMOKE_LAN_START_ERROR__);
       return null;
-    case 'lan_pairing_receive_cancel':
-      (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push('lan_pairing_receive_cancel');
+    case 'lan_pairing_cancel':
+      (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push('lan_pairing_cancel');
+      // Aborting the sender rejects its pending command, as the shell does.
+      globalThis.__SMOKE_LAN_SEND_REJECT__?.(new Error('Transfer cancelled — nothing was sent.'));
+      globalThis.__SMOKE_LAN_SEND_REJECT__ = null;
       return null;
     default: return null;
   }

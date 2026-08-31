@@ -10,10 +10,13 @@
 //! # Wire protocol (initiator = the sender of the bundle)
 //!
 //! 1. Initiator → responder: 32-byte PAKE initiator message.
-//! 2. Responder derives the channel key → initiator: 64-byte PAKE response
-//!    (public share || confirmation tag).
-//! 3. Initiator verifies the tag. A mismatch means the two sides entered
-//!    different codes; the initiator aborts and sends nothing more.
+//! 2. Responder validates the initiator's share is contributory (see
+//!    [`crate::pake`]) → initiator: 64-byte PAKE response (public share ||
+//!    confirmation tag).
+//! 3. Initiator validates the responder's share is contributory and verifies
+//!    the tag. A mismatch means the two sides entered different codes, or a
+//!    peer sent a share that could not contribute to the secret; the
+//!    initiator aborts and sends nothing more.
 //! 4. Initiator → responder: `u32` big-endian length, then that many bytes of
 //!    the bundle sealed under the channel key with
 //!    [`crate::seal::seal_with_key`] — the same sealed format as the file
@@ -312,6 +315,30 @@ mod tests {
 
         let received = receive_bundle(&mut b, "123456").await;
         assert_eq!(received.unwrap_err(), PairingError::Interrupted);
+        stall.abort();
+    }
+
+    /// Same guarantee from the sender's seat: a receiver that accepts the
+    /// connection and then goes silent ends the send at the step deadline
+    /// rather than holding the session — and the bundle in memory — open
+    /// forever. Paused time fires the deadline the moment both tasks idle.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_receiver_ends_the_send_at_the_step_deadline() {
+        let (mut a, b) = duplex(64 * 1024);
+        // Accepts the handshake bytes, then says nothing back.
+        let stall = tokio::spawn(async move {
+            let mut silent = b;
+            let mut init_msg = [0u8; KEY_LEN];
+            tokio::time::timeout(Duration::from_secs(3600), silent.read_exact(&mut init_msg))
+                .await
+                .unwrap()
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            drop(silent);
+        });
+
+        let sent = send_bundle(&mut a, "123456", &sample_bundle("Personal")).await;
+        assert_eq!(sent.unwrap_err(), PairingError::Interrupted);
         stall.abort();
     }
 

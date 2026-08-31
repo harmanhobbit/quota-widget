@@ -5,7 +5,7 @@
 // Aliased: the panel already has its own `save` (Save & close).
   import { save as saveDialog, open as openDialog } from '@tauri-apps/plugin-dialog';
   import { runQrTransfer } from './qrTransfer.js';
-  import { qrTransferFrames, lanPairingSend, lanPairingReceiveStart, lanPairingReceiveCancel, lanPairingGenerateCode } from './host.js';
+  import { qrTransferFrames, lanPairingSend, lanPairingReceiveStart, lanPairingCancel, lanPairingGenerateCode } from './host.js';
   import { runLanSend, runLanReceiveWait, handleLanResult } from './lanPairing.js';
 
   let { onclose, initialConfig, snapshots = [] } = $props();
@@ -211,6 +211,7 @@
     pairMessage = '';
     pairSummary = null;
     pairWaiting = false;
+    pairBusy = false;
     if (mode === 'receive') {
       invoke('lan_pairing_address')
         .then((addrs) => (pairAddresses = Array.isArray(addrs) ? addrs : []))
@@ -219,13 +220,17 @@
   }
 
   function closePairing() {
-    if (pairWaiting) void cancelReceive();
+    // A send in flight or an armed session: stop it at the shell too, so a
+    // peer that is stalling the exchange loses its socket and the port is
+    // freed. Nothing armed makes the command a harmless no-op.
+    if (pairBusy || pairWaiting) void lanPairingCancel().catch(() => {});
     pairMode = '';
     pairCode = '';
     pairAddress = '';
     pairMessage = '';
     pairSummary = null;
     pairWaiting = false;
+    pairBusy = false;
   }
 
   async function generateCode() {
@@ -268,7 +273,7 @@
 
   async function cancelReceive() {
     try {
-      await lanPairingReceiveCancel();
+      await lanPairingCancel();
     } catch {
       // Nothing armed, or the shell predates pairing: nothing to undo.
     }
@@ -1521,7 +1526,10 @@
           <button class="small" onclick={sendAccounts} disabled={pairBusy}>
             {pairBusy ? 'Sending…' : 'Send accounts'}
           </button>
-          <button class="small" onclick={closePairing} disabled={pairBusy}>Cancel</button>
+          <!-- Enabled while sending on purpose: a stalled receiver must not
+               leave the user watching a spinner they cannot leave. Cancel
+               aborts the exchange at the shell and resets the panel. -->
+          <button class="small" onclick={closePairing}>Cancel</button>
         </div>
         <p class="note">The other device shows its address while it waits to receive.</p>
       {:else}

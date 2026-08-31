@@ -15,15 +15,22 @@
 //!    point `G` on the X25519 curve.
 //! 2. Each side picks a random ephemeral scalar, computes its public share
 //!    `DH(scalar, G)`, and exchanges it.
-//! 3. Each side computes the shared secret `DH(scalar, peer_share)`.
+//! 3. Each side computes the shared secret `DH(scalar, peer_share)` — and
+//!    refuses the handshake outright if it is the all-zero encoding, which is
+//!    what a small-order (attacker-chosen) share always produces against a
+//!    clamped scalar. Without that contributory check a forged peer could
+//!    derive the same channel key without the code and pass step 5.
 //! 4. The responder derives the channel key and sends a confirmation tag.
 //! 5. The initiator derives the same key and verifies the tag — a mismatch
-//!    means the two sides used different pairing codes.
+//!    means the two sides used different pairing codes, or one side sent a
+//!    non-contributory share.
 //!
 //! An attacker who does not know the code cannot compute `G` and therefore
 //! cannot solve the DDH problem to recover the key from the public shares
-//! alone. One online guess per connection attempt is the only brute-force
-//! path.
+//! alone, and the all-zero check in step 3 closes the one X25519 shortcut
+//! (small-order shares) that would have let a forged peer pass without any
+//! guess at all. One online guess per connection attempt is the only
+//! brute-force path.
 //!
 //! # Pairing code
 //!
@@ -108,7 +115,7 @@ impl PakeInitiator {
             .try_into()
             .expect("remaining slice is KEY_LEN bytes");
 
-        let shared_secret = x25519_dalek::x25519(self.private_scalar, peer_share);
+        let shared_secret = shared_secret(self.private_scalar, peer_share)?;
         let channel_key = derive_channel_key(&shared_secret, &self.public_share, &peer_share);
         let expected = derive_confirmation(&channel_key, &self.public_share, &peer_share);
 
@@ -136,7 +143,7 @@ impl PakeResponder {
         let clamped_scalar = clamp_scalar(private_scalar);
 
         let public_share = x25519_dalek::x25519(clamped_scalar, generator);
-        let shared_secret = x25519_dalek::x25519(clamped_scalar, *initiator_msg);
+        let shared_secret = shared_secret(clamped_scalar, *initiator_msg)?;
         let channel_key = derive_channel_key(&shared_secret, initiator_msg, &public_share);
         let confirmation = derive_confirmation(&channel_key, initiator_msg, &public_share);
 
@@ -166,6 +173,33 @@ fn derive_generator(pairing_code: &str) -> [u8; KEY_LEN] {
     let mut scalar = [0u8; KEY_LEN];
     scalar.copy_from_slice(&hash[..KEY_LEN]);
     clamp_scalar(scalar)
+}
+
+/// Multiply our scalar by the peer's share, refusing non-contributory shares.
+///
+/// X25519 happily accepts public shares that make the output attacker-known:
+/// any point of order dividing the cofactor 8 — the "small-order" shares —
+/// yields the all-zero secret against a clamped scalar, since clamping makes
+/// the scalar a multiple of 8 and 8·P is the identity for such P. A peer (or
+/// network attacker) that sends one of those knows the secret the handshake
+/// would derive without knowing the pairing code, and could pass the
+/// confirmation check with a key of its own choosing — impersonating the
+/// other device to steal the bundle, or planting one. The all-zero output is
+/// the complete test for this: a legitimate share produces it only with
+/// probability ~2⁻²⁵², and no share chosen to zero *our* output can be found
+/// without knowing our scalar.
+///
+/// Both roles run this before any key material is derived, so a refused
+/// handshake leaves nothing on either side.
+fn shared_secret(
+    scalar: [u8; KEY_LEN],
+    peer_share: [u8; KEY_LEN],
+) -> Result<[u8; KEY_LEN], PakeError> {
+    let shared = x25519_dalek::x25519(scalar, peer_share);
+    if shared == [0u8; KEY_LEN] {
+        return Err(PakeError::Mismatch);
+    }
+    Ok(shared)
 }
 
 /// Derive the channel key from the DH shared secret and the two public shares.
@@ -311,5 +345,97 @@ mod tests {
         let (_initiator, init_msg) = PakeInitiator::new("123456");
         let (responder, _resp_msg) = PakeResponder::new("123456", &init_msg).unwrap();
         assert_eq!(responder.channel_key().len(), KEY_LEN);
+    }
+
+    /// The X25519 public-share encodings that force the all-zero shared
+    /// secret. Every point of order dividing the cofactor 8 does this against
+    /// a clamped scalar (clamping makes the scalar a multiple of 8, and 8·P is
+    /// the identity for any such P), so a peer sending any of these knows the
+    /// secret the handshake would derive. Verified against `x25519_dalek` —
+    /// this list is the test fixture, not an input to the check itself, which
+    /// is the general all-zero-output test in [`shared_secret`].
+    const SMALL_ORDER_SHARES: [[u8; KEY_LEN]; 7] = [
+        [0u8; KEY_LEN], // the identity
+        {
+            let mut one = [0u8; KEY_LEN];
+            one[0] = 1;
+            one
+        },
+        hex("e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800"),
+        hex("5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157"),
+        hex("ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"),
+        hex("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"),
+        hex("eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"),
+    ];
+
+    const fn hex(s: &str) -> [u8; KEY_LEN] {
+        const fn digit(b: u8) -> u8 {
+            match b {
+                b'0'..=b'9' => b - b'0',
+                b'a'..=b'f' => b - b'a' + 10,
+                _ => panic!("bad hex digit"),
+            }
+        }
+        let bytes = s.as_bytes();
+        let mut out = [0u8; KEY_LEN];
+        let mut i = 0;
+        while i < KEY_LEN {
+            out[i] = digit(bytes[i * 2]) * 16 + digit(bytes[i * 2 + 1]);
+            i += 1;
+        }
+        out
+    }
+
+    /// S1 regression (review finding): a forged responder that answers a
+    /// legitimate initiator with a small-order share must be refused. The
+    /// share forces the all-zero shared secret, so an attacker who knows no
+    /// code can compute the channel key and a confirmation tag that verifies —
+    /// before the contributory check this forged exchange was accepted, and
+    /// the sender would have sealed the bundle under an attacker-known key.
+    #[test]
+    fn a_forged_responder_with_a_small_order_share_is_refused() {
+        for share in SMALL_ORDER_SHARES {
+            let (initiator, init_msg) = PakeInitiator::new("123456");
+            // Everything a network attacker can compute: the forced zero
+            // secret, both public shares (theirs is the forged share, ours is
+            // in the initiator message), and therefore a tag that verifies.
+            let forged_key = derive_channel_key(&[0u8; KEY_LEN], &init_msg, &share);
+            let mut forged = [0u8; RESPONSE_LEN];
+            forged[..KEY_LEN].copy_from_slice(&share);
+            forged[KEY_LEN..].copy_from_slice(&derive_confirmation(&forged_key, &init_msg, &share));
+
+            assert_eq!(
+                initiator.finish(&forged),
+                Err(PakeError::Mismatch),
+                "share {:02x?}",
+                &share[..4]
+            );
+        }
+    }
+
+    /// S1 regression: an initiator share drawn from the small-order set must
+    /// be refused before the responder derives or exposes anything — the
+    /// attacker sending it can derive the channel key without the code and
+    /// seal a bundle of their own onto this device.
+    #[test]
+    fn a_small_order_initiator_share_is_refused() {
+        for share in SMALL_ORDER_SHARES {
+            assert_eq!(
+                PakeResponder::new("123456", &share).err(),
+                Some(PakeError::Mismatch),
+                "share {:02x?}",
+                &share[..4]
+            );
+        }
+    }
+
+    /// A well-formed peer share never trips the contributory check: the
+    /// happy path still derives one shared key on both sides.
+    #[test]
+    fn a_legitimate_share_is_not_mistaken_for_a_small_order_one() {
+        let (initiator, init_msg) = PakeInitiator::new("654321");
+        let (responder, resp_msg) = PakeResponder::new("654321", &init_msg).unwrap();
+        let key = initiator.finish(&resp_msg).unwrap();
+        assert_eq!(key, *responder.channel_key());
     }
 }

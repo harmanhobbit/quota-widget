@@ -82,13 +82,15 @@ export const qrScanFinish = (passphrase) => invoke('qr_scan_finish', { passphras
 
 // LAN desktop pairing (issue #154). Desktop-only commands: the receiver arms
 // a code and waits (the outcome arrives on the `lan-pairing` event, not as
-// the command's return), the sender dials the receiver's address. The
-// handshake, sealing and transfer live in quota_core::pairing behind these.
+// the command's return), the sender dials the receiver's address, and the
+// cancel aborts the one armed session whichever role it is — a send that a
+// stalled receiver is holding open included. The handshake, sealing and
+// transfer live in quota_core::pairing behind these.
 export const lanPairingAddresses = () => invoke('lan_pairing_address');
 export const lanPairingGenerateCode = () => invoke('lan_pairing_generate_code');
 export const lanPairingSend = (code, address) => invoke('lan_pairing_send', { code, address });
 export const lanPairingReceiveStart = (code) => invoke('lan_pairing_receive_start', { code });
-export const lanPairingReceiveCancel = () => invoke('lan_pairing_receive_cancel');
+export const lanPairingCancel = () => invoke('lan_pairing_cancel');
 
 export const qrScan = async (options) =>
   (await import('@tauri-apps/plugin-barcode-scanner')).scan(options);
