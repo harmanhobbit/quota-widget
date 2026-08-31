@@ -5,6 +5,8 @@ mod credential_transfer;
 mod desktop;
 #[cfg(not(mobile))]
 mod grok_oauth;
+#[cfg(not(mobile))]
+mod lan_pairing;
 mod oauth;
 #[cfg(not(mobile))]
 mod poller;
@@ -61,8 +63,8 @@ mod desktop_app {
     #[cfg(target_os = "linux")]
     use crate::tray_linux;
     use crate::{
-        codex_oauth, credential_transfer, desktop, grok_oauth, oauth, poller, qr_transfer, secrets,
-        tray, updates,
+        codex_oauth, credential_transfer, desktop, grok_oauth, lan_pairing, oauth, poller,
+        qr_transfer, secrets, tray, updates,
     };
     use quota_core::alerts::AlertEngine;
     use quota_core::config::{Config, ConfigRecovery};
@@ -121,6 +123,14 @@ mod desktop_app {
         /// banner on screen so they can. A plain `Mutex` because the tray and the
         /// window event loop are sync.
         pub config_recovery: std::sync::Mutex<Option<ConfigRecovery>>,
+        /// The armed LAN pairing session, whichever role it is (issue #154): a
+        /// receive wait or a send in flight. At most one at a time, tagged with
+        /// a generation so a finishing session frees only its own slot. The
+        /// session disarms itself before its apply step, so a Cancel can never
+        /// land mid-write; both roles run under a whole-exchange deadline and
+        /// are abortable by `lan_pairing_cancel`. A plain `Mutex` because the
+        /// commands that touch it are short and sync.
+        pub lan_pairing: std::sync::Mutex<crate::lan_pairing::SessionSlot>,
     }
 
     /// The frontend's first request needs both pieces of startup state. Keeping
@@ -665,6 +675,7 @@ mod desktop_app {
         }
         let state = Arc::new(AppState {
             config_recovery: std::sync::Mutex::new(loaded.recovery),
+            lan_pairing: std::sync::Mutex::new(crate::lan_pairing::SessionSlot::default()),
             config_dir,
             hide_on_blur: std::sync::atomic::AtomicBool::new(config.hide_on_blur),
             mini_pinned: std::sync::atomic::AtomicBool::new(false),
@@ -734,6 +745,11 @@ mod desktop_app {
                 credential_transfer::import_credential_bundle,
                 set_dialog_open,
                 qr_transfer::qr_transfer_frames,
+                lan_pairing::lan_pairing_address,
+                lan_pairing::lan_pairing_generate_code,
+                lan_pairing::lan_pairing_send,
+                lan_pairing::lan_pairing_receive_start,
+                lan_pairing::lan_pairing_cancel,
             ])
             .setup(move |app| {
                 // Launch is tray-first: both windows are configured `visible: false`

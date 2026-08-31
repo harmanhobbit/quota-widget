@@ -5,7 +5,8 @@
 // Aliased: the panel already has its own `save` (Save & close).
   import { save as saveDialog, open as openDialog } from '@tauri-apps/plugin-dialog';
   import { runQrTransfer } from './qrTransfer.js';
-  import { qrTransferFrames } from './host.js';
+  import { qrTransferFrames, lanPairingSend, lanPairingReceiveStart, lanPairingCancel, lanPairingGenerateCode } from './host.js';
+  import { runLanSend, runLanReceiveWait, handleLanResult } from './lanPairing.js';
 
   let { onclose, initialConfig, snapshots = [] } = $props();
 
@@ -182,6 +183,120 @@
       // An older shell has no such command; that is "nothing to manage".
       desktop = null;
     }
+  }
+
+  // LAN desktop pairing (issue #154). `pairMode` picks the role's flow. The
+  // receiver arms exactly one code per session and every way a session ends —
+  // applied, failed, cancelled — clears the code, so a code can never arm a
+  // second session and an attacker gets a single guess at it.
+  let pairMode = $state(''); // '', 'send', 'receive'
+  let pairCode = $state('');
+  let pairAddress = $state('');
+  // This device's address(es) as ready-to-type `ip:port` strings; fetched
+  // when a role is chosen, not at Settings mount, and only shown on the
+  // receive side.
+  let pairAddresses = $state([]);
+  let pairBusy = $state(false);
+  let pairWaiting = $state(false);
+  let pairMessage = $state('');
+  // The receiver's four-way summary, same shape and wording as the file
+  // import's. Cleared on a new attempt, not on leaving — the user may have
+  // stepped away from a failed attempt's explanation.
+  let pairSummary = $state(null);
+
+  function openPairing(mode) {
+    pairMode = mode;
+    pairCode = '';
+    pairAddress = '';
+    pairMessage = '';
+    pairSummary = null;
+    pairWaiting = false;
+    pairBusy = false;
+    if (mode === 'receive') {
+      invoke('lan_pairing_address')
+        .then((addrs) => (pairAddresses = Array.isArray(addrs) ? addrs : []))
+        .catch(() => (pairAddresses = []));
+    }
+  }
+
+  function closePairing() {
+    // A send in flight or an armed session: stop it at the shell too, so a
+    // peer that is stalling the exchange loses its socket and the port is
+    // freed. Nothing armed makes the command a harmless no-op.
+    if (pairBusy || pairWaiting) void lanPairingCancel().catch(() => {});
+    pairMode = '';
+    pairCode = '';
+    pairAddress = '';
+    pairMessage = '';
+    pairSummary = null;
+    pairWaiting = false;
+    pairBusy = false;
+  }
+
+  async function generateCode() {
+    try {
+      pairCode = await lanPairingGenerateCode();
+    } catch {
+      // An older shell has no such command; draw one here instead — the code
+      // only has to match on both sides.
+      pairCode = String(Math.floor(Math.random() * 1e6)).padStart(6, '0');
+    }
+  }
+
+  async function sendAccounts() {
+    pairMessage = '';
+    pairSummary = null;
+    pairBusy = true;
+    const r = await runLanSend({ code: pairCode, address: pairAddress, host: { lanPairingSend } });
+    pairBusy = false;
+    if (r.status === 'failed') {
+      pairMessage = r.msg;
+      return;
+    }
+    // One transfer per code, as on the receiver.
+    pairCode = '';
+    pairMessage = 'Accounts sent — the other device has them and will show a summary.';
+  }
+
+  async function waitToReceive() {
+    pairMessage = '';
+    pairSummary = null;
+    pairBusy = true;
+    const r = await runLanReceiveWait({ code: pairCode, host: { lanPairingReceiveStart } });
+    pairBusy = false;
+    if (r.status === 'failed') {
+      pairMessage = r.msg;
+      return;
+    }
+    pairWaiting = true;
+  }
+
+  async function cancelReceive() {
+    try {
+      await lanPairingCancel();
+    } catch {
+      // Nothing armed, or the shell predates pairing: nothing to undo.
+    }
+    pairWaiting = false;
+    pairCode = '';
+    pairMessage = 'Cancelled — nothing was transferred.';
+  }
+
+  // The armed session's one outcome. On success this is the receiver's
+  // import summary, and the accounts it names are pulled into the open panel
+  // exactly as the file import does.
+  function onLanPairingResult(payload) {
+    pairWaiting = false;
+    const r = handleLanResult(payload);
+    if (r.status === 'applied') {
+      pairMessage = '';
+      pairSummary = r.summary;
+      void refreshImportedProviders(r.keys);
+    } else {
+      pairMessage = r.msg;
+    }
+    // Single-use: the armed code is spent whatever the outcome.
+    pairCode = '';
   }
 
   async function addDesktopEntry() {
@@ -368,6 +483,7 @@
     let unlistenGrok;
     let unlistenUpdate;
     let unlistenAnchor;
+    let unlistenPairing;
     // Rust owns the anchor and writes it when the summary is dragged. This
     // form holds a snapshot taken at mount, so without this it would save the
     // pre-drag anchor back over the new one. Only the anchor is adopted:
@@ -404,6 +520,9 @@
     listen('update', (e) => setUpdateStatus(e.payload))
       .then((stop) => (unlistenUpdate = stop))
       .catch(() => {});
+    listen('lan-pairing', (e) => onLanPairingResult(e.payload))
+      .then((stop) => (unlistenPairing = stop))
+      .catch(() => {});
     // App binds Escape to leaving Settings. Capture phase so an open headline
     // menu swallows the first press instead of the whole screen closing.
     const escape = (event) => {
@@ -418,6 +537,7 @@
       unlistenGrok?.();
       unlistenUpdate?.();
       unlistenAnchor?.();
+      unlistenPairing?.();
       window.removeEventListener('keydown', escape, true);
     };
   });
@@ -1374,6 +1494,87 @@
         <div class="row">
           <button class="small" onclick={closeQrTransfer}>Done</button>
         </div>
+      {/if}
+    </section>
+
+    <!-- LAN desktop pairing (issue #154): the live transport for the same
+         bundle the backup file and QR code move. One device sends, the other
+         receives; both type the same 6-digit code, which the PAKE turns into
+         the transfer's encryption key — the code itself never crosses the
+         network. -->
+    <section class="lan-pairing">
+      <h2>Pair with another device</h2>
+      {#if !pairMode}
+        <div class="row">
+          <button class="small" onclick={() => openPairing('send')}>Send to another device…</button>
+          <button class="small" onclick={() => openPairing('receive')}>Receive on this device…</button>
+        </div>
+        <p class="note">
+          Move every account to another desktop over your local network — no server in
+          between. Both devices enter the same 6-digit code. Pasted keys work
+          immediately; OAuth and cookie accounts (Claude, Codex, Grok, Hermes Portal)
+          arrive awaiting sign-in.
+        </p>
+      {:else if pairMode === 'send'}
+        <label class="field">Pairing code
+          <input inputmode="numeric" maxlength="6" placeholder="6-digit code from the other device" bind:value={pairCode} />
+        </label>
+        <label class="field">Other device's address
+          <input placeholder="e.g. 192.168.1.20" bind:value={pairAddress} />
+        </label>
+        <div class="row">
+          <button class="small" onclick={sendAccounts} disabled={pairBusy}>
+            {pairBusy ? 'Sending…' : 'Send accounts'}
+          </button>
+          <!-- Enabled while sending on purpose: a stalled receiver must not
+               leave the user watching a spinner they cannot leave. Cancel
+               aborts the exchange at the shell and resets the panel. -->
+          <button class="small" onclick={closePairing}>Cancel</button>
+        </div>
+        <p class="note">The other device shows its address while it waits to receive.</p>
+      {:else}
+        <div class="field">
+          <span>This device's address</span>
+          {#if pairAddresses.length}
+            <p class="device-code">{pairAddresses[0]}</p>
+          {:else}
+            <p class="note">
+              Could not work out this device's address — find it in your system's
+              network settings and type it on the other device.
+            </p>
+          {/if}
+        </div>
+        <div class="field">
+          <span>Pairing code</span>
+          <div class="row">
+            <input inputmode="numeric" maxlength="6" placeholder="6-digit code" bind:value={pairCode} />
+            <button class="small" onclick={generateCode} disabled={pairWaiting}>Generate</button>
+          </div>
+        </div>
+        {#if !pairWaiting}
+          <div class="row">
+            <button class="small" onclick={waitToReceive} disabled={pairBusy}>
+              {pairBusy ? 'Arming…' : 'Wait for the sender'}
+            </button>
+            <button class="small" onclick={closePairing}>Cancel</button>
+          </div>
+          <p class="note">
+            Enter the same code on the sending device, which then needs this
+            device's address above. A code arms one transfer attempt only — success
+            or not, generate a fresh one for the next transfer.
+          </p>
+        {:else}
+          <p class="note">Waiting for the other device to send…</p>
+          <div class="row">
+            <button class="small" onclick={cancelReceive}>Cancel</button>
+          </div>
+        {/if}
+      {/if}
+      {#if pairMessage}<p class="note">{pairMessage}</p>{/if}
+      {#if pairSummary}
+        <p class="note">
+          Added {pairSummary.added}, updated {pairSummary.updated}{#if pairSummary.needs_onboarding}, {pairSummary.needs_onboarding} awaiting sign-in{/if}{#if pairSummary.could_not_store}, {pairSummary.could_not_store} could not be stored{/if}.
+        </p>
       {/if}
     </section>
 

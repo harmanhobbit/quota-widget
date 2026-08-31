@@ -27,7 +27,9 @@ platforms — sidesteps the race and costs one sign-in per OAuth account.
 
 **Trusting the LAN** for pairing was rejected: a peer on a shared or café network
 could impersonate the other device and silently receive the bundle. Pairing is
-instead authenticated by a short code run through a PAKE (SPAKE2 / CPace), so a
+instead authenticated by a short code run through a PAKE (a CPace-style X25519
+handshake, whose contributory-behavior check refuses the small-order shares an
+attacker would otherwise use to pass the exchange without the code), so a
 network attacker gets a single online guess before the exchange burns.
 
 **Continuous multi-master sync** was rejected in favour of directional,

@@ -162,6 +162,24 @@ updated, needs sign-in, or could-not-store — an account whose key could not be
 stored is not added, so it never looks set up when it isn't. A wrong passphrase
 or a corrupt file is refused without touching your existing accounts, and a lost
 passphrase makes the file unrecoverable: nothing else holds the key.
+
+Desktop Settings has a **Pair with another device** section that moves the same
+set of accounts live over your local network — no server in between. One desktop
+chooses **Send to another device**, the other **Receive on this device**; both
+enter the same 6-digit code. The code never crosses the network: it authenticates
+the two devices to each other and derives the transfer's encryption key, so a
+device that doesn't know it gets a single guess per attempt and a wrong code
+transfers nothing. The receiving desktop shows an address like
+`192.168.1.20:45454` for the sending one to type. Both desktops must be on the
+same network — Windows shows its usual firewall prompt the first time a device
+waits to receive. The same move-and-report rules apply as the file transfer:
+pasted keys work immediately on arrival, OAuth and cookie accounts (Claude,
+Codex, Grok, Hermes Portal) arrive awaiting sign-in, the receiving desktop
+reports what happened (added / updated / needs sign-in / could-not-store), and a
+cancelled, interrupted or wrong-coded attempt leaves the receiver exactly as it
+was. A code arms one transfer attempt only; generate a fresh one for the next
+transfer.
+
 Accounts can be moved up and down in Settings; that order is saved and is the
 order used in the full popup, mini summary, and tray tooltip. Each account can
 also choose its own mini-summary headline: Automatic picks the worst real quota

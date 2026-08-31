@@ -1732,6 +1732,141 @@ const CASES = [
       }
     },
   },
+  // LAN desktop pairing (issue #154), sender and receiver flows. Proven here:
+  // an incomplete code never reaches the command; the typed code and address
+  // reach lan_pairing_send; Generate's code lands in the field and reaches
+  // lan_pairing_receive_start; the single lan-pairing event renders the
+  // four-way summary, clears the waiting state and burns the code; a cancel
+  // reaches the shell. The transfer itself is proven at the
+  // quota_core::pairing seam in Rust.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    verify: async ({ target, flushSync, emit }) => {
+      const button = (text) => [...target.querySelectorAll('button')].find((b) => b.textContent.trim() === text);
+      const fill = (values) => {
+        const inputs = [...target.querySelectorAll('.lan-pairing input')];
+        if (inputs.length !== values.length) throw new Error(`expected ${values.length} pairing inputs, found ${inputs.length}`);
+        inputs.forEach((el, i) => {
+          el.value = values[i];
+          el.dispatchEvent(new window.Event('input', { bubbles: true }));
+        });
+        flushSync();
+      };
+      const calls = () => globalThis.__SMOKE_TRANSFER_CALLS__;
+
+      // Sender: an incomplete code is refused before any command runs.
+      button('Send to another device…').click();
+      flushSync();
+      fill(['12345', '192.168.1.20']);
+      button('Send accounts').click();
+      await settle(flushSync);
+      if (calls().some((c) => c.startsWith('lan_pairing_send'))) {
+        throw new Error(`an incomplete code still called the send command: ${calls().join(',')}`);
+      }
+      const notes = [...target.querySelectorAll('.lan-pairing .note')].map((p) => p.textContent).join(' ');
+      if (!notes.includes('6-digit')) {
+        throw new Error('an incomplete code showed no explanation');
+      }
+
+      // Sender: the typed code and address reach the command, and the
+      // success message promises the summary appears on the other device.
+      fill(['654321', ' 192.168.1.20 ']);
+      button('Send accounts').click();
+      await settle(flushSync);
+      if (!calls().includes('lan_pairing_send:654321:192.168.1.20')) {
+        throw new Error(`did not reach lan_pairing_send with code and address: ${calls().join(',')}`);
+      }
+      const sentNotes = [...target.querySelectorAll('.lan-pairing .note')].map((p) => p.textContent).join(' ');
+      if (!sentNotes.includes('Accounts sent')) {
+        throw new Error('a successful send showed no confirmation');
+      }
+
+      // Sender: a send held open by a stalled receiver is cancelable —
+      // Cancel reaches the shell, the pending send rejects, and the panel
+      // comes back ready to use instead of spinning forever.
+      globalThis.__SMOKE_LAN_SEND_HANG__ = true;
+      fill(['654321', '192.168.1.20']);
+      button('Send accounts').click();
+      flushSync();
+      const sending = [...target.querySelectorAll('.lan-pairing button')].find((b) => b.textContent.trim() === 'Sending…');
+      if (!sending || sending.disabled !== true) {
+        throw new Error('an in-flight send showed no disabled Sending… button');
+      }
+      const sendCancel = [...target.querySelectorAll('.lan-pairing button')].find((b) => b.textContent.trim() === 'Cancel');
+      if (sendCancel.disabled) {
+        throw new Error('Cancel is disabled while sending — the stall would be unescapable');
+      }
+      sendCancel.click();
+      await settle(flushSync);
+      if (!calls().includes('lan_pairing_cancel')) {
+        throw new Error(`Cancel during a send did not reach lan_pairing_cancel: ${calls().join(',')}`);
+      }
+      if (target.querySelector('.lan-pairing input')) {
+        throw new Error('cancelling a send left the send form open');
+      }
+      globalThis.__SMOKE_LAN_SEND_HANG__ = false;
+
+      // Receiver: Generate fills the code, arming consumes exactly it.
+      button('Receive on this device…').click();
+      await settle(flushSync); // the address lookup resolves after the click
+      if (!target.querySelector('.lan-pairing .device-code')?.textContent.includes('192.168.1.20:45454')) {
+        throw new Error(`the receiver did not show the device address: ${target.querySelector('.lan-pairing')?.textContent}`);
+      }
+      button('Generate').click();
+      await settle(flushSync);
+      const codeInput = target.querySelector('.lan-pairing input');
+      if (codeInput.value !== '428194') {
+        throw new Error(`Generate did not fill the code field: ${codeInput.value}`);
+      }
+      button('Wait for the sender').click();
+      await settle(flushSync);
+      if (!calls().includes('lan_pairing_receive_start:428194')) {
+        throw new Error(`arming did not reach receive_start with the shown code: ${calls().join(',')}`);
+      }
+      if (!target.querySelector('.lan-pairing .note')?.textContent.includes('Waiting for the other device')) {
+        throw new Error('an armed session showed no waiting state');
+      }
+
+      // The armed session's one outcome: the four-way summary, the waiting
+      // state cleared, and the code burned.
+      await emit('lan-pairing', {
+        ok: true,
+        report: {
+          accounts: {
+            elevenlabs: { outcome: 'added' },
+            'openrouter#1': { outcome: 'updated' },
+            claude: { outcome: 'needs_onboarding' },
+          },
+        },
+      });
+      const summary = [...target.querySelectorAll('.lan-pairing .note')].map((p) => p.textContent).join(' ');
+      for (const text of ['Added 1, updated 1, 1 awaiting sign-in', 'Waiting for the other device']) {
+        const present = summary.includes(text);
+        const wanted = text !== 'Waiting for the other device';
+        if (present !== wanted) {
+          throw new Error(`after the result, ${wanted ? 'missing' : 'stale'}: ${text}`);
+        }
+      }
+      if (target.querySelector('.lan-pairing input').value !== '') {
+        throw new Error('the armed code survived its session — it must be single-use');
+      }
+
+      // A cancelled session reaches the shell and leaves the waiting state.
+      button('Generate').click();
+      await settle(flushSync);
+      button('Wait for the sender').click();
+      await settle(flushSync);
+      button('Cancel').click();
+      await settle(flushSync);
+      if (!calls().includes('lan_pairing_cancel')) {
+        throw new Error('Cancel did not reach lan_pairing_cancel');
+      }
+      if (target.querySelector('.lan-pairing .note')?.textContent.includes('Waiting for the other device')) {
+        throw new Error('a cancelled session is still shown as waiting');
+      }
+    },
+  },
   // Desktop→phone QR transfer, mobile side (issue #156): the scan loop calls
   // qr_scan_reset then qr_scan_frame for each queued detection, renders
   // "captured N of M" progress from the FrameStatus each call returns, and —
@@ -1908,6 +2043,37 @@ export async function invoke(cmd, args) {
       (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push(\`qr_scan_finish:\${args.passphrase}\`);
       if (globalThis.__SMOKE_QR_FINISH_ERROR__) throw new Error(globalThis.__SMOKE_QR_FINISH_ERROR__);
       return globalThis.__SMOKE_IMPORT_REPORT__ ?? { accounts: {} };
+    // LAN desktop pairing (issue #154). The five commands stand in for the
+    // Rust session: generate returns a fixed code a case can trace into
+    // receive_start, address returns the receiver's ready-to-type strings,
+    // and the recorded calls prove the typed code/address reach the sender
+    // command, that arming consumed the code the receiver shows, and that a
+    // cancel reached the shell.
+    case 'lan_pairing_address':
+      return globalThis.__SMOKE_LAN_ADDRESS__ ?? [];
+    case 'lan_pairing_generate_code':
+      (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push('lan_pairing_generate_code');
+      return '428194';
+    case 'lan_pairing_send':
+      (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push(\`lan_pairing_send:\${args.code}:\${args.address}\`);
+      if (globalThis.__SMOKE_LAN_SEND_ERROR__) throw new Error(globalThis.__SMOKE_LAN_SEND_ERROR__);
+      // A stalled receiver: the command stays pending until the shell's
+      // cancel aborts it, which surfaces as a rejection — the same shape the
+      // real command's oneshot produces.
+      if (globalThis.__SMOKE_LAN_SEND_HANG__) {
+        return new Promise((_, reject) => { globalThis.__SMOKE_LAN_SEND_REJECT__ = reject; });
+      }
+      return null;
+    case 'lan_pairing_receive_start':
+      (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push(\`lan_pairing_receive_start:\${args.code}\`);
+      if (globalThis.__SMOKE_LAN_START_ERROR__) throw new Error(globalThis.__SMOKE_LAN_START_ERROR__);
+      return null;
+    case 'lan_pairing_cancel':
+      (globalThis.__SMOKE_TRANSFER_CALLS__ ??= []).push('lan_pairing_cancel');
+      // Aborting the sender rejects its pending command, as the shell does.
+      globalThis.__SMOKE_LAN_SEND_REJECT__?.(new Error('Transfer cancelled — nothing was sent.'));
+      globalThis.__SMOKE_LAN_SEND_REJECT__ = null;
+      return null;
     default: return null;
   }
 }`);
@@ -2119,6 +2285,9 @@ for (const c of CASES) {
     globalThis.__SMOKE_QR_STATUS_SEQUENCE__ = null;
     globalThis.__SMOKE_QR_STATUS_INDEX__ = 0;
     globalThis.__SMOKE_QR_FINISH_ERROR__ = '';
+    globalThis.__SMOKE_LAN_ADDRESS__ = c.lanAddress ?? ['192.168.1.20:45454'];
+    globalThis.__SMOKE_LAN_SEND_ERROR__ = '';
+    globalThis.__SMOKE_LAN_START_ERROR__ = '';
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle

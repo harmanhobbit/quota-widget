@@ -35,6 +35,35 @@ pub async fn export_credential_bundle(
     std::fs::write(&path, sealed).map_err(|e| e.to_string())
 }
 
+/// Merge an opened `bundle` onto the running configuration and commit it —
+/// the tail shared by the file import and the LAN pairing receiver. The
+/// caller has already authenticated the bundle (passphrase or PAKE); this
+/// folds it in exactly the way `set_config` does, so a transfer's result is
+/// indistinguishable from an ordinary save. An unreadable config.json being
+/// kept for recovery blocks this write like any other.
+pub(crate) async fn apply_and_commit<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &Arc<AppState>,
+    bundle: &transfer::CredentialBundle,
+) -> Result<ApplyReport, String> {
+    let cfg = state.config.read().await.clone();
+    let (mut shared, prefs) = cfg.split();
+    let dir = state.config_dir.clone();
+    let report = transfer::apply_bundle(bundle, &mut shared, |key, value| {
+        secrets::set(&dir, key, value)
+    });
+
+    let new_config = Config::from_parts(shared, prefs);
+    new_config
+        .save(&state.config_dir)
+        .map_err(|e| e.to_string())?;
+    *state.config.write().await = new_config.clone();
+    let _ = app.emit("config", &new_config);
+    state.refresh.notify_one();
+
+    Ok(report)
+}
+
 /// Open the file at `path` under `passphrase` and merge its accounts onto the
 /// current configuration, reporting what happened to each one.
 ///
@@ -51,22 +80,5 @@ pub async fn import_credential_bundle(
     let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
     let bundle = seal::open(&bytes, &passphrase).map_err(|e| e.to_string())?;
 
-    let cfg = state.config.read().await.clone();
-    let (mut shared, prefs) = cfg.split();
-    let dir = state.config_dir.clone();
-    let report = transfer::apply_bundle(&bundle, &mut shared, |key, value| {
-        secrets::set(&dir, key, value)
-    });
-
-    let new_config = Config::from_parts(shared, prefs);
-    // Same refusal as `set_config`: an unreadable config.json being kept for
-    // recovery blocks every ordinary write, imports included.
-    new_config
-        .save(&state.config_dir)
-        .map_err(|e| e.to_string())?;
-    *state.config.write().await = new_config.clone();
-    let _ = app.emit("config", &new_config);
-    state.refresh.notify_one();
-
-    Ok(report)
+    apply_and_commit(&app, &state, &bundle).await
 }
