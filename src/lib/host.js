@@ -22,6 +22,12 @@ export const refreshNow = () => invoke('refresh_now');
 // visible the fetch is supposed to run in-process, immediately.
 export const refreshManual = () => invoke('refresh_manual');
 export const testProvider = (provider) => invoke('test_provider', { provider });
+// Notification permission (issue #112): the Settings row's live state, the
+// one-time contextual request, and the no-re-prompt recovery link into the
+// system's notification settings.
+export const notificationPermissionState = () => invoke('notification_permission_state');
+export const requestNotificationPermission = () => invoke('request_notification_permission');
+export const openNotificationSettings = () => invoke('open_notification_settings');
 export const startClaudeSignin = (provider) => invoke('start_claude_signin', { provider });
 export const finishClaudeSignin = (provider, code) => invoke('finish_claude_signin', { provider, code });
 export const startCodexSignin = (provider) => invoke('start_codex_signin', { provider });

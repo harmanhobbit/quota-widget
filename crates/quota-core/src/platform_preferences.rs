@@ -47,6 +47,13 @@ pub struct PlatformPreferences {
     /// `crate::config::Config::desktop_integration_prompted`, whose doc this
     /// mirrors.
     pub desktop_integration_prompted: bool,
+    /// Whether Android has put the one POST_NOTIFICATIONS runtime-permission
+    /// request to the user (issue #112). Records that the request was *issued*,
+    /// not what was answered — a denial is remembered as firmly as a grant, so
+    /// the user is never re-prompted; Settings is the recovery path. See
+    /// `crate::config::Config::notification_permission_requested`, whose doc
+    /// this mirrors.
+    pub notification_permission_requested: bool,
     /// Where the mini summary is pinned.
     pub mini_anchor: MiniAnchor,
 }
@@ -62,6 +69,7 @@ impl Default for PlatformPreferences {
             scroll_opacity_invert: false,
             check_updates: true,
             desktop_integration_prompted: false,
+            notification_permission_requested: false,
             mini_anchor: MiniAnchor::default(),
         }
     }
@@ -81,6 +89,7 @@ impl PlatformPreferences {
             scroll_opacity_invert: config.scroll_opacity_invert,
             check_updates: config.check_updates,
             desktop_integration_prompted: config.desktop_integration_prompted,
+            notification_permission_requested: config.notification_permission_requested,
             mini_anchor: config.mini_anchor.clone(),
         }
     }

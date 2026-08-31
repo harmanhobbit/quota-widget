@@ -281,6 +281,23 @@ fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(
         return Err(format!("saving alert memory: {e}"));
     }
 
+    // Deliver this pass's planned notifications (issue #112) before
+    // `outcome.snapshots` is moved into the store below: quota-core has already
+    // filtered the events through the per-account toast toggles and the
+    // baseline rule and produced the full/public content pair, so all that
+    // crosses the boundary here is the finished JSON. Posting is best-effort —
+    // a failed delivery is logged and never fails the worker (which would only
+    // retry a fetch the alert memory already accounts for). The foreground app
+    // delivers its own plan the same way (`mobile.rs::refresh_once`); the two
+    // hosts never run the same pass, and the engine's edge-triggering means a
+    // crossing notifies once, not twice.
+    let plan = quota_core::alerts::plan_notifications_json(&outcome, &cfg);
+    if plan != "[]" {
+        if let Err(e) = crate::android_notifications::deliver_with_env(env, context, &plan) {
+            eprintln!("[worker] delivering notification plan failed: {e}");
+        }
+    }
+
     // Configured display order, then merge-and-store the read model every cold
     // widget reads. The merge matters here more than anywhere else: this worker
     // races the foreground app's own refreshes — in this process or, for a

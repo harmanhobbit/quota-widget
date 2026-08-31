@@ -311,7 +311,51 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
     if let Err(e) = engine.save(&state.config_dir) {
         eprintln!("[mobile] persisting alert memory failed: {e}");
     }
+    // Whether any account has ever read successfully — the engine's baseline
+    // set surviving this pass is exactly the fact
+    // `should_request_notification_permission` means by
+    // `any_account_succeeded`. Read before the engine is dropped; the
+    // contextual permission ask below keys off it.
+    #[cfg(target_os = "android")]
+    let any_account_succeeded = engine.has_baseline();
     drop(engine);
+
+    // Hand this pass's planned notifications to the Kotlin host (issue #112):
+    // quota-core has already filtered the events through the per-account toast
+    // toggles and the baseline rule and produced the full/public content pair,
+    // so all that crosses the boundary here is the finished JSON the host
+    // posts. Best-effort like every other notification path — a failed
+    // delivery is logged and never fails the refresh itself. The background
+    // worker delivers its own plan the same way (see `widget_jni::
+    // headless_refresh`); the two hosts never run the same pass, and the
+    // engine's edge-triggering means a crossing notifies once, not twice.
+    #[cfg(target_os = "android")]
+    {
+        let plan = quota_core::alerts::plan_notifications_json(&outcome, &cfg);
+        if plan != "[]" {
+            if let Err(e) = crate::android_notifications::deliver(&plan) {
+                eprintln!("[mobile] delivering notification plan failed: {e}");
+            }
+        }
+    }
+
+    // The one contextual POST_NOTIFICATIONS ask (issue #112): only after some
+    // account has read successfully (so the request has context), only when an
+    // enabled account wants notifications, and only while the one-shot flag
+    // (`notification_permission_requested`, durable in platform preferences)
+    // says the request has never been issued — grant or denial alike ends the
+    // asking forever, and Settings is the recovery path. The event asks the
+    // open webview to invoke `request_notification_permission`, which fires
+    // the actual system dialog from the foreground Activity; a background
+    // worker never requests permission.
+    #[cfg(target_os = "android")]
+    if quota_core::alerts::should_request_notification_permission(
+        &cfg,
+        any_account_succeeded,
+        cfg.notification_permission_requested,
+    ) {
+        let _ = app.emit("notification-permission-prompt", ());
+    }
 
     // A rotated credential that could not be persisted is an authentication/
     // storage failure, not a healthy refresh. Keep any prior successful reading
@@ -462,6 +506,73 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
             }
         }
     }
+}
+
+// ---- Notification permission (issue #112) ----------------------------------
+
+/// The platform's notification-permission state for the mobile Settings row:
+/// `"granted"` or `"denied"` on Android 13+; `"granted"` below 13, where no
+/// runtime permission exists. Off Android the bridge has no native half and
+/// the error is surfaced to the UI as "unavailable".
+#[tauri::command]
+fn notification_permission_state() -> Result<String, String> {
+    #[cfg(target_os = "android")]
+    return crate::android_notifications::permission_state();
+    #[cfg(not(target_os = "android"))]
+    Err("notification permission state only exists on Android".into())
+}
+
+/// Fire the one-time POST_NOTIFICATIONS request (issue #112). The decision to
+/// ask was made in `refresh_once` (first successful account + notifications
+/// wanted) and surfaced to the open webview as `notification-permission-prompt`;
+/// this command is its acknowledgement, invoked from the foreground app. It is
+/// a durable one-shot: the request is issued to the system first, and only a
+/// successful issuance flips `notification_permission_requested` in platform
+/// preferences — a grant and a denial are recorded identically, so the user is
+/// never asked twice, and the system settings link in Settings is the recovery
+/// path either way.
+#[tauri::command]
+async fn request_notification_permission(
+    state: tauri::State<'_, Arc<MobileState>>,
+) -> Result<(), String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = &state;
+        return Err("notification permission only exists on Android".into());
+    }
+    #[cfg(target_os = "android")]
+    {
+        // Checked under the config write lock and persisted in the same save
+        // that records it, so two racing invocations cannot both issue the
+        // system dialog on the strength of a stale flag.
+        let mut cfg = state.config.write().await;
+        if cfg.notification_permission_requested {
+            return Ok(());
+        }
+        // Issue the request before persisting the flag: a bridge failure here
+        // must not burn the one-shot. If the process dies between the dialog
+        // and the save, the worst case is one extra ask after relaunch — the
+        // opposite (a persisted flag with no dialog ever shown) would ask
+        // silently never, which is the unrecoverable direction.
+        crate::android_notifications::request_from_activity()?;
+        let (shared, mut prefs) = cfg.split();
+        prefs.notification_permission_requested = true;
+        let updated = Config::from_parts(shared, prefs);
+        updated.save(&state.config_dir).map_err(|e| e.to_string())?;
+        *cfg = updated;
+        Ok(())
+    }
+}
+
+/// Open the system's notification settings for this app — the recovery path
+/// once the one-time request is spent (denied, or later revoked): there is no
+/// re-prompt by design, so the mobile Settings row links here instead.
+#[tauri::command]
+fn open_notification_settings() -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    return crate::android_notifications::open_settings();
+    #[cfg(not(target_os = "android"))]
+    Err("notification settings only exist on Android".into())
 }
 
 /// One-off fetch for the mobile Settings "Test" button, mirroring desktop's
@@ -941,6 +1052,9 @@ pub fn run() {
             refresh_now,
             refresh_manual,
             test_provider,
+            notification_permission_state,
+            request_notification_permission,
+            open_notification_settings,
             start_claude_signin,
             finish_claude_signin,
             start_codex_signin,

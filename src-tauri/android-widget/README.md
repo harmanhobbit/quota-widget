@@ -85,11 +85,14 @@ and unique tag.
 | `kotlin/.../widget/QuotaGlanceWidget.kt` | The Glance widget: small/medium/large tiers, status colours + non-colour cues, deep-link and refresh actions. |
 | `kotlin/.../widget/QuotaWidgetReceiver.kt` | `GlanceAppWidgetReceiver` + the refresh `ActionCallback`; also ensures the periodic refresh exists on widget updates. |
 | `kotlin/.../widget/WidgetRefreshWorker.kt` | The one-time durable WorkManager refresh job — enqueued by the widget's refresh action, the app's manual refresh, and the periodic schedule. |
+| `kotlin/.../widget/AlertNotifier.kt` | Notification posting (issue #112): parses the plan JSON `quota_core::alerts::plan_notifications_json` produces and posts each entry as a `VISIBILITY_PRIVATE` NotificationCompat notification whose public (lock-screen) version is the plan's generic text. Called over JNI by both refresh hosts via `src-tauri/src/android_notifications.rs`. |
+| `kotlin/.../widget/NotificationAccess.kt` | The permission half of the same seam: live state read for the mobile Settings row, the one-time POST_NOTIFICATIONS request fired from the foreground Activity, and the system notification-settings link that is the no-re-prompt recovery path. |
 | `kotlin/.../widget/RefreshScheduler.kt` | The background refresh schedule (issue #111): the best-effort periodic job targeting ~15 minutes, plus the app's manual-refresh enqueue that the JNI call in `src-tauri/src/android_schedule.rs` reaches. |
 | `kotlin/.../widget/WidgetConfigActivity.kt` | Placement configuration (per-instance accounts + privacy). |
 | `kotlin/.../widget/WidgetPaths.kt` | The app config directory both the app and the widget read. |
 | `res/xml/quota_glance_widget_info.xml` | The `appwidget-provider` metadata (config activity, resize, sizes). |
 | `test/.../widget/WidgetModelTest.kt` | JVM unit tests for the wire-format parse — also a drift guard on the Rust DTO. |
+| `test/.../widget/NotificationPlanTest.kt` | JVM unit tests pinning the notification plan's wire format (#112) — the same drift guard, for what `AlertNotifier` parses. |
 | `test/.../widget/RefreshSchedulerTest.kt` | Pins the periodic target to the documented fifteen minutes (`quota_core::refresh::BACKGROUND_REFRESH_TARGET`). |
 
 ## Verifying

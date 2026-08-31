@@ -90,6 +90,9 @@ android {
 dependencies {
     implementation("androidx.glance:glance-appwidget:1.1.1")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
+    // Notification posting lives on the native host since #112 (AlertNotifier
+    // / NotificationAccess): NotificationCompat and friends are androidx.core.
+    implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.compose.runtime:runtime:${COMPOSE}")
     implementation("androidx.compose.ui:ui-unit:${COMPOSE}")
     implementation("androidx.compose.ui:ui-graphics:${COMPOSE}")
