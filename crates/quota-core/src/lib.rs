@@ -3,6 +3,7 @@ pub mod config;
 pub mod desktop;
 pub mod linux_launch;
 pub mod model;
+pub mod pairing;
 pub mod pake;
 pub mod platform_preferences;
 pub mod providers;

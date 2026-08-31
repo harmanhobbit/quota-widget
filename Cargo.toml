@@ -17,7 +17,10 @@ serde_json = { version = "1", features = ["preserve_order"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process"] }
+# `io-util` (AsyncReadExt/AsyncWriteExt) and `net` (TcpListener/TcpStream) are
+# used directly by the LAN pairing transport (quota_core::pairing) and its
+# desktop socket adapter, not merely pulled in transitively.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util", "net"] }
 indexmap = { version = "2", features = ["serde"] }
 futures-util = "0.3"
 
