@@ -143,8 +143,9 @@
   }
 </script>
 
-<section class="credential-transfer">
-  <h2>Credential export</h2>
+<!-- The section and heading come from the Disclosure that wraps this in
+     MobileApp (issue #184); this is the section's body only. -->
+<div class="credential-transfer">
   <p class="note">
     Back up your accounts to an encrypted file, or restore them from one — for
     example one exported on your desktop. The file only opens with the
@@ -227,4 +228,4 @@
       {/if}
     </div>
   {/if}
-</section>
+</div>

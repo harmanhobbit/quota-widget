@@ -133,6 +133,28 @@ const SNAPSHOTS = [
   },
 ];
 
+// Reveal a top-level Settings disclosure (issue #184) so a case can drive the
+// controls that now start collapsed behind it. Idempotent — a section already
+// open is left open. Scoped to the section headers (`.disclosure > h2`) so it
+// never matches a provider-account row, which shares the button styling. This
+// is the externally visible operation the feature adds: activating the heading
+// button, whose aria-expanded the panel's visibility must track.
+function openSection(target, id, flushSync) {
+  const btn = target.querySelector(`.disclosure > h2 > button#${id}-toggle`);
+  if (!btn) throw new Error(`no top-level section "${id}" to open`);
+  if (btn.getAttribute('aria-controls') !== `${id}-panel`) {
+    throw new Error(`section "${id}" toggle does not control its panel`);
+  }
+  if (btn.getAttribute('aria-expanded') !== 'true') {
+    btn.click();
+    flushSync();
+  }
+  if (!target.querySelector(`#${id}-panel`)) {
+    throw new Error(`opening section "${id}" did not reveal its panel`);
+  }
+  return btn;
+}
+
 // Installing crosses a dynamic import and several awaits, so a single
 // macrotask does not reliably get from the click to the rendered result. Turn
 // the loop a few times rather than guessing at one long sleep.
@@ -472,6 +494,9 @@ const CASES = [
         settingsButton().click();
         flushSync();
         if (!inSettings()) throw new Error(`did not reach Settings before the ${exit} exit`);
+        // Thresholds starts collapsed each visit (issue #184), so the warn
+        // field lives behind its disclosure until the heading is activated.
+        openSection(target, 'thresholds', flushSync);
         // An unsaved edit, so Back and Escape can be shown to discard it: the
         // next visit must read the persisted value, not this draft.
         const edit = warnInput();
@@ -501,6 +526,9 @@ const CASES = [
         globalThis.__SMOKE_LAST_CONFIG__ = undefined;
         settingsButton().click();
         flushSync();
+        // The reopened visit starts with Thresholds collapsed again — its
+        // disclosure reset — so reveal it before reading the persisted value.
+        openSection(target, 'thresholds', flushSync);
         if (exit !== 'save' && warnInput().value !== String(CONFIG.thresholds.warn_pct)) {
           throw new Error(`${exit} left its unsaved edit in the reopened form`);
         }
@@ -758,8 +786,18 @@ const CASES = [
       const findButton = (text) => [...target.querySelectorAll('button')].find((button) => button.textContent.trim() === text);
       const card = (name) => [...target.querySelectorAll('.provider')]
         .find((el) => el.querySelector('strong').textContent.trim() === name);
-      // Accounts start collapsed, so every control below has to be revealed
-      // first — and that default is itself worth asserting.
+      // Every top-level section now starts collapsed each visit (issue #184):
+      // no account card, and no General control, is on screen until its
+      // heading is activated. That the panels appear only after opening is the
+      // feature's core behaviour.
+      if (target.querySelector('.provider')) throw new Error('Providers did not start collapsed');
+      if (target.textContent.includes('Fade windows when scrolling over them')) {
+        throw new Error('General did not start collapsed');
+      }
+      openSection(target, 'providers', flushSync);
+      openSection(target, 'general', flushSync);
+      // Accounts keep their own independent disclosure inside Providers, and
+      // still start collapsed — revealing the section does not expand them.
       if (target.querySelector('.metric-picker')) throw new Error('accounts did not start collapsed');
       card('Claude').querySelector('.provider-disclosure').click();
       flushSync();
@@ -898,6 +936,7 @@ const CASES = [
     },
     expect: ['Usage days'],
     verify: async ({ target, flushSync }) => {
+      openSection(target, 'providers', flushSync);
       const card = (name) => [...target.querySelectorAll('.provider')]
         .find((el) => el.querySelector('strong').textContent.trim() === name);
       card('Claude').querySelector('.provider-disclosure').click();
@@ -935,6 +974,7 @@ const CASES = [
     },
     expect: ['Order accounts by', 'Sorting on', 'Manual (my order)', 'Expiry: soonest first'],
     verify: async ({ target, flushSync }) => {
+      openSection(target, 'general', flushSync);
       const selects = [...target.querySelectorAll('select')];
       const orderSelect = selects.find((el) => el.value === 'manual');
       const basisSelect = selects.find((el) => el.value === 'icon');
@@ -968,6 +1008,7 @@ const CASES = [
     },
     expect: ['Reverse which scroll direction fades'],
     verify: async ({ target, flushSync }) => {
+      openSection(target, 'general', flushSync);
       const boxes = [...target.querySelectorAll('input[type="checkbox"]')];
       const label = (box) => box.closest('label')?.textContent.trim();
       const fade = boxes.find((b) => label(b) === 'Fade windows when scrolling over them');
@@ -1003,6 +1044,7 @@ const CASES = [
     },
     expect: ['Update available: v0.2.0', 'Install update'],
     verify: async ({ target, flushSync }) => {
+      openSection(target, 'general', flushSync);
       const install = [...target.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === 'Install update');
       if (!install) throw new Error('an installable update offered no Install button');
@@ -1032,6 +1074,7 @@ const CASES = [
     },
     expect: ['Update available: v0.2.0', 'Install update'],
     verify: async ({ target, flushSync }) => {
+      openSection(target, 'general', flushSync);
       const button = (label) => [...target.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === label);
       if (button('Restart now')) throw new Error('offered a restart before anything was installed');
@@ -1062,6 +1105,7 @@ const CASES = [
       installable: true, restart_after_install: true,
     },
     verify: async ({ target, flushSync }) => {
+      openSection(target, 'general', flushSync);
       const button = (label) => [...target.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === label);
       button('Install update').click();
@@ -1087,7 +1131,8 @@ const CASES = [
       installable: false, restart_after_install: false,
     },
     expect: ['Update available: v0.2.0', 'nix profile upgrade quota-widget'],
-    verify: async ({ target }) => {
+    verify: async ({ target, flushSync }) => {
+      openSection(target, 'general', flushSync);
       const install = [...target.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === 'Install update');
       if (install) throw new Error('offered Install for a release with no artifact for this build');
@@ -1105,7 +1150,8 @@ const CASES = [
       installable: false, restart_after_install: false,
     },
     expect: ['Update available: v0.2.0', 'nix profile upgrade quota-widget'],
-    verify: async ({ target }) => {
+    verify: async ({ target, flushSync }) => {
+      openSection(target, 'general', flushSync);
       const install = [...target.querySelectorAll('button')]
         .find((b) => b.textContent.trim() === 'Install update');
       if (install) throw new Error('offered Install to a portable executable');
@@ -1129,6 +1175,7 @@ const CASES = [
     desktop: { state: 'absent', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
     expect: ['Applications menu', 'Add to applications menu'],
     verify: async ({ target, flushSync }) => {
+      openSection(target, 'desktop', flushSync);
       const button = (text) => [...target.querySelectorAll('.desktop-integration button')]
         .find((b) => b.textContent.trim() === text);
       if (button('Remove from applications menu')) {
@@ -1151,6 +1198,7 @@ const CASES = [
     desktopRemove: { removed: ['/home/u/.local/share/applications/quota-widget.desktop'], preserved: ['/home/u/.local/share/icons/hicolor/32x32/apps/quota-widget.png'] },
     expect: ['Remove from applications menu'],
     verify: async ({ target, flushSync }) => {
+      openSection(target, 'desktop', flushSync);
       const button = (text) => [...target.querySelectorAll('.desktop-integration button')]
         .find((b) => b.textContent.trim() === text);
       if (button('Add to applications menu')) throw new Error('offered to add a launcher that is already current');
@@ -1175,6 +1223,7 @@ const CASES = [
     desktopAdd: { action: 'repaired', written: [], preserved: [] },
     expect: ['Repair launcher', '/home/u/old/q.AppImage', '/home/u/Downloads/q.AppImage'],
     verify: async ({ target, flushSync }) => {
+      openSection(target, 'desktop', flushSync);
       const button = (text) => [...target.querySelectorAll('.desktop-integration button')]
         .find((b) => b.textContent.trim() === text);
       if (globalThis.__SMOKE_DESKTOP_CALLS__.length) {
@@ -1214,7 +1263,8 @@ const CASES = [
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     desktop: { state: 'user_owned', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
     expect: ['Applications menu', '/home/u/.local/share/applications/quota-widget.desktop'],
-    verify: ({ target }) => {
+    verify: ({ target, flushSync }) => {
+      openSection(target, 'desktop', flushSync);
       if (target.querySelectorAll('.desktop-integration button').length) {
         throw new Error('offered an action over a launcher the user owns');
       }
@@ -1467,6 +1517,7 @@ const CASES = [
       }
       target.querySelector('button[title="Settings"]').click();
       flushSync();
+      openSection(target, 'providers', flushSync);
       if (!target.querySelector('.add-account-toggle')) {
         throw new Error('an empty account list did not offer to add one (onboarding)');
       }
@@ -1504,6 +1555,7 @@ const CASES = [
     verify: async ({ target, flushSync }) => {
       target.querySelector('button[title="Settings"]').click();
       flushSync();
+      openSection(target, 'providers', flushSync);
       const card = [...target.querySelectorAll('.provider')]
         .find((el) => el.querySelector('strong').textContent.trim() === 'OpenRouter');
       if (!card) throw new Error('the OpenRouter account row did not render in mobile settings');
@@ -1552,6 +1604,7 @@ const CASES = [
 
       target.querySelector('button[title="Settings"]').click();
       flushSync();
+      openSection(target, 'providers', flushSync);
 
       // Claude: expand, Sign in → the parent must dispatch start_claude_signin
       // for *this* provider. Before the fix this line threw before any command
@@ -1622,6 +1675,7 @@ const CASES = [
       };
       target.querySelector('button[title="Settings"]').click();
       flushSync();
+      openSection(target, 'transfer', flushSync);
 
       // Export: both passphrase fields, then the picked file and the
       // passphrase reach export_credentials together.
@@ -1692,6 +1746,7 @@ const CASES = [
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     qrFrames: ['<svg data-smoke-frame="0"><rect width="1" height="1"/></svg>'],
     verify: async ({ target, flushSync }) => {
+      openSection(target, 'transfer', flushSync);
       const button = (text) => [...target.querySelectorAll('button')].find((b) => b.textContent.trim() === text);
       const fillPasswords = (values) => {
         const inputs = [...target.querySelectorAll('.qr-transfer input[type="password"]')];
@@ -1743,6 +1798,7 @@ const CASES = [
     file: 'src/lib/Settings.svelte',
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     verify: async ({ target, flushSync, emit }) => {
+      openSection(target, 'pairing', flushSync);
       const button = (text) => [...target.querySelectorAll('button')].find((b) => b.textContent.trim() === text);
       const fill = (values) => {
         const inputs = [...target.querySelectorAll('.lan-pairing input')];
@@ -1881,6 +1937,7 @@ const CASES = [
       const button = (text) => [...target.querySelectorAll('button')].find((b) => b.textContent.trim() === text);
       target.querySelector('button[title="Settings"]').click();
       flushSync();
+      openSection(target, 'transfer', flushSync);
 
       globalThis.__SMOKE_QR_SCAN_QUEUE__ = ['frame-a', 'frame-b'];
       globalThis.__SMOKE_QR_STATUS_SEQUENCE__ = [
@@ -1937,6 +1994,7 @@ const CASES = [
       const button = (text) => [...target.querySelectorAll('button')].find((b) => b.textContent.trim() === text);
       target.querySelector('button[title="Settings"]').click();
       flushSync();
+      openSection(target, 'pairing', flushSync);
 
       const section = target.querySelector('.lan-pairing');
       if (!section) throw new Error('the mobile settings did not offer LAN pairing');
@@ -2016,6 +2074,198 @@ const CASES = [
       await settle(flushSync);
       if (!calls.includes('lan_pairing_cancel')) {
         throw new Error('Cancel did not reach lan_pairing_cancel');
+      }
+    },
+  },
+  // ---- Issue #184: top-level Settings sections are collapsible disclosures ----
+  // The desktop form, end to end: every section starts collapsed on arrival,
+  // each heading is a semantic button wired to its own panel by aria-controls /
+  // aria-expanded, several sections can be open at once (disclosure, not
+  // accordion), collapsing one leaves the others untouched, and an unsaved
+  // edit survives the panel being destroyed and rebuilt across a collapse.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    desktop: { state: 'absent', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
+    verify: async ({ target, flushSync }) => {
+      const ids = ['providers', 'thresholds', 'alerts', 'general', 'backup', 'transfer', 'pairing', 'desktop'];
+      // Nothing is open on arrival: every heading is a real button that points
+      // at a panel not yet in the DOM.
+      for (const id of ids) {
+        const btn = target.querySelector(`.disclosure > h2 > button#${id}-toggle`);
+        if (!btn) throw new Error(`section "${id}" rendered no heading button`);
+        if (btn.tagName !== 'BUTTON' || btn.getAttribute('type') !== 'button') {
+          throw new Error(`section "${id}" heading is not a semantic button`);
+        }
+        if (btn.getAttribute('aria-controls') !== `${id}-panel`) {
+          throw new Error(`section "${id}" button does not point at its panel`);
+        }
+        if (btn.getAttribute('aria-expanded') !== 'false') {
+          throw new Error(`section "${id}" did not start collapsed`);
+        }
+        if (target.querySelector(`#${id}-panel`)) {
+          throw new Error(`section "${id}" rendered its panel while collapsed`);
+        }
+      }
+      // Opening a section reveals a region labelled by its own heading.
+      openSection(target, 'thresholds', flushSync);
+      const panel = target.querySelector('#thresholds-panel');
+      if (panel.getAttribute('role') !== 'region'
+        || panel.getAttribute('aria-labelledby') !== 'thresholds-toggle') {
+        throw new Error('an opened panel is not a region labelled by its heading');
+      }
+      // A second section opens alongside the first — disclosure, not accordion.
+      openSection(target, 'general', flushSync);
+      if (!target.querySelector('#thresholds-panel') || !target.querySelector('#general-panel')) {
+        throw new Error('opening a second section collapsed the first');
+      }
+      // An unsaved edit is bound to the form's state, not the panel DOM, so it
+      // outlives the panel being destroyed on collapse and rebuilt on reopen.
+      const warn = () => target.querySelector('#thresholds-panel input.num');
+      warn().value = '37';
+      warn().dispatchEvent(new window.Event('input', { bubbles: true }));
+      flushSync();
+      target.querySelector('button#thresholds-toggle').click(); // collapse
+      flushSync();
+      if (target.querySelector('#thresholds-panel')) throw new Error('collapsing left the panel in the DOM');
+      if (target.querySelector('button#thresholds-toggle').getAttribute('aria-expanded') !== 'false') {
+        throw new Error('a collapsed section still reported aria-expanded=true');
+      }
+      if (!target.querySelector('#general-panel')) throw new Error('collapsing thresholds also closed general');
+      openSection(target, 'thresholds', flushSync); // reopen
+      if (warn().value !== '37') {
+        throw new Error(`the unsaved edit did not survive a collapse/reopen: ${warn().value}`);
+      }
+    },
+  },
+  // Issue #184: the per-account disclosures inside Providers own their own open
+  // state, independent of the section wrapper — toggling a section, or even
+  // collapsing and reopening Providers itself, does not reset an expanded
+  // account — and a flow whose result lands in a closed section (an inbound
+  // LAN transfer) opens that section from the outside.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    verify: async ({ target, flushSync, emit }) => {
+      openSection(target, 'providers', flushSync);
+      const claude = () => [...target.querySelectorAll('.provider')]
+        .find((el) => el.querySelector('strong').textContent.trim() === 'Claude');
+      claude().querySelector('.provider-disclosure').click(); // expand the account
+      flushSync();
+      if (!claude().querySelector('.metric-picker')) throw new Error('expanding the account revealed no editor');
+      // Toggling an unrelated top-level section leaves the account editor open.
+      openSection(target, 'thresholds', flushSync);
+      if (!claude().querySelector('.metric-picker')) throw new Error('opening another section collapsed the account');
+      // Collapsing and reopening Providers preserves the account's own state:
+      // the two disclosures do not share a flag.
+      target.querySelector('button#providers-toggle').click();
+      flushSync();
+      openSection(target, 'providers', flushSync);
+      if (!claude().querySelector('.metric-picker')) {
+        throw new Error('the account disclosure reset when its section reopened');
+      }
+      // A closed section can be opened by a flow whose result belongs in it:
+      // an inbound LAN pairing result reveals the Pairing section.
+      if (target.querySelector('#pairing-panel')) throw new Error('pairing started open');
+      await emit('lan-pairing', { ok: false, error: 'nothing changed' });
+      if (!target.querySelector('#pairing-panel')) {
+        throw new Error('an inbound LAN result did not reveal the Pairing section');
+      }
+    },
+  },
+  // Issue #184 on Android: the whole settings screen, section by section.
+  // Every one of the seven top-level sections starts collapsed, carries the
+  // same semantic-button + aria-controls/aria-expanded wiring as desktop,
+  // opens to reveal a labelled region, and stays open when its neighbours are
+  // opened too (disclosure, not accordion). Asserted per id so a regression in
+  // any single section is caught, not just Providers.
+  {
+    file: 'src/mobile/MobileApp.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, providers: { openrouter: provider({ enabled: true }) } },
+    verify: async ({ target, flushSync }) => {
+      const ids = ['providers', 'transfer', 'pairing', 'ordering', 'thresholds', 'notifications', 'background'];
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+      if (!target.querySelector('.mobile-settings')) throw new Error('the gear did not open mobile Settings');
+      // Each section arrives collapsed, with a real button pointing at a panel
+      // that is not yet in the DOM.
+      for (const id of ids) {
+        const btn = target.querySelector(`.disclosure > h2 > button#${id}-toggle`);
+        if (!btn) throw new Error(`mobile section "${id}" rendered no heading button`);
+        if (btn.tagName !== 'BUTTON' || btn.getAttribute('type') !== 'button') {
+          throw new Error(`mobile section "${id}" heading is not a semantic button`);
+        }
+        if (btn.getAttribute('aria-controls') !== `${id}-panel`) {
+          throw new Error(`mobile section "${id}" button does not point at its panel`);
+        }
+        if (btn.getAttribute('aria-expanded') !== 'false') {
+          throw new Error(`mobile section "${id}" did not start collapsed`);
+        }
+        if (target.querySelector(`#${id}-panel`)) {
+          throw new Error(`mobile section "${id}" rendered its panel while collapsed`);
+        }
+      }
+      // Open every section in turn. openSection re-checks the aria wiring and
+      // that the panel appears; each open must reveal a region labelled by its
+      // own heading.
+      for (const id of ids) {
+        openSection(target, id, flushSync);
+        const panel = target.querySelector(`#${id}-panel`);
+        if (panel.getAttribute('role') !== 'region'
+          || panel.getAttribute('aria-labelledby') !== `${id}-toggle`) {
+          throw new Error(`mobile section "${id}" panel is not a region labelled by its heading`);
+        }
+      }
+      // Every section stays open at once — opening later ones did not collapse
+      // the earlier ones.
+      for (const id of ids) {
+        if (target.querySelector(`.disclosure > h2 > button#${id}-toggle`).getAttribute('aria-expanded') !== 'true') {
+          throw new Error(`mobile section "${id}" closed when another section was opened`);
+        }
+        if (!target.querySelector(`#${id}-panel`)) {
+          throw new Error(`mobile section "${id}" lost its panel while others were opened`);
+        }
+      }
+      // Independence the other way: collapsing one leaves the rest open.
+      target.querySelector('.disclosure > h2 > button#ordering-toggle').click();
+      flushSync();
+      if (target.querySelector('#ordering-panel')) throw new Error('collapsing ordering left its panel in the DOM');
+      for (const id of ids.filter((i) => i !== 'ordering')) {
+        if (!target.querySelector(`#${id}-panel`)) {
+          throw new Error(`collapsing ordering also closed "${id}"`);
+        }
+      }
+    },
+  },
+  // Issue #184 on Android: each visit to Settings starts fully collapsed, even
+  // after a previous visit left a section open. The desktop form gets this for
+  // free by remounting per visit; the mobile shell keeps one instance, so
+  // MobileApp resets the flags on entry — this proves that reset.
+  {
+    file: 'src/mobile/MobileApp.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, providers: { openrouter: provider({ enabled: true }) } },
+    verify: async ({ target, flushSync }) => {
+      const gear = () => target.querySelector('button[title="Settings"]');
+      const back = () => target.querySelector('.mobile-header button[title="Back"]');
+      const providersBtn = () => target.querySelector('.disclosure > h2 > button#providers-toggle');
+      gear().click();
+      flushSync();
+      if (providersBtn().getAttribute('aria-expanded') !== 'false') {
+        throw new Error('mobile Settings did not open collapsed');
+      }
+      openSection(target, 'providers', flushSync); // leave a section open
+      back().click();
+      flushSync();
+      if (target.querySelector('.mobile-settings')) throw new Error('Back did not return to the list');
+      gear().click();
+      flushSync();
+      if (providersBtn().getAttribute('aria-expanded') !== 'false') {
+        throw new Error('a section left open on the previous visit was not reset on return');
+      }
+      if (target.querySelector('#providers-panel')) {
+        throw new Error('the reopened Settings still rendered a section panel');
       }
     },
   },

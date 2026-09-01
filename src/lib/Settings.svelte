@@ -7,6 +7,7 @@
   import { runQrTransfer } from './qrTransfer.js';
   import { qrTransferFrames, lanPairingSend, lanPairingReceiveStart, lanPairingCancel, lanPairingGenerateCode } from './host.js';
   import { runLanSend, runLanReceiveWait, handleLanResult } from './lanPairing.js';
+  import Disclosure from './shared/Disclosure.svelte';
 
   let { onclose, initialConfig, snapshots = [] } = $props();
 
@@ -74,10 +75,21 @@
   let addingAccount = $state(false);
   let saveError = $state('');
   let removalError = $state('');
-  // Encrypted credential export/import (issue #151). Collapsed by default:
-  // most sessions never touch it, and an open passphrase form is not
-  // something to show unasked.
-  let backupOpen = $state(false);
+  // Top-level section disclosures (issue #184). Every section starts closed —
+  // the panel opens on headings rather than a page of scroll — and the flows
+  // whose results land inside a section reveal it again: adding an account or
+  // an import opens Providers, an inbound LAN transfer opens Pairing. The
+  // per-account rows keep their own disclosure inside Providers.
+  let openSections = $state({
+    providers: false,
+    thresholds: false,
+    alerts: false,
+    general: false,
+    backup: false,
+    transfer: false,
+    pairing: false,
+    desktop: false,
+  });
   let exportPassphrase = $state('');
   let exportPassphraseConfirm = $state('');
   let exportBusy = $state(false);
@@ -287,6 +299,9 @@
   // import summary, and the accounts it names are pulled into the open panel
   // exactly as the file import does.
   function onLanPairingResult(payload) {
+    // The summary renders in the Pairing section, which the sender's push can
+    // reach while it sits closed behind its disclosure (issue #184).
+    openSections.pairing = true;
     pairWaiting = false;
     const r = handleLanResult(payload);
     if (r.status === 'applied') {
@@ -781,6 +796,10 @@
   // fields and checks `initialiseSettings` seeds at mount — rather than
   // reloading the whole config and discarding any other unsaved edit.
   async function refreshImportedProviders(keys) {
+    // Imported accounts land in the Providers list; reveal that section so
+    // the result of the transfer is on screen, not behind a closed
+    // disclosure (issue #184).
+    openSections.providers = true;
     const fresh = await invoke('get_snapshots');
     for (const key of keys) {
       const account = fresh.config.providers[key];
@@ -834,6 +853,9 @@
     // A brand-new account needs configuring, so open it rather than leaving a
     // collapsed row that looks like nothing happened.
     expanded[key] = true;
+    // The row lives behind the Providers disclosure now, so reveal the
+    // section the add landed in (issue #184).
+    openSections.providers = true;
     newName = '';
     addingAccount = false;
   }
@@ -966,8 +988,7 @@
 
 <div class="settings">
   <div class="settings-form">
-    <section>
-      <h2>Providers</h2>
+    <Disclosure id="providers" title="Providers" bind:open={openSections.providers}>
       {#if addingAccount}
         <div class="add-account">
           <label class="field">Account name (optional)
@@ -1277,25 +1298,22 @@
           {/if}
           </div>
       {/each}
-    </section>
+    </Disclosure>
 
-    <section>
-      <h2>Thresholds</h2>
+    <Disclosure id="thresholds" title="Thresholds" bind:open={openSections.thresholds}>
       <div class="row">
         <label class="inline">Warn at <input type="number" class="num" bind:value={config.thresholds.warn_pct} />%</label>
         <label class="inline">Critical at <input type="number" class="num" bind:value={config.thresholds.critical_pct} />%</label>
       </div>
-    </section>
+    </Disclosure>
 
-    <section>
-      <h2>Alerts</h2>
+    <Disclosure id="alerts" title="Alerts" bind:open={openSections.alerts}>
       <label class="row"><input type="checkbox" bind:checked={config.alerts.toast} /> Toast notification</label>
       <label class="row"><input type="checkbox" bind:checked={config.alerts.tray_color} /> Tray icon color</label>
       <label class="row"><input type="checkbox" bind:checked={config.alerts.auto_popup} /> Auto-popup window</label>
-    </section>
+    </Disclosure>
 
-    <section>
-      <h2>General</h2>
+    <Disclosure id="general" title="General" bind:open={openSections.general}>
       <div class="row">
         <label class="inline">Poll every <input type="number" class="num" bind:value={config.poll_interval_secs} /> s</label>
       </div>
@@ -1403,17 +1421,9 @@
           restores it.
         </p>
       {/if}
-    </section>
+    </Disclosure>
 
-<section class="backup">
-      <h2>
-        <button
-          class="provider-disclosure"
-          aria-expanded={backupOpen}
-          onclick={() => (backupOpen = !backupOpen)}
-        ><span class="chevron" class:open={backupOpen}>▸</span> Backup</button>
-      </h2>
-      {#if backupOpen}
+    <Disclosure id="backup" title="Backup" bind:open={openSections.backup}>
         <p class="note">
           Export every account to a file encrypted under a passphrase you
           choose — a backup you can restore here or on another device. There is
@@ -1461,11 +1471,10 @@
             Added {importSummary.added}, updated {importSummary.updated}{#if importSummary.needs_onboarding}, {importSummary.needs_onboarding} awaiting sign-in{/if}{#if importSummary.could_not_store}, {importSummary.could_not_store} could not be stored{/if}.
           </p>
         {/if}
-      {/if}
-    </section>
+    </Disclosure>
 
-    <section class="qr-transfer">
-      <h2>Transfer to phone</h2>
+    <Disclosure id="transfer" title="Transfer to phone" bind:open={openSections.transfer}>
+      <div class="qr-transfer">
       {#if !qrOpen}
         <div class="row">
           <button class="small" onclick={openQrTransfer}>Show QR code…</button>
@@ -1496,7 +1505,8 @@
           <button class="small" onclick={closeQrTransfer}>Done</button>
         </div>
       {/if}
-    </section>
+      </div>
+    </Disclosure>
 
     <!-- LAN device pairing (issues #154/#155): the live transport for the same
          bundle the backup file and QR code move, between two desktops or a
@@ -1504,8 +1514,8 @@
          both type the same 6-digit code, which the PAKE turns into the
          transfer's encryption key — the code itself never crosses the
          network. -->
-    <section class="lan-pairing">
-      <h2>Pair with another device</h2>
+    <Disclosure id="pairing" title="Pair with another device" bind:open={openSections.pairing}>
+      <div class="lan-pairing">
       {#if !pairMode}
         <div class="row">
           <button class="small" onclick={() => openPairing('send')}>Send to another device…</button>
@@ -1578,14 +1588,15 @@
           Added {pairSummary.added}, updated {pairSummary.updated}{#if pairSummary.needs_onboarding}, {pairSummary.needs_onboarding} awaiting sign-in{/if}{#if pairSummary.could_not_store}, {pairSummary.could_not_store} could not be stored{/if}.
         </p>
       {/if}
-    </section>
+      </div>
+    </Disclosure>
 
     <!-- AppImage only: a downloaded file nothing in the system knows about.
          Every other build already has a menu entry from its installer or
          package, so `desktop` is null there and the section never appears. -->
     {#if desktop}
-      <section class="desktop-integration">
-        <h2>Applications menu</h2>
+      <Disclosure id="desktop" title="Applications menu" bind:open={openSections.desktop}>
+        <div class="desktop-integration">
         {#if desktop.state === 'user_owned'}
           <!-- Somebody else's launcher, or one of ours that has been edited.
                Both are the user's file: offer nothing that would overwrite it. -->
@@ -1624,7 +1635,8 @@
           {/if}
         {/if}
         {#if desktopMessage}<p class="note desktop-message">{desktopMessage}</p>{/if}
-      </section>
+        </div>
+      </Disclosure>
     {/if}
 
   </div>
