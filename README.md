@@ -2,7 +2,7 @@
 
 A system-tray widget for **Windows 11 and Linux** that watches your AI provider
 allowances in one place: Claude's rolling 5-hour window and weekly cap, Codex's
-weekly allowance, Grok's SuperGrok allowance, Hermes Portal credits, OpenRouter credits, ElevenLabs
+weekly allowance, Grok's SuperGrok allowance, Z.ai Coding Plan usage, Hermes Portal credits, OpenRouter credits, ElevenLabs
 credits, Firecrawl credits, DeepSeek, Moonshot and Venice balances, and Fireworks, Anthropic and
 OpenAI organization spend. It collapses to
 the tray and pops up as a compact always-on-top window.
@@ -129,6 +129,7 @@ Platform differences are small but real:
 | **Anthropic Admin** | An **admin** key (`sk-ant-admin…`) from Console → Settings → Admin keys | Official `GET /v1/organizations/cost_report` API, summing the daily cost buckets for the calendar month to date. Needs an admin key, not a normal API key, and the Admin API is unavailable on individual accounts. Like Fireworks it reports *spend*: set a **Monthly budget** to see it as a usage window, or leave it blank for a plain "Cost this month" figure. Note Priority Tier spend is excluded by the API itself. |
 | **OpenAI Admin** | An organization **Admin** key from [platform.openai.com/settings/organization/admin-keys](https://platform.openai.com/settings/organization/admin-keys) | Official `GET /v1/organization/costs` API, summing the daily cost buckets for the calendar month to date. Needs an admin key, not a normal API key. Same spend framing and **Monthly budget** option as the other spend providers. |
 | **Hermes Portal** | hermes-agent installed and logged in (`hermes`) — zero extra setup | Reads the Nous OAuth access token from `~/.hermes/auth.json` and calls the portal's billing API (`/api/billing/state` + `/api/billing/subscription`): purchased-credit balance in USD, monthly subscription allowance with tier name and cycle-reset countdown, and monthly-cap usage where configured. Subscription rollover appears as a negative usage percentage alongside its exact remaining/plan credits; the monthly cap remains a percentage only because it is a spending ceiling, not an allowance. Set an optional **Monthly budget** to add a monthly-spend target without hiding the purchased balance; Hermes' own `spentThisMonthUsd` is used when available, otherwise the widget tracks drawdown from the month's opening balance and handles top-ups. The subscription allowance is shown greyed-out and does **not** colour the card or tray while a purchased balance is still funding calls — on the Free tier that allowance is a fraction of a credit and reads 100% used permanently, which is not a quota you're actually hitting. The widget only ever uses the short-lived *access* token — never hermes's refresh token, which the portal rotates and revokes on reuse — so a stale token means "run any `hermes` command" (or keep hermes running; its keepalive refreshes it). **No hermes on this machine?** Set Settings → Hermes → Source to *Remote hermes over SSH* and enter `user@server`: the widget fetches the auth file from a machine that does run hermes (`ssh <host> cat .hermes/auth.json`, BatchMode — needs working key auth; Windows 10/11 include the OpenSSH client). Set **Transport** to *Tailscale SSH* instead when the remote is on your tailnet; the widget then runs `tailscale ssh <host>` and passes the same non-interactive SSH options through to OpenSSH. Last resort: paste a portal session cookie. |
+| **Z.ai** | An API key from your Z.ai Coding Plan — the same key your coding tool uses | Paste the key and the widget calls Z.ai's quota endpoint (`https://api.z.ai/api/monitor/usage/quota/limit`) to show the plan's token usage windows: the rolling 5-hour window and the rolling weekly window, each as a **percentage only** with its reset time — Z.ai reports utilisation, not token counts, so no absolute figures are invented. A monthly web-search/tool-call count appears when the plan reports one, shown as an **informational** row (greyed-out, never colouring the card or tray): exhausting it does not block model calls. The endpoint is undocumented and provider-internal, so it may change without notice; a changed or malformed response shows a clear error rather than guessed usage. |
 
 You can add multiple named accounts of each provider in Settings. The editable
 account name is shown everywhere; its internal key stays fixed so changing a
@@ -274,7 +275,7 @@ been seen from a **live account** — worth knowing before you trust a number.
   DeepSeek, Moonshot, OneHop, Fireworks, OpenAI Admin. This confirms the key is
   accepted, the endpoint is right, and the response parses — but a zero says
   nothing about whether a non-zero amount is scaled correctly.
-- **Not yet run against a live account:** Anthropic Admin, Venice.
+- **Not yet run against a live account:** Anthropic Admin, Venice, Z.ai.
 
 That middle distinction is not pedantry. Anthropic's cost report returns
 `amount` in **cents** while OpenAI's returns **dollars**, so a units mistake is
@@ -555,6 +556,10 @@ scripts/            icon generation, version-drift guard
 - The Hermes adapter scans responses leniently for balance-like fields, but the
   portal may change shape; the endpoint URL is user-configurable for that
   reason.
+- The Z.ai adapter targets an **observed, undocumented** endpoint
+  (`api.z.ai/api/monitor/usage/quota/limit`). If Z.ai changes or removes it the
+  account shows a clear error rather than guessed usage — there is no fallback
+  and no endpoint override, by design.
 - Most balance and spend adapters have only been confirmed against accounts
   reporting **$0.00**, and the Anthropic Admin one has not been run against a
   live account at all — so a first non-zero reading is worth checking against
