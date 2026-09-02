@@ -243,6 +243,51 @@ mod tests {
         assert!(bundle.accounts["hermes"].secret.is_none());
     }
 
+    /// A pasted-key Z.ai account is a full credential-bundle member, not a
+    /// shell: its entry and its API key both travel, so export/import and
+    /// desktop pairing provision a second device without re-pasting (issue
+    /// #183).
+    #[test]
+    fn zai_account_travels_with_its_api_key() {
+        let mut shared = SharedConfig::default();
+        shared.providers.clear();
+        shared.providers.insert(
+            "zai#personal".into(),
+            ProviderConfig {
+                enabled: true,
+                kind: Some("zai".into()),
+                label: Some("Personal Z.ai".into()),
+                ..ProviderConfig::default()
+            },
+        );
+        let mut secrets: IndexMap<String, String> = IndexMap::new();
+        secrets.insert("zai#personal".into(), "zai-api-key".into());
+
+        let bundle = build_bundle(&shared, |key| secrets.get(key).cloned());
+        assert_eq!(
+            bundle.accounts["zai#personal"].secret.as_deref(),
+            Some("zai-api-key")
+        );
+
+        // Applying to a fresh target stores the key and adds the account.
+        let mut target = SharedConfig::default();
+        target.providers.clear();
+        let mut stored: IndexMap<String, String> = IndexMap::new();
+        let report = apply_bundle(&bundle, &mut target, |key, value| {
+            stored.insert(key.into(), value.into());
+            Ok(())
+        });
+        assert_eq!(report.accounts["zai#personal"], ApplyOutcome::Added);
+        assert_eq!(
+            stored.get("zai#personal").map(String::as_str),
+            Some("zai-api-key")
+        );
+        assert_eq!(
+            target.providers["zai#personal"].kind.as_deref(),
+            Some("zai")
+        );
+    }
+
     #[test]
     fn apply_bundle_adds_every_account_to_empty_target_and_writes_keys() {
         let mut shared = SharedConfig::default();

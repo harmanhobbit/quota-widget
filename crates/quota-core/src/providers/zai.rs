@@ -589,4 +589,86 @@ mod tests {
         assert_eq!(w[1].metric_id, "weeks");
         assert_eq!(w[1].label, "2-week");
     }
+
+    /// Outcome parity (stories 18–21): one Z.ai snapshot, as the adapter
+    /// produces it, must be consumed with the same meaning by every shared
+    /// surface — threshold colouring, the compact tray/aggregate fold,
+    /// explicit headline selection, sorting, and the Android home-screen
+    /// widget's per-row projection. The informational web/tool window
+    /// participates in display and carries its counts, but never in status,
+    /// colour, or alert thresholds.
+    #[test]
+    fn one_snapshot_drives_tray_headlines_sorting_and_widget_folds_identically() {
+        use crate::model::Status;
+        use crate::snapshots::SnapshotStore;
+        use crate::widget::{project, WidgetAccountSelection, WidgetInstanceConfig, WidgetSize};
+
+        let mut body = observed_body();
+        // Web/tool exhausted, 5-hour approaching (88%), weekly comfortable:
+        // if the informational window leaked into any fold, status/colour
+        // would read Critical and the widget would headline the wrong
+        // quantity.
+        body["data"]["limits"][0]["currentValue"] = serde_json::json!(100);
+        body["data"]["limits"][1]["percentage"] = serde_json::json!(88);
+        let snap = ok_snapshot(body);
+
+        // Threshold colouring (the card's bars): Warn from the 5-hour window
+        // alone, never Critical from the exhausted informational row.
+        assert_eq!(snap.status(80.0, 95.0, None), Status::Warn);
+
+        // Compact tray/aggregate fold.
+        let mut cfg = Config::default();
+        cfg.providers.get_mut("zai").unwrap().enabled = true;
+        let aggregate = crate::refresh::aggregate_status(std::slice::from_ref(&snap), &cfg);
+        assert_eq!(aggregate.status, Status::Warn);
+        assert!(
+            (aggregate.pct - 88.0).abs() < 1e-9,
+            "aggregate took {}",
+            aggregate.pct
+        );
+
+        // Explicit weekly headline selection resolves by its metric id.
+        cfg.providers.get_mut("zai").unwrap().mini_summary_metrics =
+            Some(vec!["window:weekly".into()]);
+        let (status, pct) = cfg.mini_tray_status(&snap, None).unwrap();
+        assert_eq!(status, Status::Ok);
+        assert!((pct.unwrap() - 52.0).abs() < 1e-9);
+
+        // The Android home-screen widget folds the same snapshot: the row is
+        // present, status Warn, and its automatic headline — the worst
+        // gating window by percentage — is the Weekly window here, not the
+        // exhausted informational web/tool row.
+        let store = SnapshotStore::from_snapshots(vec![snap.clone()], aggregate);
+        let instance = WidgetInstanceConfig {
+            accounts: vec![WidgetAccountSelection {
+                provider_id: "zai".into(),
+                headlines: None,
+            }],
+            privacy: false,
+        };
+        let projection = project(
+            Some(&instance),
+            &store,
+            &cfg,
+            WidgetSize::from_dimensions(220.0, 140.0),
+            Utc::now(),
+        );
+        let content = match projection.state {
+            crate::widget::WidgetState::Content(c) => c,
+            other => panic!("expected widget content, got {other:?}"),
+        };
+        assert_eq!(content.aggregate.status, Status::Warn);
+        let row = &content.rows[0];
+        let crate::widget::RowState::Present { status, cells } = &row.state else {
+            panic!("expected a present row, got {:?}", row.state);
+        };
+        assert_eq!(*status, Status::Warn);
+        assert_eq!(cells.len(), 1, "automatic pick is one headline");
+        assert_eq!(cells[0].label, "Weekly");
+        let crate::widget::HeadlineValue::Usage { used_pct, .. } = cells[0].value.clone().unwrap()
+        else {
+            panic!("expected a usage headline, got {:?}", cells[0].value);
+        };
+        assert!((used_pct - 52.0).abs() < 1e-9);
+    }
 }
