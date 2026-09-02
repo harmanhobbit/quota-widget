@@ -14,6 +14,7 @@ pub mod openrouter;
 pub mod simple_credits;
 pub mod spend;
 pub mod venice;
+pub mod zai;
 
 use crate::config::Config;
 use crate::model::{FetchError, UsageSnapshot};
@@ -153,6 +154,7 @@ pub fn adapter_kinds() -> &'static [(&'static str, &'static str)] {
         ("anthropic_admin", "Anthropic Admin"),
         ("openai_admin", "OpenAI Admin"),
         ("hermes", "Hermes Portal"),
+        ("zai", "Z.ai"),
     ]
 }
 
@@ -217,6 +219,7 @@ pub fn providers_for(cfg: &Config) -> Vec<Box<dyn Provider>> {
                 "hermes" => {
                     Some(Box::new(hermes::Hermes::new(key.clone(), label)) as Box<dyn Provider>)
                 }
+                "zai" => Some(Box::new(zai::Zai::new(key.clone(), label)) as Box<dyn Provider>),
                 _ => None,
             }
         })
@@ -372,6 +375,37 @@ mod tests {
         );
     }
 
+    /// A configured `zai` account instantiates as the built-in adapter, keeps
+    /// its immutable account key as its id (the secret name derives from it)
+    /// and presents a custom label where one is set (issue #183).
+    #[test]
+    fn configured_zai_account_is_instantiated_with_key_and_label() {
+        let mut cfg = Config::default();
+        cfg.providers.insert(
+            "zai#personal".into(),
+            crate::config::ProviderConfig {
+                enabled: true,
+                kind: Some("zai".into()),
+                label: Some("Work Z.ai".into()),
+                ..Default::default()
+            },
+        );
+        let providers = providers_for(&cfg);
+        let account = providers
+            .iter()
+            .find(|p| p.id() == "zai#personal")
+            .expect("a configured zai kind must instantiate");
+        assert_eq!(account.kind(), "zai");
+        assert_eq!(account.id(), "zai#personal", "account key is the identity");
+        assert_eq!(account.name(), "Work Z.ai", "custom label wins");
+        // No label set: the provider's display name, not the model names.
+        cfg.providers.insert("zai".into(), Default::default());
+        let providers = providers_for(&cfg);
+        let plain = providers.iter().find(|p| p.id() == "zai").unwrap();
+        assert_eq!(plain.kind(), "zai");
+        assert_eq!(plain.name(), "Z.ai");
+    }
+
     #[test]
     fn configured_account_order_is_provider_display_order() {
         let mut cfg = Config::default();
@@ -398,6 +432,7 @@ mod tests {
                 "anthropic_admin",
                 "openai_admin",
                 "hermes",
+                "zai",
                 "codex",
                 "claude"
             ]
