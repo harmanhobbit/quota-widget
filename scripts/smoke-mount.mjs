@@ -642,6 +642,49 @@ const CASES = [
       }
     },
   },
+  // Issue #176: both windows start hidden, and a window GTK has not mapped
+  // yet reports its DOM width as 0. A content fit that forwards that width is
+  // the `gtk_window_resize` assertion 'width > 0' printed at every Linux
+  // start. With the DOM forced to the zero width a hidden window reports, no
+  // resize request may carry a non-positive width — and once the window is
+  // visible again, the same effect must fit for real, so the guard is a
+  // deferral rather than a switch-off.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    verify: async ({ flushSync, emit, sizes }) => {
+      await settle(flushSync);
+      const fitted = sizes().at(-1);
+      if (!fitted || fitted.width <= 0) {
+        throw new Error('the visible popup never fitted its content');
+      }
+      const visible = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 0 });
+      try {
+        // The trigger that fires at startup: a snapshot push re-runs the fit
+        // effect while the window is still unmapped. A fresh array, because a
+        // poll's payload is a new one even when the accounts have not changed.
+        sizes().length = 0;
+        emit('snapshots', [...SNAPSHOTS]);
+        await settle(flushSync);
+        const bad = sizes().filter((s) => !(s.width > 0));
+        if (bad.length) {
+          throw new Error(`a zero-width fit still requested ${JSON.stringify(bad[0])}`);
+        }
+        // The window is visible again: content fitting must come back.
+        Object.defineProperty(window, 'innerWidth', visible);
+        sizes().length = 0;
+        emit('snapshots', [...SNAPSHOTS]);
+        await settle(flushSync);
+        const refit = sizes().at(-1);
+        if (!refit || refit.width <= 0) {
+          throw new Error(`a visible popup stopped fitting after the guard: ${JSON.stringify(refit)}`);
+        }
+      } finally {
+        Object.defineProperty(window, 'innerWidth', visible);
+      }
+    },
+  },
   // ✕ stays an explicit hide-to-tray whatever the captured return state is: it
   // means "no window", not "put back what was there".
   {

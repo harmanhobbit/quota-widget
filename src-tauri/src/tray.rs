@@ -313,6 +313,14 @@ pub fn resize_mini_to<R: Runtime>(
     if height == size.height {
         return;
     }
+    // A window GTK has not mapped yet — `mini` starts hidden — reports its
+    // inner width as 0, and forwarding that is the `gtk_window_resize`
+    // assertion 'width > 0' printed at every Linux start (#176). Skip the fit:
+    // `show_mini` re-anchors on show, and the next measurement once the
+    // summary is visible sizes it for real.
+    if size.width == 0 {
+        return;
+    }
     let _ = win.set_size(PhysicalSize::new(size.width, height));
     anchor_to(win, anchor);
 }
