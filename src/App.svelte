@@ -97,6 +97,12 @@
       if (view !== 'popup' || !headerEl || !cardsEl) return;
       const win = getCurrentWindow();
       const h = Math.min(680, Math.max(120, headerEl.offsetHeight + cardsEl.scrollHeight + 2));
+      // Both windows start hidden, and a window GTK has not mapped yet reports
+      // its DOM width as 0. Forwarding that width is the `gtk_window_resize`
+      // assertion 'width > 0' printed at every Linux start (#176), so skip the
+      // fit — it changed nothing on Linux anyway, and the next effect run once
+      // the window is visible fits for real.
+      if (window.innerWidth <= 0) return;
       await win.setSize(new LogicalSize(window.innerWidth, h));
     } catch {
       // sizing is cosmetic — never let it break the UI
