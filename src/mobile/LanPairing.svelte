@@ -153,8 +153,9 @@
   });
 </script>
 
-<section class="lan-pairing">
-  <h2>Pair over the network</h2>
+<!-- The section and heading come from the Disclosure that wraps this in
+     MobileApp (issue #184); this is the section's body only. -->
+<div class="lan-pairing">
   {#if !pairMode}
     <div class="row transfer-actions">
       <button onclick={() => openPairing('send')}>Send to another device…</button>
@@ -241,4 +242,4 @@
       {/if}
     </div>
   {/if}
-</section>
+</div>

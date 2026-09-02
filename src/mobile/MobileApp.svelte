@@ -12,6 +12,7 @@
   import UsageCard from '../lib/shared/UsageCard.svelte';
   import Ordering from '../lib/shared/Ordering.svelte';
   import Thresholds from '../lib/shared/Thresholds.svelte';
+  import Disclosure from '../lib/shared/Disclosure.svelte';
   import SimpleKeyAccount from '../lib/shared/SimpleKeyAccount.svelte';
   import OAuthAccount from './OAuthAccount.svelte';
   import CredentialTransfer from './CredentialTransfer.svelte';
@@ -84,6 +85,22 @@
   };
 
   let view = $state('list'); // 'list' | 'settings'
+  // Top-level section disclosures (issue #184): the same collapse-by-default
+  // treatment desktop Settings uses, so Android Settings opens on a page of
+  // headings rather than a long expanded form. Disclosure is presentation
+  // state for the current visit only — it is never written to config (`persist`
+  // carries real settings alone), exported, or paired. The per-account rows
+  // keep their own independent `expanded` map below.
+  const collapsedSections = () => ({
+    providers: false,
+    transfer: false,
+    pairing: false,
+    ordering: false,
+    thresholds: false,
+    notifications: false,
+    background: false,
+  });
+  let openSections = $state(collapsedSections());
   let snapshots = $state([]);
   let config = $state(null);
   let refreshing = $state(false);
@@ -119,6 +136,14 @@
   // system says now rather than what it said at app launch.
   $effect(() => {
     if (view === 'settings') loadNotificationState();
+  });
+
+  // Collapse every top-level section each time Settings opens (issue #184).
+  // Desktop resets for free because App remounts Settings per visit; mobile
+  // keeps one MobileApp mounted and only swaps `view`, so the reset is
+  // explicit here — leaving and reopening Settings restores the compact view.
+  $effect(() => {
+    if (view === 'settings') openSections = collapsedSections();
   });
 
   function headlineOptionsFor(id, account) {
@@ -461,8 +486,7 @@
     </div>
   {:else}
     <div class="settings mobile-settings">
-      <section>
-        <h2>Providers</h2>
+      <Disclosure id="providers" title="Providers" bind:open={openSections.providers}>
         {#if Object.keys(config.providers).length === 0}
           <p class="note">No accounts yet — add one to get started.</p>
         {/if}
@@ -534,19 +558,20 @@
             />
           {/if}
         {/each}
-      </section>
-      <CredentialTransfer onImported={handleImported} />
-      <LanPairing onImported={handleImported} />
-      <section>
-        <h2>Ordering</h2>
+      </Disclosure>
+      <Disclosure id="transfer" title="Credential export" bind:open={openSections.transfer}>
+        <CredentialTransfer onImported={handleImported} />
+      </Disclosure>
+      <Disclosure id="pairing" title="Pair over the network" bind:open={openSections.pairing}>
+        <LanPairing onImported={handleImported} />
+      </Disclosure>
+      <Disclosure id="ordering" title="Ordering" bind:open={openSections.ordering}>
         <Ordering bind:sortOrder={config.sort_order} bind:sortBasis={config.sort_basis} />
-      </section>
-      <section>
-        <h2>Thresholds</h2>
+      </Disclosure>
+      <Disclosure id="thresholds" title="Thresholds" bind:open={openSections.thresholds}>
         <Thresholds bind:thresholds={config.thresholds} />
-      </section>
-      <section>
-        <h2>Notifications</h2>
+      </Disclosure>
+      <Disclosure id="notifications" title="Notifications" bind:open={openSections.notifications}>
         <label class="inline">
           <input type="checkbox" bind:checked={config.alerts.toast} />
           Notify me when an account crosses a threshold
@@ -569,9 +594,8 @@
             Open Android notification settings
           </button>
         {/if}
-      </section>
-      <section>
-        <h2>Background refresh</h2>
+      </Disclosure>
+      <Disclosure id="background" title="Background refresh" bind:open={openSections.background}>
         <p class="note">
           While open, Quota Widget refreshes as soon as you switch to it and
           then every {Math.max(15, config.poll_interval_secs ?? 60)} seconds until
@@ -579,7 +603,7 @@
           minutes — a best-effort target, not a guarantee: Android decides when
           background work actually runs, so figures can be older than that.
         </p>
-      </section>
+      </Disclosure>
       <div class="settings-footer">
         <button class="primary" onclick={async () => { await persist(); view = 'list'; }}>Save</button>
       </div>
