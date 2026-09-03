@@ -412,6 +412,9 @@ impl Default for Config {
         providers.insert("anthropic_admin".into(), ProviderConfig::default());
         providers.insert("openai_admin".into(), ProviderConfig::default());
         providers.insert("hermes".into(), ProviderConfig::default());
+        // Z.ai needs a pasted API key, so like the other key providers it
+        // ships disabled.
+        providers.insert("zai".into(), ProviderConfig::default());
         Self {
             version: 2,
             poll_interval_secs: 60,
@@ -2022,6 +2025,7 @@ mod tests {
                 &"anthropic_admin",
                 &"openai_admin",
                 &"hermes",
+                &"zai",
                 &"codex",
                 &"claude"
             ]

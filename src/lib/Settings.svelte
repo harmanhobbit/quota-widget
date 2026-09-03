@@ -26,6 +26,7 @@
     { id: 'anthropic_admin', name: 'Anthropic Admin', secret: 'Admin API key', note: 'Needs an sk-ant-admin key from Console → Settings → Admin keys, not a normal API key. The Admin API is unavailable on individual accounts. Shows organization spend this month.' },
     { id: 'openai_admin', name: 'OpenAI Admin', secret: 'Admin API key', note: 'Needs an organization Admin key from platform.openai.com/settings/organization/admin-keys, not a normal API key. Shows organization spend this month.' },
     { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Uses a hermes-agent login: local ~/.hermes/auth.json, or fetched from a remote machine over SSH (needs working key auth, e.g. via ssh-agent). Cookie paste is a last-resort fallback. Optional monthly budget tracks spend without replacing the purchased-credit balance.' },
+    { id: 'zai', name: 'Z.ai', secret: 'API key', note: 'Paste the API key from your Z.ai Coding Plan (the same key your coding tool uses). Reports token usage as 5-hour and weekly percentages plus a monthly web/tool count. The quota endpoint is undocumented, so it may change without notice.' },
   ];
   const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secret: null, note: 'Unknown provider kind.' };
 
@@ -969,6 +970,7 @@
       anthropic_admin: [{ id: 'window:monthly_spend', label: 'Monthly' }, { id: 'credits', label: 'Spend this month' }],
       openai_admin: [{ id: 'window:monthly_spend', label: 'Monthly' }, { id: 'credits', label: 'Spend this month' }],
       hermes: [{ id: 'credits', label: 'Purchased credit balance' }, { id: 'window:monthly_cap', label: 'Monthly cap' }, { id: 'window:monthly_allowance', label: 'Monthly allowance' }, { id: 'window:monthly_spend', label: 'Monthly' }],
+      zai: [{ id: 'window:five_hour', label: '5-hour' }, { id: 'window:weekly', label: 'Weekly' }, { id: 'window:web_tool_month', label: 'Web/tool this month' }],
     }[kind] ?? [];
     const live = snapshots.find((snap) => snap.provider_id === id)?.windows ?? [];
     const choices = [...known];

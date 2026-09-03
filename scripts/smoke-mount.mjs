@@ -122,6 +122,25 @@ const SNAPSHOTS = [
     credits: { balance: 12, unit: 'USD' },
     windows: [{ metric_id: 'monthly_allowance', label: 'Monthly allowance (Plus)', used_pct: 100, informational: true }],
   },
+  // Z.ai (issue #183): percentage-only token windows plus an informational
+  // monthly web/tool window with its absolute counts.
+  {
+    provider_id: 'zai',
+    provider_name: 'Z.ai',
+    error: null,
+    credits: null,
+    windows: [
+      { metric_id: 'five_hour', label: '5-hour', used_pct: 8, informational: false },
+      { metric_id: 'weekly', label: 'Weekly', used_pct: 52, informational: false },
+      {
+        metric_id: 'web_tool_month',
+        label: 'Web/tool this month',
+        used_pct: 25,
+        informational: true,
+        allowance: { remaining: 75, total: 100, unit: 'calls' },
+      },
+    ],
+  },
   // A spend-reporting provider with no budget set: labelled credits, which must
   // render as "Cost this month: …" rather than as a remaining balance.
   {
@@ -905,6 +924,53 @@ const CASES = [
       }
     },
   },
+  // Z.ai joins the normal provider flow (issue #183): the desktop selector
+  // offers it, adding one creates an account under an immutable `zai#1` key
+  // with the zai kind and a custom label, its row exposes a pasted-API-key
+  // secret field like every other key provider, and Save persists the entry
+  // through the ordinary set_config path.
+  {
+    file: 'src/lib/Settings.svelte',
+    props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
+    expect: ['Z.ai'],
+    verify: async ({ target, flushSync }) => {
+      const findButton = (text) => [...target.querySelectorAll('button')].find((button) => button.textContent.trim() === text);
+      openSection(target, 'providers', flushSync);
+      findButton('+ Add account').click();
+      flushSync();
+      const nameInput = target.querySelector('.add-account input');
+      if (!nameInput) throw new Error('add-account did not offer a name field');
+      nameInput.value = 'Personal Z.ai';
+      nameInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+      const kindSelect = target.querySelector('.add-account select');
+      const zaiOption = [...kindSelect.options].find((o) => o.value === 'zai');
+      if (!zaiOption || zaiOption.textContent !== 'Z.ai') {
+        throw new Error(`the provider picker did not offer Z.ai: ${[...kindSelect.options].map((o) => o.value).join(',')}`);
+      }
+      kindSelect.value = 'zai';
+      kindSelect.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      findButton('Add account').click();
+      flushSync();
+      // The new row opens automatically and must expose the key paste field
+      // through the shared pasted-key path.
+      const card = [...target.querySelectorAll('.provider')]
+        .find((el) => el.querySelector('strong').textContent.includes('Personal Z.ai'));
+      if (!card) throw new Error('the added Z.ai account did not render a row');
+      const secretInput = card.querySelector('input[type="password"]');
+      if (!secretInput || !secretInput.placeholder.includes('API key')) {
+        throw new Error('the Z.ai row did not offer the pasted API key field');
+      }
+      target.querySelector('.primary').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const saved = globalThis.__SMOKE_LAST_CONFIG__;
+      const entry = saved?.providers?.['zai#1'];
+      if (!entry || entry.kind !== 'zai' || entry.label !== 'Personal Z.ai' || !entry.enabled) {
+        throw new Error(`Save did not persist the Z.ai account correctly: ${JSON.stringify(saved?.providers?.['zai#1'])}`);
+      }
+    },
+  },
   // The footer is fixed: only the form scrolls, and the commit action, the
   // save error and the version live outside the scrolling region so they are
   // on screen wherever the user has scrolled to. jsdom lays nothing out, so
@@ -1414,8 +1480,31 @@ const CASES = [
   // it must stay bare.
   {
     file: 'src/lib/shared/UsageCard.svelte',
-    props: () => ({ snap: structuredClone(SNAPSHOTS[4]) }),
+    props: () => ({ snap: structuredClone(SNAPSHOTS.at(-1)) }),
     expect: ['Cost this month: 8.75 USD'],
+  },
+  // Z.ai's card (issue #183): percentage-only token windows render as plain
+  // bars with no invented totals, and the monthly web/tool window renders
+  // with its absolute counts but as an informational row.
+  {
+    file: 'src/lib/shared/UsageCard.svelte',
+    props: () => ({ snap: structuredClone(SNAPSHOTS.find((s) => s.provider_id === 'zai')) }),
+    expect: ['Z.ai', '5-hour', 'Weekly', 'Web/tool this month'],
+    verify: ({ target }) => {
+      const rows = [...target.querySelectorAll('.window')];
+      if (rows.length !== 3) throw new Error(`expected 3 windows, got ${rows.length}`);
+      const text = rows.map((row) => row.textContent);
+      if (text.some((t) => /\d+\s*\/\s*\d+\s*tokens/i.test(t))) {
+        throw new Error(`a token window invented absolute totals: ${text.join(' | ')}`);
+      }
+      const calls = text.find((t) => t.includes('calls'));
+      if (!calls || !calls.includes('75') || !calls.includes('remaining')) {
+        throw new Error(`the web/tool row did not carry its counts: ${text.join(' | ')}`);
+      }
+      // The informational row gets the muted fill, never a threshold colour.
+      const muted = rows[2].querySelector('.fill.muted');
+      if (!muted) throw new Error('the web/tool window was not rendered as informational');
+    },
   },
   {
     file: 'src/lib/shared/UsageCard.svelte',

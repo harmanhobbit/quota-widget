@@ -62,6 +62,7 @@
     { id: 'anthropic_admin', name: 'Anthropic Admin', mode: 'key', secretLabel: 'Admin API key', note: 'Needs an sk-ant-admin key from Console → Settings → Admin keys, not a normal API key. Shows organization spend this month.' },
     { id: 'openai_admin', name: 'OpenAI Admin', mode: 'key', secretLabel: 'Admin API key', note: 'Needs an organization Admin key from platform.openai.com/settings/organization/admin-keys, not a normal API key. Shows organization spend this month.' },
     { id: 'hermes', name: 'Hermes Portal', mode: 'cookie', secretLabel: 'Portal session cookie', note: 'Paste a portal.nousresearch.com session cookie. No local executable, SSH or Tailscale is used.' },
+    { id: 'zai', name: 'Z.ai', mode: 'key', secretLabel: 'API key', note: 'Paste the API key from your Z.ai Coding Plan (the same key your coding tool uses). Reports token usage as 5-hour and weekly percentages plus a monthly web/tool count.' },
   ];
   const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, mode: 'key', secretLabel: 'API key', note: '' };
 
@@ -82,6 +83,7 @@
     anthropic_admin: [{ id: 'window:monthly_spend', label: 'Monthly' }, { id: 'credits', label: 'Spend this month' }],
     openai_admin: [{ id: 'window:monthly_spend', label: 'Monthly' }, { id: 'credits', label: 'Spend this month' }],
     hermes: [{ id: 'credits', label: 'Credit balance' }],
+    zai: [{ id: 'window:five_hour', label: '5-hour' }, { id: 'window:weekly', label: 'Weekly' }, { id: 'window:web_tool_month', label: 'Web/tool this month' }],
   };
 
   let view = $state('list'); // 'list' | 'settings'

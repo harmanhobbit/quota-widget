@@ -498,6 +498,10 @@ mod tests {
         // Pasted-key providers get no OAuth entry.
         assert!(keys.contains(&"openrouter".to_string()));
         assert!(!keys.contains(&"openrouter_oauth".to_string()));
+        // Z.ai is pasted-key too: one entry per account, named after the
+        // immutable account key (issue #183).
+        assert!(keys.contains(&"zai".to_string()));
+        assert!(!keys.contains(&"zai_oauth".to_string()));
         assert!(keys.iter().all(|k| valid_key(k)), "{keys:?}");
     }
 
