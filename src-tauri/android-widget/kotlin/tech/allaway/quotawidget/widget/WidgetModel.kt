@@ -73,6 +73,14 @@ data class HeadlineCell(
     val bar: Double?,
     /** Reset instant as epoch seconds, large tier only. */
     val resetsAtSecs: Long?,
+    /**
+     * Period-progress fraction in 0.0..1.0, large tier only — where the
+     * desktop's period marker sits on the usage bar. Computed in quota-core
+     * (`period.js` semantics); the host draws it verbatim at `period × width`.
+     * Null when the provider reports no period bounds, or the bar itself is
+     * absent (below the large tier, or privacy-redacted).
+     */
+    val period: Double?,
 )
 
 /** Parse the widget-view JSON. Never throws on a missing optional field. */
@@ -127,6 +135,7 @@ private fun parseCell(obj: JSONObject): HeadlineCell = HeadlineCell(
     value = if (obj.has("value")) obj.optString("value") else null,
     bar = if (obj.has("bar")) obj.optDouble("bar") else null,
     resetsAtSecs = obj.optLongOrNull("resets_at_secs"),
+    period = if (obj.has("period")) obj.optDouble("period") else null,
 )
 
 /** `optLong` treats a missing key as 0; this keeps a genuinely-absent field null. */

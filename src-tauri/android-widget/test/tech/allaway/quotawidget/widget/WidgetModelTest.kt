@@ -33,7 +33,7 @@ class WidgetModelTest {
                     "removed": false,
                     "status": "ok",
                     "cells": [
-                      { "label": "Window", "value": "42%", "bar": 0.42, "resets_at_secs": 100 }
+                      { "label": "Window", "value": "42%", "bar": 0.42, "resets_at_secs": 100, "period": 0.25 }
                     ]
                   }
                 ]
@@ -56,6 +56,7 @@ class WidgetModelTest {
         assertEquals("42%", cell.value)
         assertEquals(0.42, cell.bar!!, 1e-9)
         assertEquals(100L, cell.resetsAtSecs)
+        assertEquals(0.25, cell.period!!, 1e-9)
     }
 
     @Test
@@ -120,7 +121,34 @@ class WidgetModelTest {
         assertEquals("Rolling", cell.label)
         assertNull("a redacted figure is absent", cell.value)
         assertNull("no bar for a redacted cell", cell.bar)
+        assertNull("the marker rides on the bar, so it is redacted too", cell.period)
         assertEquals(200L, cell.resetsAtSecs)
+    }
+
+    @Test
+    fun anUnboundedWindowParsesNoPeriodMarker() {
+        // The wire format omits `period` when the provider reports no period
+        // bounds (most windows) — the parse must tolerate the absence.
+        val json = """
+            {
+              "size": "large",
+              "state": "content",
+              "content": {
+                "aggregate_status": "ok",
+                "aggregate_pct": 0.0,
+                "privacy": false,
+                "rows": [
+                  {
+                    "provider_id": "a", "name": "A", "removed": false, "status": "ok",
+                    "cells": [ { "label": "Rolling", "value": "42%", "bar": 0.42 } ]
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+        val cell = parseWidgetView(json).content!!.rows.single().cells.single()
+        assertEquals(0.42, cell.bar!!, 1e-9)
+        assertNull("no bounds, no marker", cell.period)
     }
 
     @Test

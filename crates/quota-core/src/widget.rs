@@ -30,11 +30,11 @@
 //!   file, and an empty read model each resolve to their own honest placeholder
 //!   ([`WidgetState`]), not a fabricated reading.
 
-use crate::config::Config;
-use crate::model::{Allowance, Credits, Status, UsageSnapshot};
+use crate::config::{Config, UsageSchedule};
+use crate::model::{Allowance, Credits, Status, UsageSnapshot, UsageWindow};
 use crate::refresh::AggregateStatus;
 use crate::snapshots::SnapshotStore;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, LocalResult, NaiveDate, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -380,6 +380,14 @@ pub struct HeadlineCell {
     /// time is not a figure, so privacy mode keeps it; it is gated on the large
     /// tier only because that is where there is room to show it.
     pub resets_at: Option<DateTime<Utc>>,
+    /// How far through the window's period we are, `0.0..=1.0` — the desktop's
+    /// period-progress marker (`src/lib/period.js`), computed here rather than
+    /// in the host so there is exactly one interpretation of it (ADR-0006). It
+    /// rides on the usage bar, so it is gated to the large tier and redacted
+    /// with it under privacy mode; `None` also when the provider reports no
+    /// period bounds or the span is non-positive. Drawn against the bar so a
+    /// half-full bar at the quarter mark reads as "burning it fast".
+    pub period: Option<f64>,
 }
 
 /// The figure behind a [`HeadlineCell`], present only when not redacted.
@@ -444,7 +452,7 @@ pub fn project(
             None => RowState::Removed,
             Some(snapshot) => {
                 let status = row_status(cfg, snapshot);
-                let cells = headline_cells(cfg, snapshot, sel, size, instance.privacy);
+                let cells = headline_cells(cfg, snapshot, sel, size, instance.privacy, now);
                 RowState::Present { status, cells }
             }
         };
@@ -508,6 +516,7 @@ fn headline_cells(
     sel: &WidgetAccountSelection,
     size: WidgetSize,
     privacy: bool,
+    now: DateTime<Utc>,
 ) -> Vec<HeadlineCell> {
     // The instance's own headlines win; otherwise inherit the shared
     // compact-summary selection. `None` at both levels means "decide
@@ -516,13 +525,20 @@ fn headline_cells(
         Some(list) => Some(list.clone()),
         None => cfg.resolved_mini_metrics(&sel.provider_id),
     };
+    // The account's usage schedule (ADR-0007) reshapes only the weekly
+    // window's period marker; it is read from the account's own config, not
+    // the widget instance, exactly like the desktop surfaces read it.
+    let schedule = cfg
+        .providers
+        .get(&sel.provider_id)
+        .map(|p| &p.usage_schedule);
     let large = size.shows_bars_and_reset();
     match metrics {
         Some(list) => list
             .iter()
-            .filter_map(|metric| cell_for_metric(snapshot, metric, large, privacy))
+            .filter_map(|metric| cell_for_metric(snapshot, metric, large, privacy, now, schedule))
             .collect(),
-        None => automatic_cells(snapshot, large, privacy),
+        None => automatic_cells(snapshot, large, privacy, now, schedule),
     }
 }
 
@@ -535,17 +551,12 @@ fn cell_for_metric(
     metric: &str,
     large: bool,
     privacy: bool,
+    now: DateTime<Utc>,
+    schedule: Option<&UsageSchedule>,
 ) -> Option<HeadlineCell> {
     if let Some(metric_id) = metric.strip_prefix("window:") {
         let window = snapshot.windows.iter().find(|w| w.metric_id == metric_id)?;
-        return Some(usage_cell(
-            &window.label,
-            window.used_pct,
-            window.allowance.clone(),
-            window.resets_at,
-            large,
-            privacy,
-        ));
+        return Some(usage_cell(window, large, privacy, now, schedule));
     }
     if metric == "credits" {
         let credits = snapshot.credits.clone()?;
@@ -557,21 +568,20 @@ fn cell_for_metric(
 /// The automatic headline when no selection is pinned: the worst real usage
 /// window, or a bare balance if the account is credits-only, mirroring the
 /// compact summary's automatic pick.
-fn automatic_cells(snapshot: &UsageSnapshot, large: bool, privacy: bool) -> Vec<HeadlineCell> {
+fn automatic_cells(
+    snapshot: &UsageSnapshot,
+    large: bool,
+    privacy: bool,
+    now: DateTime<Utc>,
+    schedule: Option<&UsageSchedule>,
+) -> Vec<HeadlineCell> {
     let worst = snapshot
         .windows
         .iter()
         .filter(|w| !w.informational)
         .max_by(|a, b| a.used_pct.total_cmp(&b.used_pct));
     if let Some(window) = worst {
-        return vec![usage_cell(
-            &window.label,
-            window.used_pct,
-            window.allowance.clone(),
-            window.resets_at,
-            large,
-            privacy,
-        )];
+        return vec![usage_cell(window, large, privacy, now, schedule)];
     }
     if let Some(credits) = snapshot.credits.clone() {
         return vec![balance_cell(credits, privacy)];
@@ -581,35 +591,41 @@ fn automatic_cells(snapshot: &UsageSnapshot, large: bool, privacy: bool) -> Vec<
 
 /// A percentage-usage cell, redacted and tier-gated.
 fn usage_cell(
-    label: &str,
-    used_pct: f64,
-    allowance: Option<Allowance>,
-    resets_at: Option<DateTime<Utc>>,
+    window: &UsageWindow,
     large: bool,
     privacy: bool,
+    now: DateTime<Utc>,
+    schedule: Option<&UsageSchedule>,
 ) -> HeadlineCell {
     HeadlineCell {
-        label: label.to_string(),
+        label: window.label.clone(),
         // Privacy hides the figure itself; the label and status stay.
         value: if privacy {
             None
         } else {
             Some(HeadlineValue::Usage {
-                used_pct,
-                allowance,
+                used_pct: window.used_pct,
+                allowance: window.allowance.clone(),
             })
         },
         // A bar visualises the figure, so it is redacted with the figure and
         // shown only where there is room (the large tier). Clamped: an overage
         // reading above 100% cannot fill past a full bar.
         bar: if large && !privacy {
-            Some((used_pct / 100.0).clamp(0.0, 1.0))
+            Some((window.used_pct / 100.0).clamp(0.0, 1.0))
         } else {
             None
         },
         // A reset time is not a figure — privacy keeps it — but it only appears
         // on the large tier, the one with room for reset information.
-        resets_at: if large { resets_at } else { None },
+        resets_at: if large { window.resets_at } else { None },
+        // The period marker is drawn on the bar, so it shares the bar's gate:
+        // no bar (below the large tier, or redacted), nothing to mark.
+        period: if large && !privacy {
+            period_progress(window, now, schedule, &Local)
+        } else {
+            None
+        },
     }
 }
 
@@ -629,7 +645,128 @@ fn balance_cell(credits: Credits, privacy: bool) -> HeadlineCell {
         },
         bar: None,
         resets_at: None,
+        period: None,
     }
+}
+
+/// The stable metric identity of a weekly-resetting window — the same identity
+/// `providers/claude.rs` maps `seven_day` to and the desktop `period.js` keys
+/// on. Per-model weekly windows (`weekly_opus`, …) are deliberately not
+/// scheduled: the schedule reshapes only the headline weekly window.
+const WEEKLY_METRIC_ID: &str = "weekly";
+
+/// How far through the window's period we are, `0.0..=1.0`, or `None` when the
+/// provider couldn't tell us the period's bounds. This is the Rust port of the
+/// desktop's `periodProgress` (`src/lib/period.js`) — the widget host cannot
+/// make quota decisions (ADR-0006) and the JS module is web-only, so the
+/// semantics live twice, pinned together by the parity test in this module.
+/// Desktop behaviour is untouched; `period.js` remains authoritative for it.
+///
+/// `schedule` is the account's [`UsageSchedule`] (ADR-0007) and reshapes only a
+/// weekly window: the marker then measures scheduled time — the active-day span
+/// elapsed so far over the total active-day span in the period — so it advances
+/// only on scheduled days and holds flat on off-days. Every other window, and a
+/// weekly window whose schedule is all-seven, zero-day or absent, keeps the raw
+/// calendar fraction.
+///
+/// `tz` supplies the local calendar the day boundaries are walked in —
+/// production passes the device's [`Local`], matching the desktop's
+/// device-local semantics; tests pass `Utc` for determinism. Day boundaries are
+/// local midnights, advanced by calendar date rather than +24h so a DST shift
+/// doesn't move them.
+fn period_progress<T: TimeZone>(
+    window: &UsageWindow,
+    now: DateTime<Utc>,
+    schedule: Option<&UsageSchedule>,
+    tz: &T,
+) -> Option<f64> {
+    let start = window.period_start?;
+    let end = window.resets_at?;
+    let span_ms = (end - start).num_milliseconds() as f64;
+    // `<= 0` is `period.js`'s `!(span > 0)`: a degenerate span is garbage, not
+    // "already reset". (The span is an integer-ms difference, never NaN.)
+    if span_ms <= 0.0 {
+        return None;
+    }
+    let calendar = ((now - start).num_milliseconds() as f64 / span_ms).clamp(0.0, 1.0);
+
+    // Only the weekly window is reshaped, and only by a partial schedule: an
+    // absent, all-seven or zero-day schedule all mean "pace against the raw
+    // calendar".
+    let active = if window.metric_id == WEEKLY_METRIC_ID {
+        schedule.and_then(active_weekdays)
+    } else {
+        None
+    };
+    let Some(active) = active else {
+        return Some(calendar);
+    };
+
+    // Sum the active-day spans inside [start, end], and inside [start, now],
+    // walking the local-midnight day boundaries so an off-day contributes
+    // nothing and a boundary day counts only the hours that actually fall in
+    // the period.
+    let mut total_ms = 0.0f64;
+    let mut elapsed_ms = 0.0f64;
+    let now_capped = now.min(end);
+    let mut day = start.with_timezone(tz).date_naive();
+    loop {
+        let midnight = midnight_instant(tz, day)?;
+        if midnight >= end {
+            break;
+        }
+        let day_end = midnight_instant(tz, day.succ_opt()?)?;
+        if active[weekday_index(day)] {
+            let from = midnight.max(start);
+            total_ms += (day_end.min(end) - from).num_milliseconds() as f64;
+            elapsed_ms += (day_end.min(now_capped) - from).num_milliseconds().max(0) as f64;
+        }
+        day = day.succ_opt()?;
+    }
+    if total_ms <= 0.0 {
+        return Some(calendar);
+    }
+    Some((elapsed_ms / total_ms).clamp(0.0, 1.0))
+}
+
+/// The active weekdays a schedule names, indexed by
+/// [`weekday_index`] (Sunday 0 … Saturday 6, matching JS `getDay()`), or `None`
+/// when there is no schedule to apply: an absent schedule, every day active, or
+/// zero days active all mean "pace against the raw calendar".
+fn active_weekdays(schedule: &UsageSchedule) -> Option<[bool; 7]> {
+    let days = [
+        schedule.sunday,
+        schedule.monday,
+        schedule.tuesday,
+        schedule.wednesday,
+        schedule.thursday,
+        schedule.friday,
+        schedule.saturday,
+    ];
+    let active = days.iter().filter(|day| **day).count();
+    if active == 0 || active == 7 {
+        None
+    } else {
+        Some(days)
+    }
+}
+
+/// JS `getDay()`'s 0=Sunday…6=Saturday for a calendar day.
+fn weekday_index(day: NaiveDate) -> usize {
+    day.weekday().num_days_from_sunday() as usize
+}
+
+/// The instant of local midnight on `day`. Where a transition lands exactly on
+/// midnight, JS's `setHours(0, 0, 0, 0)` resolves an ambiguous (repeated) hour
+/// to the earlier reading and a skipped midnight to an hour inside the same
+/// calendar day — this mirrors both so the day walk agrees with the desktop.
+fn midnight_instant<T: TimeZone>(tz: &T, day: NaiveDate) -> Option<DateTime<Utc>> {
+    let naive = day.and_hms_opt(0, 0, 0)?;
+    let resolved = match tz.from_local_datetime(&naive) {
+        LocalResult::None => tz.from_local_datetime(&(naive + Duration::hours(1))),
+        resolved => resolved,
+    };
+    resolved.earliest().map(|dt| dt.with_timezone(&Utc))
 }
 
 /// The worst selected headline across the present rows: the row with the worst
@@ -1290,5 +1427,631 @@ mod tests {
         assert!(store.remove("drop").is_some());
         assert!(store.get("drop").is_none());
         assert!(store.get("keep").is_some());
+    }
+
+    // ---- Period-progress marker (issue #189) -----------------------------
+
+    use crate::config::UsageSchedule;
+
+    /// The fraction the widget's marker sits at, computed against UTC-local
+    /// days. Deterministic, so fixtures can be written as plain UTC dates; the
+    /// projection-level tests below use [`local_at`] instead, because there the
+    /// timezone comes from `chrono::Local` and the fixtures must agree with it.
+    fn progress(
+        metric_id: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        now: DateTime<Utc>,
+        schedule: Option<&UsageSchedule>,
+    ) -> Option<f64> {
+        period_progress(&bounded(metric_id, start, end), now, schedule, &Utc)
+    }
+
+    /// A usage window with explicit period bounds.
+    fn bounded(metric_id: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> UsageWindow {
+        UsageWindow {
+            metric_id: metric_id.into(),
+            label: "W".into(),
+            used_pct: 40.0,
+            resets_at: Some(end),
+            period_start: Some(start),
+            ..Default::default()
+        }
+    }
+
+    fn at(y: i32, m: u32, d: u32, h: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(y, m, d, h, 0, 0).unwrap()
+    }
+
+    /// Same wall-clock reading in the process's local zone, as an instant — the
+    /// projection tests build fixtures this way so the expected fractions hold
+    /// in whatever zone CI or a laptop happens to run in (the same trick
+    /// `src/lib/period.test.js` uses).
+    fn local_at(y: i32, m: u32, d: u32, h: u32) -> DateTime<Utc> {
+        Local
+            .with_ymd_and_hms(y, m, d, h, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn monfri() -> UsageSchedule {
+        UsageSchedule {
+            monday: true,
+            tuesday: true,
+            wednesday: true,
+            thursday: true,
+            friday: true,
+            saturday: false,
+            sunday: false,
+        }
+    }
+
+    fn none_active() -> UsageSchedule {
+        UsageSchedule {
+            monday: false,
+            tuesday: false,
+            wednesday: false,
+            thursday: false,
+            friday: false,
+            saturday: false,
+            sunday: false,
+        }
+    }
+
+    // 2025-01-06 is a Monday: the week runs Monday 00:00 → Monday 00:00, the
+    // same fixtures `src/lib/period.test.js` pins.
+    fn week() -> (DateTime<Utc>, DateTime<Utc>) {
+        (at(2025, 1, 6, 0), at(2025, 1, 13, 0))
+    }
+
+    /// Missing period bounds mean the provider never told us when the period
+    /// began or ends — no marker, not a fabricated 0%.
+    #[test]
+    fn missing_period_bounds_yield_no_marker() {
+        let (start, end) = week();
+        let mut w = bounded("weekly", start, end);
+        w.period_start = None;
+        assert_eq!(period_progress(&w, at(2025, 1, 8, 12), None, &Utc), None);
+        let mut w = bounded("weekly", start, end);
+        w.resets_at = None;
+        assert_eq!(period_progress(&w, at(2025, 1, 8, 12), None, &Utc), None);
+    }
+
+    /// A non-positive span (start ≥ end) is garbage, not "already reset" —
+    /// `period.js` refuses it and so does the port.
+    #[test]
+    fn a_non_positive_span_yields_no_marker() {
+        assert_eq!(
+            progress(
+                "weekly",
+                at(2025, 1, 6, 0),
+                at(2025, 1, 6, 0),
+                at(2025, 1, 6, 1),
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            progress(
+                "weekly",
+                at(2025, 1, 13, 0),
+                at(2025, 1, 6, 0),
+                at(2025, 1, 8, 0),
+                None
+            ),
+            None
+        );
+    }
+
+    /// The raw calendar fraction clamps to [0, 1] before the period began and
+    /// at/past the reset.
+    #[test]
+    fn the_calendar_fraction_clamps_at_the_period_bounds() {
+        let (start, end) = week();
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 1, 12), None),
+            Some(0.0)
+        );
+        // Exactly at the reset counts as fully elapsed.
+        assert_eq!(progress("weekly", start, end, end, None), Some(1.0));
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 20, 12), None),
+            Some(1.0)
+        );
+    }
+
+    /// A weekly window with a Mon–Fri schedule paces a fifth of the allowance
+    /// per working day: Wednesday noon is halfway through the five working
+    /// days, not 2.5/7 through the raw week.
+    #[test]
+    fn a_weekly_window_paces_a_mon_fri_schedule_across_working_days() {
+        let (start, end) = week();
+        let monfri = monfri();
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 8, 12), Some(&monfri)),
+            Some(0.5)
+        );
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 6, 12), Some(&monfri)),
+            Some(0.1)
+        );
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 7, 12), Some(&monfri)),
+            Some(0.3)
+        );
+    }
+
+    /// Once every working day has elapsed the marker sits at 100% and holds
+    /// flat across the off-days instead of creeping towards Monday.
+    #[test]
+    fn a_scheduled_weekly_marker_freezes_across_off_days() {
+        let (start, end) = week();
+        let monfri = monfri();
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 10, 18), Some(&monfri)),
+            Some(0.95)
+        );
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 11, 0), Some(&monfri)),
+            Some(1.0)
+        );
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 11, 12), Some(&monfri)),
+            Some(1.0)
+        );
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 12, 12), Some(&monfri)),
+            Some(1.0)
+        );
+    }
+
+    /// An all-seven schedule, a zero-day one, and an absent one all pace
+    /// against the raw calendar — the schedule only matters when it is partial.
+    #[test]
+    fn an_all_seven_zero_day_or_absent_schedule_uses_the_raw_calendar() {
+        let (start, end) = week();
+        let now = at(2025, 1, 8, 12);
+        let calendar = 2.5 / 7.0;
+        assert_eq!(
+            progress("weekly", start, end, now, Some(&UsageSchedule::default())),
+            Some(calendar)
+        );
+        assert_eq!(
+            progress("weekly", start, end, now, Some(&none_active())),
+            Some(calendar)
+        );
+        assert_eq!(progress("weekly", start, end, now, None), Some(calendar));
+    }
+
+    /// Only the headline weekly window is scheduled; a five-hour window and a
+    /// monthly cap keep the raw calendar fraction even with a partial schedule.
+    #[test]
+    fn a_non_weekly_window_ignores_the_schedule() {
+        let monfri = monfri();
+        let start = at(2025, 1, 6, 8);
+        let five_hour_end = start + Duration::hours(5);
+        let now = start + Duration::hours(2);
+        let calendar = 0.4;
+        assert_eq!(
+            progress("five_hour", start, five_hour_end, now, Some(&monfri)),
+            Some(calendar)
+        );
+        let monthly_end = start + Duration::days(30);
+        assert_eq!(
+            progress(
+                "monthly_cap",
+                start,
+                monthly_end,
+                start + Duration::days(15),
+                Some(&monfri)
+            ),
+            Some(0.5)
+        );
+    }
+
+    /// A period that starts mid-week: the boundary days are half-days and the
+    /// weekend freezes, so the fraction counts partial boundary days
+    /// fractionally (0.25 of a Thursday is 0.05, not a whole fifth).
+    #[test]
+    fn a_mid_week_period_counts_partial_boundary_days_fractionally() {
+        let monfri = monfri();
+        let start = at(2025, 1, 9, 12); // Thursday noon
+        let end = at(2025, 1, 16, 12); // Thursday noon, weekend mid-period
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 10, 12), Some(&monfri)),
+            Some(0.2)
+        );
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 11, 0), Some(&monfri)),
+            Some(0.3)
+        );
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 12, 12), Some(&monfri)),
+            Some(0.3)
+        );
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 13, 12), Some(&monfri)),
+            Some(0.4)
+        );
+        // Six hours into the half-day boundary Thursday: 0.25 of five working
+        // days, not a whole day (which would read 0.2).
+        assert_eq!(
+            progress("weekly", start, end, at(2025, 1, 9, 18), Some(&monfri)),
+            Some(0.05)
+        );
+    }
+
+    /// Acceptance: on the large tier, a window with `period_start` +
+    /// `resets_at` renders a marker; the projection carries the fraction.
+    #[test]
+    fn the_large_tier_carries_a_period_fraction() {
+        let start = local_at(2025, 1, 6, 0);
+        let end = local_at(2025, 1, 13, 0);
+        let now = local_at(2025, 1, 8, 12);
+        let store = store_with(
+            vec![snap("a", vec![bounded("weekly", start, end)])],
+            AggregateStatus::default(),
+        );
+        let cfg = cfg_with(&["a"]);
+        let inst = instance(&["a"]);
+        let p = project(Some(&inst), &store, &cfg, WidgetSize::Large, now);
+        let RowState::Present { cells, .. } = &present(&p).rows[0].state else {
+            panic!("present row");
+        };
+        // The default schedule is all-seven, so this is the raw calendar
+        // fraction: 2.5 days into a 7-day week.
+        assert_eq!(cells[0].period, Some(2.5 / 7.0));
+        assert_eq!(cells[0].bar, Some(0.4), "the fill is unchanged");
+    }
+
+    /// Acceptance: the weekly window with a partial schedule produces the
+    /// scheduled fraction, which differs from the raw calendar fraction; a
+    /// non-weekly window with the same schedule uses the calendar fraction.
+    #[test]
+    fn the_schedule_reshapes_only_the_weekly_window() {
+        let now = local_at(2025, 1, 8, 12);
+        let mut cfg = cfg_with(&["a"]);
+        cfg.providers.get_mut("a").unwrap().usage_schedule = monfri();
+        let inst = WidgetInstanceConfig {
+            accounts: vec![WidgetAccountSelection {
+                provider_id: "a".into(),
+                headlines: Some(vec!["window:weekly".into(), "window:five_hour".into()]),
+            }],
+            privacy: false,
+        };
+        let store = store_with(
+            vec![snap(
+                "a",
+                vec![
+                    bounded("weekly", local_at(2025, 1, 6, 0), local_at(2025, 1, 13, 0)),
+                    // Both cells are evaluated at the projection's single
+                    // `now`: 2 of the 5 hours elapsed by Wednesday noon.
+                    UsageWindow {
+                        label: "Five".into(),
+                        ..bounded(
+                            "five_hour",
+                            local_at(2025, 1, 8, 10),
+                            local_at(2025, 1, 8, 15),
+                        )
+                    },
+                ],
+            )],
+            AggregateStatus::default(),
+        );
+        let p = project(Some(&inst), &store, &cfg, WidgetSize::Large, now);
+        let RowState::Present { cells, .. } = &present(&p).rows[0].state else {
+            panic!("present row");
+        };
+        let weekly = cells.iter().find(|c| c.label == "W").unwrap();
+        let five = cells.iter().find(|c| c.label == "Five").unwrap();
+        // Weekly paces Mon–Fri: half the working days by Wednesday noon —
+        // different from the raw calendar's 2.5/7.
+        assert_eq!(weekly.period, Some(0.5));
+        assert_ne!(weekly.period, Some(2.5 / 7.0));
+        // The five-hour window ignores the schedule entirely: 2 of 5 hours.
+        assert_eq!(five.period, Some(0.4));
+    }
+
+    /// Acceptance: medium and small tiers carry no period fraction — the marker
+    /// is gated to the large tier exactly like `bar` and `resets_at`.
+    #[test]
+    fn the_period_marker_is_gated_to_the_large_tier() {
+        let store = store_with(
+            vec![snap(
+                "a",
+                vec![bounded(
+                    "weekly",
+                    local_at(2025, 1, 6, 0),
+                    local_at(2025, 1, 13, 0),
+                )],
+            )],
+            AggregateStatus::default(),
+        );
+        let cfg = cfg_with(&["a"]);
+        let inst = instance(&["a"]);
+        for size in [WidgetSize::Medium, WidgetSize::Small] {
+            let p = project(Some(&inst), &store, &cfg, size, local_at(2025, 1, 8, 12));
+            let content = present(&p);
+            let cell = match size {
+                WidgetSize::Small => &content.worst.as_ref().expect("worst headline").cell,
+                _ => {
+                    let RowState::Present { cells, .. } = &content.rows[0].state else {
+                        panic!("present row");
+                    };
+                    &cells[0]
+                }
+            };
+            assert!(cell.period.is_none(), "{size:?} carries no marker");
+        }
+    }
+
+    /// Acceptance: privacy redacts the period marker with the bar it rides on —
+    /// with the bar hidden there is no track to mark, and reset text stays.
+    #[test]
+    fn privacy_redacts_the_period_marker() {
+        let store = store_with(
+            vec![snap(
+                "a",
+                vec![bounded(
+                    "weekly",
+                    local_at(2025, 1, 6, 0),
+                    local_at(2025, 1, 13, 0),
+                )],
+            )],
+            AggregateStatus::default(),
+        );
+        let cfg = cfg_with(&["a"]);
+        let inst = WidgetInstanceConfig {
+            privacy: true,
+            ..instance(&["a"])
+        };
+        let p = project(
+            Some(&inst),
+            &store,
+            &cfg,
+            WidgetSize::Large,
+            local_at(2025, 1, 8, 12),
+        );
+        let RowState::Present { cells, .. } = &present(&p).rows[0].state else {
+            panic!("present row");
+        };
+        assert!(cells[0].bar.is_none(), "the bar is redacted");
+        assert!(cells[0].period.is_none(), "the marker rides on the bar");
+        assert!(cells[0].resets_at.is_some(), "the reset time survives");
+    }
+
+    /// A credit balance has no window, so no period regardless of tier.
+    #[test]
+    fn a_balance_cell_carries_no_period() {
+        let credits = Credits {
+            balance: 12.5,
+            label: Some("Wallet".into()),
+            unit: "USD".into(),
+            used: None,
+            granted: None,
+            est_tokens_remaining: None,
+        };
+        let s = UsageSnapshot::ok("a", "a", vec![], Some(credits));
+        let store = store_with(vec![s], AggregateStatus::default());
+        let cfg = cfg_with(&["a"]);
+        let inst = instance(&["a"]);
+        let p = project(
+            Some(&inst),
+            &store,
+            &cfg,
+            WidgetSize::Large,
+            local_at(2025, 1, 8, 12),
+        );
+        let RowState::Present { cells, .. } = &present(&p).rows[0].state else {
+            panic!("present row");
+        };
+        assert_eq!(cells[0].label, "Wallet");
+        assert!(cells[0].period.is_none());
+    }
+
+    /// The marker measures time, the fill measures quota: an overage reading
+    /// clamps the bar to full but leaves the period fraction alone.
+    #[test]
+    fn the_period_marker_is_independent_of_an_overage_fill() {
+        let mut w = bounded("weekly", local_at(2025, 1, 6, 0), local_at(2025, 1, 13, 0));
+        w.used_pct = 150.0;
+        let store = store_with(vec![snap("a", vec![w])], AggregateStatus::default());
+        let cfg = cfg_with(&["a"]);
+        let inst = instance(&["a"]);
+        let p = project(
+            Some(&inst),
+            &store,
+            &cfg,
+            WidgetSize::Large,
+            local_at(2025, 1, 8, 12),
+        );
+        let RowState::Present { cells, .. } = &present(&p).rows[0].state else {
+            panic!("present row");
+        };
+        assert_eq!(cells[0].bar, Some(1.0), "the fill clamps to full");
+        assert_eq!(cells[0].period, Some(2.5 / 7.0), "the marker does not");
+    }
+
+    /// The Rust port must agree with the desktop `periodProgress` bit-for-bit
+    /// on shared fixtures: the same inputs go to both implementations and the
+    /// fractions are compared. This is the drift guard for the one deliberate
+    /// duplication the issue accepts — desktop stays on JS, the widget computes
+    /// in quota-core.
+    #[test]
+    fn the_rust_fraction_matches_period_js_for_shared_fixtures() {
+        let (start, end) = week();
+        let monfri = monfri();
+        let five_start = at(2025, 1, 6, 8);
+        let fixtures: Vec<(UsageWindow, DateTime<Utc>, Option<UsageSchedule>)> = vec![
+            // Calendar fraction, all clamps, missing bounds, degenerate spans.
+            (bounded("weekly", start, end), at(2025, 1, 8, 12), None),
+            (bounded("weekly", start, end), at(2025, 1, 6, 0), None),
+            (bounded("weekly", start, end), at(2025, 1, 13, 0), None),
+            (bounded("weekly", start, end), at(2025, 1, 20, 12), None),
+            (bounded("weekly", start, end), at(2025, 1, 1, 12), None),
+            // Scheduled weekly: working-day pacing, the weekend freeze, and a
+            // mid-week period with partial boundary days.
+            (
+                bounded("weekly", start, end),
+                at(2025, 1, 8, 12),
+                Some(monfri),
+            ),
+            (
+                bounded("weekly", start, end),
+                at(2025, 1, 11, 12),
+                Some(monfri),
+            ),
+            (
+                bounded("weekly", at(2025, 1, 9, 12), at(2025, 1, 16, 12)),
+                at(2025, 1, 9, 18),
+                Some(monfri),
+            ),
+            (
+                bounded("weekly", at(2025, 1, 9, 12), at(2025, 1, 16, 12)),
+                at(2025, 1, 12, 12),
+                Some(monfri),
+            ),
+            // Degenerate and absent bounds.
+            (
+                bounded("weekly", end, start),
+                at(2025, 1, 8, 12),
+                Some(monfri),
+            ),
+            {
+                let mut w = bounded("weekly", start, end);
+                w.period_start = None;
+                (w, at(2025, 1, 8, 12), None)
+            },
+            // Non-weekly windows ignore the schedule.
+            (
+                bounded("five_hour", five_start, five_start + Duration::hours(5)),
+                five_start + Duration::hours(2),
+                Some(monfri),
+            ),
+            // All-seven schedule paces on the raw calendar.
+            (
+                bounded("weekly", start, end),
+                at(2025, 1, 8, 12),
+                Some(UsageSchedule::default()),
+            ),
+        ];
+
+        let rust: Vec<Option<f64>> = fixtures
+            .iter()
+            .map(|(w, now, schedule)| period_progress(w, *now, schedule.as_ref(), &Utc))
+            .collect();
+
+        // The same fixtures, serialized as period.js reads them (ISO strings
+        // and epoch-milliseconds), handed to node over stdin. TZ is pinned on
+        // both sides so "local midnight" means the same day boundary to each.
+        let payload: Vec<serde_json::Value> = fixtures
+            .iter()
+            .map(|(w, now, schedule)| {
+                serde_json::json!({
+                    "window": {
+                        "metric_id": w.metric_id,
+                        "period_start": w.period_start.map(|t| t.to_rfc3339()),
+                        "resets_at": w.resets_at.map(|t| t.to_rfc3339()),
+                    },
+                    "now_ms": now.timestamp_millis(),
+                    "schedule": schedule,
+                })
+            })
+            .collect();
+
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repo root resolves");
+        let period_js = repo_root.join("src/lib/period.js");
+        let harness = format!(
+            "import {{ periodProgress }} from {}\n\
+             let input = '';\n\
+             process.stdin.setEncoding('utf8');\n\
+             process.stdin.on('data', (d) => {{ input += d; }});\n\
+             process.stdin.on('end', () => {{\n\
+             \x20 const fixtures = JSON.parse(input);\n\
+             \x20 const out = fixtures.map((f) => periodProgress(f.window, f.now_ms, f.schedule ?? null));\n\
+             \x20 process.stdout.write(JSON.stringify(out));\n\
+             }});\n",
+            serde_json::to_string(&period_js).expect("path is a JSON string"),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let harness_path = dir.path().join("parity.mjs");
+        std::fs::write(&harness_path, harness).unwrap();
+
+        let output = std::process::Command::new("node")
+            .arg(&harness_path)
+            .current_dir(&repo_root)
+            .env("TZ", "UTC")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child
+                    .stdin
+                    .as_mut()
+                    .expect("stdin piped")
+                    .write_all(serde_json::to_string(&payload).unwrap().as_bytes())?;
+                let out = child.wait_with_output()?;
+                Ok(out)
+            })
+            .unwrap_or_else(|e| panic!("node is required for the period.js parity test: {e}"));
+
+        assert!(
+            output.status.success(),
+            "node failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let js: Vec<Option<f64>> =
+            serde_json::from_str(&String::from_utf8(output.stdout).expect("node prints JSON"))
+                .expect("parity output is a JSON array of fractions");
+
+        assert_eq!(rust.len(), js.len(), "both sides saw every fixture");
+        for (i, (r, j)) in rust.iter().zip(js.iter()).enumerate() {
+            match (r, j) {
+                (None, None) => {}
+                (Some(r), Some(j)) => assert!(
+                    (r - j).abs() < 1e-9,
+                    "fixture {i}: rust {r} != period.js {j}"
+                ),
+                (r, j) => panic!("fixture {i}: rust {r:?} != period.js {j:?}"),
+            }
+        }
+    }
+
+    /// The marker a large weekly cell exposes is the period fraction itself,
+    /// bounded in 0.0..=1.0, so the host can draw it at `period × width`
+    /// without re-deriving anything (ADR-0006).
+    #[test]
+    fn period_marker_is_exposed_on_a_large_weekly_cell() {
+        let start = local_at(2025, 1, 6, 0);
+        let end = local_at(2025, 1, 13, 0);
+        let now = local_at(2025, 1, 8, 12);
+        let store = store_with(
+            vec![snap("a", vec![bounded("weekly", start, end)])],
+            AggregateStatus::default(),
+        );
+        let cfg = cfg_with(&["a"]);
+        let inst = instance(&["a"]);
+        let p = project(Some(&inst), &store, &cfg, WidgetSize::Large, now);
+        let RowState::Present { cells, .. } = &present(&p).rows[0].state else {
+            panic!("present row");
+        };
+        let period = cells[0]
+            .period
+            .expect("a large weekly cell exposes a marker");
+        assert!(
+            (0.0..=1.0).contains(&period),
+            "the fraction is bounded, got {period}"
+        );
+        // Default (all-seven) schedule: the raw calendar fraction — 2.5 of 7
+        // days elapsed at Wednesday noon.
+        assert!(
+            (period - 2.5 / 7.0).abs() < 1e-9,
+            "expected the calendar fraction 2.5/7, got {period}"
+        );
     }
 }

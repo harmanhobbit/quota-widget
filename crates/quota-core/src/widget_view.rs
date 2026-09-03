@@ -125,6 +125,12 @@ pub struct CellView {
     /// tier. A reset time is not a figure, so privacy keeps it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resets_at_secs: Option<i64>,
+    /// The period-progress fraction in `0.0..=1.0` — the desktop's marker
+    /// position on the usage bar, `Some` only on the large tier for a
+    /// non-redacted percentage headline. The host draws it verbatim; it makes
+    /// no decision about it (ADR-0006).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period: Option<f64>,
 }
 
 impl WidgetView {
@@ -206,6 +212,7 @@ fn cell_view(cell: &HeadlineCell) -> CellView {
         value: cell.value.as_ref().map(format_value),
         bar: cell.bar,
         resets_at_secs: cell.resets_at.map(|t| t.timestamp()),
+        period: cell.period,
     }
 }
 
@@ -428,7 +435,7 @@ mod tests {
     use crate::config::ProviderConfig;
     use crate::model::{Credits, UsageSnapshot, UsageWindow};
     use crate::refresh::AggregateStatus;
-    use chrono::Duration;
+    use chrono::{Duration, TimeZone};
 
     fn window(metric_id: &str, label: &str, pct: f64) -> UsageWindow {
         UsageWindow {
@@ -437,6 +444,22 @@ mod tests {
             used_pct: pct,
             resets_at: Some(Utc::now() + Duration::hours(3)),
             ..Default::default()
+        }
+    }
+
+    /// A window with explicit period bounds, so the flattened cell carries a
+    /// period fraction to assert on.
+    fn bounded_window(
+        metric_id: &str,
+        label: &str,
+        pct: f64,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> UsageWindow {
+        UsageWindow {
+            period_start: Some(start),
+            resets_at: Some(end),
+            ..window(metric_id, label, pct)
         }
     }
 
@@ -494,12 +517,19 @@ mod tests {
     #[test]
     fn a_large_content_view_carries_rows_bars_and_reset() {
         let cfg = cfg_with(&["a"]);
+        // The period spans Jan 6 00:00 → Jan 8 10:00 (58 hours); render at
+        // Jan 8 00:00, so 48/58 of the period has elapsed — a deterministic
+        // fraction to assert on. (This window isn't weekly, so no schedule
+        // reshaping and the day walk never engages.)
+        let start = Utc.with_ymd_and_hms(2025, 1, 6, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2025, 1, 8, 10, 0, 0).unwrap();
+        let now = Utc.with_ymd_and_hms(2025, 1, 8, 0, 0, 0).unwrap();
         let dir = seed_dir(
             &cfg,
             vec![UsageSnapshot::ok(
                 "a",
                 "Acme",
-                vec![window("w", "Window", 42.0)],
+                vec![bounded_window("w", "Window", 42.0, start, end)],
                 None,
             )],
             AggregateStatus {
@@ -509,7 +539,7 @@ mod tests {
             &[("id-1", instance(&["a"]))],
         );
 
-        let view = render(dir.path(), "id-1", 300.0, 260.0, Utc::now());
+        let view = render(dir.path(), "id-1", 300.0, 260.0, now);
         assert_eq!(view.size, "large");
         assert_eq!(view.state, "content");
         let content = view.content.unwrap();
@@ -523,6 +553,8 @@ mod tests {
         assert_eq!(cell.value.as_deref(), Some("42%"));
         assert_eq!(cell.bar, Some(0.42));
         assert!(cell.resets_at_secs.is_some());
+        // 2 days of the 2-day-10-hour period elapsed: 48/58 hours.
+        assert_eq!(cell.period, Some(48.0 / 58.0));
     }
 
     #[test]
@@ -618,14 +650,18 @@ mod tests {
     #[test]
     fn privacy_redacts_the_value_but_keeps_label_status_and_reset() {
         let cfg = cfg_with(&["a"]);
+        // The window carries period bounds so the privacy assertion on the
+        // marker is meaningful — with no bounds it would be trivially absent.
+        let w = bounded_window(
+            "w",
+            "Rolling",
+            42.0,
+            Utc.with_ymd_and_hms(2025, 1, 6, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2025, 1, 13, 0, 0, 0).unwrap(),
+        );
         let dir = seed_dir(
             &cfg,
-            vec![UsageSnapshot::ok(
-                "a",
-                "A",
-                vec![window("w", "Rolling", 42.0)],
-                None,
-            )],
+            vec![UsageSnapshot::ok("a", "A", vec![w], None)],
             AggregateStatus::default(),
             &[(
                 "id-1",
@@ -644,6 +680,10 @@ mod tests {
         assert_eq!(cell.label, "Rolling", "the label survives redaction");
         assert!(cell.value.is_none(), "the figure is redacted");
         assert!(cell.bar.is_none(), "the bar (a figure) is redacted");
+        assert!(
+            cell.period.is_none(),
+            "the marker rides on the bar, so it is redacted with it"
+        );
         assert!(cell.resets_at_secs.is_some(), "the reset time survives");
     }
 
@@ -675,14 +715,18 @@ mod tests {
     #[test]
     fn the_view_json_round_trips_and_uses_stable_field_names() {
         let cfg = cfg_with(&["a"]);
+        // The window carries period bounds so the wire name the host parses the
+        // marker fraction from actually appears in the JSON.
+        let w = bounded_window(
+            "w",
+            "W",
+            42.0,
+            Utc.with_ymd_and_hms(2025, 1, 6, 0, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2025, 1, 13, 0, 0, 0).unwrap(),
+        );
         let dir = seed_dir(
             &cfg,
-            vec![UsageSnapshot::ok(
-                "a",
-                "A",
-                vec![window("w", "W", 42.0)],
-                None,
-            )],
+            vec![UsageSnapshot::ok("a", "A", vec![w], None)],
             AggregateStatus::default(),
             &[("id-1", instance(&["a"]))],
         );
@@ -691,6 +735,10 @@ mod tests {
         assert!(json.contains("\"state\":\"content\""));
         assert!(json.contains("\"aggregate_status\""));
         assert!(json.contains("\"resets_at_secs\""));
+        assert!(
+            json.contains("\"period\""),
+            "the marker's wire name: {json}"
+        );
         let back: WidgetView = serde_json::from_str(&json).unwrap();
         assert_eq!(back.state, "content");
     }
