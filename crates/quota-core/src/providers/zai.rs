@@ -19,6 +19,12 @@
 //!   (the rolling 7-day weekly window). These are percentage-only usage
 //!   windows: inventing a token total would misstate what the provider
 //!   actually reports.
+//! - `CREDIT_LIMIT` — observed live (issue #183 production report) carrying
+//!   exactly the same shape: unit 3/number 5 and unit 6/number 1, a bare
+//!   `percentage`, no absolute counts. It is the same plan-window
+//!   utilisation under a different type tag, so it is parsed with the
+//!   identical percentage-only 5-hour/weekly semantics — still no invented
+//!   total, despite the name.
 //! - `TIME_LIMIT` — a monthly count window (`usage` = entitlement,
 //!   `currentValue` = consumed), observed as web-search/tool usage. It is an
 //!   **informational** window: exhausting it does not block model calls, so
@@ -129,8 +135,11 @@ fn parse_limits(body: &Value) -> Vec<UsageWindow> {
     };
     let mut windows = Vec::new();
     for entry in limits {
+        // `TOKENS_LIMIT` and `CREDIT_LIMIT` carry the identical
+        // percentage-only window shape (CREDIT_LIMIT observed live, issue
+        // #183), so both parse through the same path.
         match entry.get("type").and_then(Value::as_str) {
-            Some("TOKENS_LIMIT") => {
+            Some("TOKENS_LIMIT" | "CREDIT_LIMIT") => {
                 if let Some(w) = parse_tokens_limit(entry) {
                     windows.push(w);
                 }
@@ -687,6 +696,62 @@ mod tests {
             assert_eq!(w[0].used_pct, 20.0, "{n:?}");
             assert!(w[0].period_start.is_none(), "{n:?}");
         }
+    }
+
+    /// Regression (issue #183 production follow-up): a live 200 response
+    /// whose entries carry `type: "CREDIT_LIMIT"` was reported verbatim by a
+    /// user — unit 3/number 5 and unit 6/number 1, percentage-only, no
+    /// absolute counts. The parser must treat it exactly like `TOKENS_LIMIT`
+    /// (same percentage-only 5-hour/weekly semantics), or the snapshot dies
+    /// with "no usable limit entries".
+    #[test]
+    fn credit_limit_entries_use_the_token_window_semantics() {
+        let w = parse_limits(&credit_limit_body());
+        assert_eq!(w.len(), 2, "both CREDIT_LIMIT entries parse");
+
+        let five = &w[0];
+        assert_eq!(five.metric_id, "five_hour");
+        assert_eq!(five.label, "5-hour");
+        assert_eq!(five.used_pct, 10.0);
+        assert_eq!(
+            five.period_start,
+            five.resets_at.map(|r| r - Duration::hours(5)),
+            "5-hour length derived like TOKENS_LIMIT"
+        );
+
+        let weekly = &w[1];
+        assert_eq!(weekly.metric_id, "weekly");
+        assert_eq!(weekly.label, "Weekly");
+        assert_eq!(weekly.used_pct, 12.0);
+
+        // Through the real fetch_parse path: previously a Parse error, now a
+        // usable snapshot. No invented totals, no informational marking.
+        let snap = adapter().fetch_parse(200, credit_limit_body()).unwrap();
+        assert_eq!(snap.windows.len(), 2);
+        assert_eq!(snap.error, None);
+        assert_eq!(snap.status(80.0, 95.0, None), Status::Ok);
+        for window in &snap.windows {
+            assert!(window.allowance.is_none(), "percentage-only");
+            assert!(!window.informational, "credit windows gate model calls");
+        }
+    }
+
+    /// The user-captured 200 body verbatim: `data.limits` holds two
+    /// `CREDIT_LIMIT` entries — the 5-hour window (unit 3, number 5, 10%)
+    /// and the weekly window (unit 6, number 1, 12%). Reset stamps follow the
+    /// observed epoch-millisecond shape; the ticket's capture did not include
+    /// them.
+    fn credit_limit_body() -> Value {
+        serde_json::json!({
+            "data": {
+                "limits": [
+                    {"type": "CREDIT_LIMIT", "unit": 3, "number": 5,
+                     "percentage": 10, "nextResetTime": 1782932874304i64},
+                    {"type": "CREDIT_LIMIT", "unit": 6, "number": 1,
+                     "percentage": 12, "nextResetTime": 1783061170994i64}
+                ]
+            }
+        })
     }
 
     /// Outcome parity (stories 18–21): one Z.ai snapshot, as the adapter
