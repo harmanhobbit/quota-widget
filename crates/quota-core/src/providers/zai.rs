@@ -161,33 +161,36 @@ fn parse_limits(body: &Value) -> Vec<UsageWindow> {
 /// own ids rather than overloading those names.
 fn parse_tokens_limit(entry: &Value) -> Option<UsageWindow> {
     let pct = entry.get("percentage").and_then(as_f64)?;
+    // Provider-controlled count. `f64 as i64` saturates (never wraps), so a
+    // hostile or broken huge value lands on `i64::MAX` rather than a wrapped
+    // negative — and the checked Duration constructors below reject that
+    // instead of panicking. (NaN is already excluded by the positivity
+    // filter; JSON cannot carry infinities, only their float parses.)
     let number = entry
         .get("number")
         .and_then(as_f64)
         .filter(|n| *n > 0.0)
-        .unwrap_or(1.0) as i64;
+        .map(|n| n as i64);
     let resets_at = entry.get("nextResetTime").and_then(parse_timestamp);
     let unit = entry.get("unit").and_then(Value::as_i64);
-    let (metric_id, label, period_len) = match unit {
-        Some(3) if number == 5 => (
-            "five_hour".into(),
-            "5-hour".into(),
-            Some(Duration::hours(5)),
-        ),
-        Some(3) => (
-            "hours".into(),
-            format!("{number}-hour"),
-            Some(Duration::hours(number)),
-        ),
-        Some(6) if number == 1 => ("weekly".into(), "Weekly".into(), Some(Duration::weeks(1))),
-        Some(6) => (
-            "weeks".into(),
-            format!("{number}-week"),
-            Some(Duration::weeks(number)),
-        ),
-        // Unknown unit: still surface the window — usage must never be
-        // silently dropped — but without a guessed length or marker.
-        _ => ("token_usage".into(), "Token usage".into(), None),
+
+    // Window length from the observed (unit, number) pair. chrono's
+    // `Duration::hours`/`weeks` *panic* on an out-of-range count (they are
+    // `expect` over the checked variants), so the checked constructors
+    // decide: a count the length math cannot survive degrades to the same
+    // generic window an unknown unit gets — percentage and reset still
+    // surface, nothing is invented. The refresh loop must be able to
+    // survive any provider response.
+    let (metric_id, label, period_len) = match (unit, number) {
+        (Some(3), Some(5)) => ("five_hour".into(), "5-hour".into(), Duration::try_hours(5)),
+        (Some(3), Some(n)) => Duration::try_hours(n)
+            .map(|len| ("hours".into(), format!("{n}-hour"), Some(len)))
+            .unwrap_or_else(generic_token_window),
+        (Some(6), Some(1)) => ("weekly".into(), "Weekly".into(), Duration::try_weeks(1)),
+        (Some(6), Some(n)) => Duration::try_weeks(n)
+            .map(|len| ("weeks".into(), format!("{n}-week"), Some(len)))
+            .unwrap_or_else(generic_token_window),
+        _ => generic_token_window(),
     };
     Some(UsageWindow {
         metric_id,
@@ -197,6 +200,12 @@ fn parse_tokens_limit(entry: &Value) -> Option<UsageWindow> {
         period_start: resets_at.and_then(|r| period_len.map(|len| r - len)),
         ..Default::default()
     })
+}
+
+/// The safe fallback for a token window whose length cannot be trusted:
+/// the percentage still surfaces, with no invented length or marker.
+fn generic_token_window() -> (String, String, Option<Duration>) {
+    ("token_usage".into(), "Token usage".into(), None)
 }
 
 /// A monthly count window (observed: web searches / tool calls). Only a
@@ -222,9 +231,11 @@ fn parse_time_limit(entry: &Value) -> Option<UsageWindow> {
     })
 }
 
-/// Sort order over the produced windows: known-length token windows by
-/// ascending length, then everything else (monthly counts, unknown-unit
-/// windows) in parse order after them.
+/// Sort order over the produced windows. The rank is fixed per window
+/// identity — 5-hour, then weekly, then everything else (monthly counts,
+/// unknown-unit and unusable-length windows) in parse order — not by measured
+/// length, so a shorter-than-5h window from a future unit still cannot
+/// displace the conventional order other providers display.
 fn sort_rank(w: &UsageWindow) -> (u8, u8) {
     match w.metric_id.as_str() {
         "five_hour" => (0, 0),
@@ -588,6 +599,94 @@ mod tests {
         assert_eq!(w[0].label, "2-hour");
         assert_eq!(w[1].metric_id, "weeks");
         assert_eq!(w[1].label, "2-week");
+    }
+
+    /// Regression (review rework): the provider-controlled `number` feeds the
+    /// window-length math, and chrono's plain `Duration::hours`/`weeks`
+    /// **panic** on out-of-range counts — which would take the whole refresh
+    /// loop down. Extreme values must degrade to the generic window instead:
+    /// the percentage still surfaces (nothing healthy or exhausted is
+    /// fabricated), no length or period marker is invented, and the entry
+    /// cannot displace the known windows' order.
+    #[test]
+    fn extreme_number_values_cannot_panic_and_do_not_fabricate_state() {
+        // Saturation points and beyond: `f64 as i64` clamps these to
+        // i64::MAX, which the checked Duration constructors must reject.
+        let extreme_numbers = [
+            9e15,                        // far past any real window
+            1.8e19,                      // ≈ i64::MAX after saturation
+            f64::MAX,                    // maximal f64 → i64::MAX
+            f64::INFINITY,               // not JSON, but defensive
+            9_223_372_036_854_775_807.0, // exact i64::MAX
+        ];
+        for n in extreme_numbers {
+            let w = parse_limits(&serde_json::json!({
+                "data": {"limits": [
+                    {"type": "TOKENS_LIMIT", "unit": 3, "number": n,
+                     "percentage": 40, "nextResetTime": 1783061170994i64}
+                ]}
+            }));
+            assert_eq!(w.len(), 1, "{n}");
+            assert_eq!(w[0].metric_id, "token_usage", "{n}");
+            assert_eq!(w[0].label, "Token usage", "{n}");
+            assert_eq!(w[0].used_pct, 40.0, "{n}");
+            assert!(w[0].period_start.is_none(), "{n}");
+            assert!(w[0].resets_at.is_some(), "{n}");
+            assert!(!w[0].informational, "{n}");
+
+            // Same for the weekly unit: no panic, generic degradation.
+            let w = parse_limits(&serde_json::json!({
+                "data": {"limits": [
+                    {"type": "TOKENS_LIMIT", "unit": 6, "number": n, "percentage": 55}
+                ]}
+            }));
+            assert_eq!(w.len(), 1, "{n}");
+            assert_eq!(w[0].metric_id, "token_usage", "{n}");
+            assert_eq!(w[0].used_pct, 55.0, "{n}");
+        }
+
+        // The whole entry through fetch_parse: the snapshot stays usable and
+        // the extreme window reads as a plain 40% — not as healthy 0% or a
+        // fabricated 100% exhaustion.
+        let body = serde_json::json!({
+            "data": {"limits": [
+                {"type": "TOKENS_LIMIT", "unit": 3, "number": f64::MAX,
+                 "percentage": 40, "nextResetTime": 1783061170994i64}
+            ]}
+        });
+        let snap = adapter().fetch_parse(200, body).unwrap();
+        assert_eq!(snap.windows.len(), 1);
+        assert_eq!(snap.windows[0].used_pct, 40.0);
+        assert_eq!(snap.error, None);
+        assert_eq!(snap.status(80.0, 95.0, None), Status::Ok);
+
+        // And the normal windows are untouched by the fix.
+        let snap = ok_snapshot(observed_body());
+        assert_eq!(snap.windows[0].metric_id, "five_hour");
+        assert_eq!(snap.windows[1].metric_id, "weekly");
+    }
+
+    /// A missing, zero or negative `number` carries no trustworthy length, so
+    /// the window degrades to the generic form rather than pretending a
+    /// default of one full week/hour.
+    #[test]
+    fn unusable_number_degrades_to_the_generic_window() {
+        for n in [
+            Value::Null,
+            Value::from(0),
+            Value::from(-3),
+            Value::from("week"),
+        ] {
+            let w = parse_limits(&serde_json::json!({
+                "data": {"limits": [
+                    {"type": "TOKENS_LIMIT", "unit": 6, "number": n, "percentage": 20}
+                ]}
+            }));
+            assert_eq!(w.len(), 1, "{n:?}");
+            assert_eq!(w[0].metric_id, "token_usage", "{n:?}");
+            assert_eq!(w[0].used_pct, 20.0, "{n:?}");
+            assert!(w[0].period_start.is_none(), "{n:?}");
+        }
     }
 
     /// Outcome parity (stories 18–21): one Z.ai snapshot, as the adapter
