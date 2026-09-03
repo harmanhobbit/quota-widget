@@ -94,6 +94,7 @@ and unique tag.
 | `test/.../widget/WidgetModelTest.kt` | JVM unit tests for the wire-format parse — also a drift guard on the Rust DTO. |
 | `test/.../widget/NotificationPlanTest.kt` | JVM unit tests pinning the notification plan's wire format (#112) — the same drift guard, for what `AlertNotifier` parses. |
 | `test/.../widget/RefreshSchedulerTest.kt` | Pins the periodic target to the documented fifteen minutes (`quota_core::refresh::BACKGROUND_REFRESH_TARGET`). |
+| `test/.../widget/GlanceImageProviderSourceTest.kt` | Pins the marker's bitmap to the base `androidx.glance.ImageProvider` factory — the appwidget namesake is Uri-only, and importing it is what broke the #189 marker's compile (#191). |
 
 ## Verifying
 
