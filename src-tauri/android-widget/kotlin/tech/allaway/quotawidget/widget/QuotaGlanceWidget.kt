@@ -2,18 +2,25 @@ package tech.allaway.quotawidget.widget
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.RectF
 import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.toArgb
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.GlanceTheme
+import androidx.glance.Image
 import androidx.glance.LocalContext
 import androidx.glance.LocalSize
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.SizeMode
+import androidx.glance.appwidget.ImageProvider
 import androidx.glance.appwidget.LinearProgressIndicator
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.action.actionStartActivity
@@ -22,6 +29,7 @@ import androidx.glance.appwidget.provideContent
 import androidx.glance.background
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Column
+import androidx.glance.layout.ContentScale
 import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
 import androidx.glance.layout.fillMaxWidth
@@ -207,8 +215,13 @@ private fun RowView(row: WidgetRow, large: Boolean, appWidgetId: Int) {
         }
         row.cells.forEach { cell ->
             CellText(cell)
+            val period = cell.period
             if (large && cell.bar != null) {
-                UsageBar(cell.bar)
+                if (period != null) {
+                    UsageBarWithMarker(cell.bar, period)
+                } else {
+                    UsageBar(cell.bar)
+                }
             }
             if (large && cell.resetsAtSecs != null) {
                 Text(
@@ -237,6 +250,80 @@ private fun UsageBar(fraction: Double) {
         modifier = GlanceModifier.fillMaxWidth().padding(vertical = 2.dp),
         color = GlanceTheme.colors.primary,
         backgroundColor = GlanceTheme.colors.secondaryContainer,
+    )
+}
+
+// Geometry of the bitmap-drawn usage bar. The bar is 8dp tall and the tick
+// overshoots it by 2dp at each end, like the desktop card's marker.
+private const val BAR_HEIGHT_DP = 8f
+private const val TICK_WIDTH_DP = 2f
+private const val TICK_OVERSHOOT_DP = 2f
+private const val BAR_CORNER_DP = 4f
+
+/**
+ * The large-tier usage bar with the desktop's period-progress marker (issue
+ * #189): the used-percent fill plus a thin tick at `period × width`, so a
+ * half-full bar at the quarter mark reads as "burning it fast".
+ *
+ * Drawn as a single bitmap because Glance offers no fractional layout
+ * primitive — Row weights are all-or-nothing (`defaultWeight`, weight 1) and
+ * children can't be offset by a fraction of the track — so positioning a tick
+ * at an arbitrary point on the bar needs pixels, not view layout. The bitmap
+ * is sized at device density to the bar's real width (the widget's cell width
+ * minus the surface's 12dp side padding) and stretched edge-to-edge, so the
+ * tick lands at the requested fraction without resampling blur. The marker is
+ * a shape (a notch), not a colour change, so it reads without relying on hue.
+ */
+@Composable
+private fun UsageBarWithMarker(barFraction: Double, period: Double) {
+    val context = LocalContext.current
+    val density = context.resources.displayMetrics.density
+    val widthDp = (LocalSize.current.width.value - 24f).coerceIn(120f, 620f)
+    val widthPx = (widthDp * density).toInt().coerceAtLeast(1)
+    val heightDp = BAR_HEIGHT_DP + 2 * TICK_OVERSHOOT_DP
+    val heightPx = (heightDp * density).toInt().coerceAtLeast(1)
+    val track = GlanceTheme.colors.secondaryContainer.getColor(context).toArgb()
+    val fill = GlanceTheme.colors.primary.getColor(context).toArgb()
+    val marker = GlanceTheme.colors.onSurfaceVariant.getColor(context).toArgb()
+    val bitmap = remember(barFraction, period, widthPx, heightPx, track, fill, marker) {
+        Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888).apply {
+            val canvas = Canvas(this)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+            val barTop = TICK_OVERSHOOT_DP * density
+            val barBottom = barTop + BAR_HEIGHT_DP * density
+            val radius = BAR_CORNER_DP * density
+            // Track, then the used-percent fill (independent of the marker:
+            // an overage reading clamps to full while the tick stays put).
+            paint.color = track
+            canvas.drawRoundRect(
+                RectF(0f, barTop, widthPx.toFloat(), barBottom),
+                radius, radius, paint,
+            )
+            paint.color = fill
+            val fillRight = (barFraction.coerceIn(0.0, 1.0).toFloat() * widthPx)
+                .coerceIn(radius, widthPx.toFloat())
+            canvas.drawRoundRect(
+                RectF(0f, barTop, fillRight, barBottom),
+                radius, radius, paint,
+            )
+            // The period tick: a thin full-height notch at the fraction.
+            paint.color = marker
+            val tickWidth = TICK_WIDTH_DP * density
+            val tickLeft = period.coerceIn(0.0, 1.0).toFloat() * widthPx - tickWidth / 2f
+            canvas.drawRect(
+                tickLeft.coerceIn(0f, widthPx - tickWidth),
+                0f,
+                tickLeft.coerceIn(0f, widthPx - tickWidth) + tickWidth,
+                heightPx.toFloat(),
+                paint,
+            )
+        }
+    }
+    Image(
+        provider = ImageProvider(bitmap),
+        contentDescription = null,
+        modifier = GlanceModifier.fillMaxWidth().height(heightDp.dp),
+        contentScale = ContentScale.FillBounds,
     )
 }
 
