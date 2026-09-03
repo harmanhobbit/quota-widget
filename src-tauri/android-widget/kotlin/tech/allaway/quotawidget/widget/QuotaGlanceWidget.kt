@@ -14,13 +14,17 @@ import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.GlanceTheme
 import androidx.glance.Image
+// The base package's ImageProvider is the only one with a Bitmap factory —
+// androidx.glance.appwidget's namesake carries just the Uri overload in
+// glance-appwidget 1.1, so importing that one silently broke the marker's
+// bitmap call (issue #191).
+import androidx.glance.ImageProvider
 import androidx.glance.LocalContext
 import androidx.glance.LocalSize
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.SizeMode
-import androidx.glance.appwidget.ImageProvider
 import androidx.glance.appwidget.LinearProgressIndicator
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.action.actionStartActivity
@@ -269,10 +273,14 @@ private const val BAR_CORNER_DP = 4f
  * primitive — Row weights are all-or-nothing (`defaultWeight`, weight 1) and
  * children can't be offset by a fraction of the track — so positioning a tick
  * at an arbitrary point on the bar needs pixels, not view layout. The bitmap
- * is sized at device density to the bar's real width (the widget's cell width
- * minus the surface's 12dp side padding) and stretched edge-to-edge, so the
- * tick lands at the requested fraction without resampling blur. The marker is
- * a shape (a notch), not a colour change, so it reads without relying on hue.
+ * is handed to Glance through the base [androidx.glance.ImageProvider]
+ * factory (`setImageViewBitmap` under the hood); the `androidx.glance.appwidget`
+ * namesake ships only the Uri overload, so the appwidget import is the one
+ * thing that must not drift back (issue #191). The bitmap is sized at device
+ * density to the bar's real width (the widget's cell width minus the surface's
+ * 12dp side padding) and stretched edge-to-edge, so the tick lands at the
+ * requested fraction without resampling blur. The marker is a shape (a
+ * notch), not a colour change, so it reads without relying on hue.
  */
 @Composable
 private fun UsageBarWithMarker(barFraction: Double, period: Double) {
