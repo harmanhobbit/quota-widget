@@ -354,8 +354,11 @@ pub enum RowState {
     Present {
         /// The account's own status colour cue.
         status: Status,
-        /// The selected headlines, one cell each. Empty when the account's
-        /// selection is deliberately empty.
+        /// The selected headlines, one cell each. Empty only when a non-empty
+        /// or automatic selection resolves to nothing (a window the provider
+        /// dropped, an automatic pick with no window or credits) — that is a
+        /// stale/failed account whose title stays visible. A *deliberately
+        /// empty* selection is a mute and never becomes a row at all (#197).
         cells: Vec<HeadlineCell>,
     },
 }
@@ -454,9 +457,23 @@ pub fn project(
         let name = account_name(cfg, &sel.provider_id, snapshot);
         let state = match snapshot {
             // Not in the read model: the account was removed (or disabled out of
-            // it). Explicit, never silently replaced.
+            // it). Explicit, never silently replaced — and decided before any
+            // headline resolution, so even a muted account that has also been
+            // removed still shows the removed message rather than vanishing.
             None => RowState::Removed,
             Some(snapshot) => {
+                // A deliberately-empty effective selection (`Some([])`) is a
+                // mute: the account opted out of this instance's headlines, or
+                // out of the shared compact summary it inherits. It contributes
+                // no row at all (#197), not a title-only row with nothing
+                // beneath it. Deliberately narrower than "the cells came back
+                // empty": a *non-empty* selection that resolves to no cells —
+                // a window the provider dropped, an automatic pick over a
+                // failed/stale account — is a visibly stale reading, which
+                // ADR-0006 keeps on the wire for the host to draw.
+                if effective_metrics(cfg, sel).is_some_and(|list| list.is_empty()) {
+                    continue;
+                }
                 let status = row_status(cfg, snapshot);
                 let cells = headline_cells(cfg, snapshot, sel, size, instance.privacy, now);
                 RowState::Present { status, cells }
@@ -516,6 +533,21 @@ fn row_status(cfg: &Config, snapshot: &UsageSnapshot) -> Status {
     snapshot.status(thresholds.warn_pct, thresholds.critical_pct, low)
 }
 
+/// The effective headline selection for one selected account: the instance's
+/// own pinned list, else the shared compact-summary selection the account's
+/// config carries. One definition, reused by [`project`] — which drops a
+/// present account whose selection is deliberately empty (`Some([])`, the
+/// mute) — and by [`headline_cells`], which resolves the surviving rows'
+/// cells, so the two can never disagree about what "muted" means. `None` at
+/// both levels means "decide automatically"; `Some(list)` is the pinned
+/// choice, empty or not.
+fn effective_metrics(cfg: &Config, sel: &WidgetAccountSelection) -> Option<Vec<String>> {
+    match &sel.headlines {
+        Some(list) => Some(list.clone()),
+        None => cfg.resolved_mini_metrics(&sel.provider_id),
+    }
+}
+
 /// Build the headline cells for one selected account, honouring the instance's
 /// per-account override (or the inherited shared selection), the tier, and
 /// privacy mode.
@@ -527,13 +559,7 @@ fn headline_cells(
     privacy: bool,
     now: DateTime<Utc>,
 ) -> Vec<HeadlineCell> {
-    // The instance's own headlines win; otherwise inherit the shared
-    // compact-summary selection. `None` at both levels means "decide
-    // automatically"; `Some([])` means a deliberately empty selection.
-    let metrics = match &sel.headlines {
-        Some(list) => Some(list.clone()),
-        None => cfg.resolved_mini_metrics(&sel.provider_id),
-    };
+    let metrics = effective_metrics(cfg, sel);
     // The account's usage schedule (ADR-0007) reshapes only the weekly
     // window's period marker; it is read from the account's own config, not
     // the widget instance, exactly like the desktop surfaces read it.
@@ -997,6 +1023,256 @@ mod tests {
         // "b" appears only in its own row.
         assert!(matches!(content.rows[1].state, RowState::Present { .. }));
         assert_eq!(content.rows[1].provider_id, "b");
+    }
+
+    // ---- Muted accounts (#197) -------------------------------------------
+
+    /// Acceptance: a present account whose effective headline selection is
+    /// deliberately empty contributes no row (#197) — not a title-only row
+    /// with nothing beneath it. Both ways of reaching the mute are the same
+    /// projection decision: the instance pinned `headlines: Some([])`, or it
+    /// inherits the shared compact summary's `Some([])` opt-out. Only the row
+    /// disappears; the shared aggregate and the data age still ride through.
+    #[test]
+    fn a_muted_account_contributes_no_row_at_the_row_tiers() {
+        let store = store_with(
+            vec![snap("a", vec![window("w", "W", 42.0)])],
+            AggregateStatus {
+                status: Status::Warn,
+                pct: 42.0,
+            },
+        );
+        let plain_cfg = cfg_with(&["a"]);
+
+        // (a) The instance pins the empty selection for itself.
+        let pinned = WidgetInstanceConfig {
+            accounts: vec![WidgetAccountSelection {
+                provider_id: "a".into(),
+                headlines: Some(vec![]),
+            }],
+            privacy: false,
+        };
+        // (b) The instance inherits the provider's compact-summary opt-out.
+        let mut opted_out_cfg = plain_cfg.clone();
+        opted_out_cfg
+            .providers
+            .get_mut("a")
+            .unwrap()
+            .mini_summary_metrics = Some(vec![]);
+        let inherited = instance(&["a"]);
+
+        let cases = [
+            ("instance pin Some([])", &plain_cfg, &pinned),
+            ("inherited Some([])", &opted_out_cfg, &inherited),
+        ];
+        for (label, cfg, inst) in cases {
+            for size in [WidgetSize::Medium, WidgetSize::Large] {
+                let p = project(Some(inst), &store, cfg, size, Utc::now());
+                let content = present(&p);
+                assert!(
+                    content.rows.is_empty(),
+                    "{label} at {size:?}: the muted account contributes no row, got {:?}",
+                    content.rows
+                );
+                // The header and caption are not muted with the account.
+                assert_eq!(content.aggregate.status, Status::Warn);
+                assert!(content.data_age.is_some());
+                assert!(content.worst.is_none(), "{label}: nothing left to be worst");
+            }
+        }
+    }
+
+    /// Acceptance: an instance whose *every* selected account is muted still
+    /// projects `Content` — empty rows, no worst headline — rather than
+    /// degrading to a placeholder: the aggregate header and the "Updated …"
+    /// caption are the whole widget, minus titles (#197).
+    #[test]
+    fn an_all_muted_instance_still_projects_content_with_no_rows_and_no_worst() {
+        let store = store_with(
+            vec![
+                snap("a", vec![window("w", "A", 10.0)]),
+                snap("b", vec![window("w", "B", 20.0)]),
+            ],
+            AggregateStatus::default(),
+        );
+        let mut cfg = cfg_with(&["a", "b"]);
+        // "a" muted by the instance pin, "b" by the shared opt-out.
+        cfg.providers.get_mut("b").unwrap().mini_summary_metrics = Some(vec![]);
+        let inst = WidgetInstanceConfig {
+            accounts: vec![
+                WidgetAccountSelection {
+                    provider_id: "a".into(),
+                    headlines: Some(vec![]),
+                },
+                WidgetAccountSelection {
+                    provider_id: "b".into(),
+                    headlines: None,
+                },
+            ],
+            privacy: false,
+        };
+
+        let p = project(Some(&inst), &store, &cfg, WidgetSize::Medium, Utc::now());
+        let content = present(&p);
+        assert!(content.rows.is_empty(), "every account is muted: no rows");
+        assert!(content.worst.is_none(), "nothing to be worst of");
+        // Still honest content — the aggregate header and caption render.
+        assert!(content.data_age.is_some());
+        assert!(content.refreshed_at.is_some());
+    }
+
+    /// Acceptance: only the muted row disappears. A live account beside it
+    /// keeps its row and cells at the tiers that lay rows out, and the small
+    /// tier — which never laid rows out and already excluded empty-cell rows
+    /// from `worst` — is unchanged by the fix (#197).
+    #[test]
+    fn a_live_account_beside_a_muted_one_keeps_its_row_and_the_small_tier_is_unchanged() {
+        let store = store_with(
+            vec![
+                snap("muted", vec![window("w", "Muted", 90.0)]),
+                snap("live", vec![window("w", "Live", 30.0)]),
+            ],
+            AggregateStatus::default(),
+        );
+        let mut cfg = cfg_with(&["muted", "live"]);
+        cfg.providers.get_mut("muted").unwrap().mini_summary_metrics = Some(vec![]);
+        let inst = instance(&["muted", "live"]);
+
+        let medium = project(Some(&inst), &store, &cfg, WidgetSize::Medium, Utc::now());
+        let content = present(&medium);
+        let ids: Vec<&str> = content
+            .rows
+            .iter()
+            .map(|r| r.provider_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["live"], "only the live account keeps a row");
+        let RowState::Present { status, cells } = &content.rows[0].state else {
+            panic!("present row");
+        };
+        assert_eq!(*status, Status::Ok);
+        assert_eq!(cells.len(), 1);
+        assert!(
+            matches!(&cells[0].value, Some(HeadlineValue::Usage { used_pct, .. }) if *used_pct == 30.0)
+        );
+        // The 90% muted account must not resurface as the worst headline.
+        let worst = content.worst.as_ref().expect("the live headline is worst");
+        assert_eq!(worst.name, "live");
+
+        // The small tier collapses to `worst`, which already excluded the
+        // muted row — same answer whether the muted row is dropped or not.
+        let small = project(Some(&inst), &store, &cfg, WidgetSize::Small, Utc::now());
+        let small_content = present(&small);
+        assert!(small_content.rows.is_empty());
+        assert_eq!(small_content.worst.as_ref().expect("worst").name, "live");
+    }
+
+    /// Acceptance: the seam is "deliberately empty selection", not "empty
+    /// cells". A present account whose selection is *non-empty* — or automatic
+    /// — but resolves to no cells keeps its title-only row: these are visibly
+    /// stale readings ADR-0006 keeps on the wire, and hiding them would take a
+    /// failing account out of the widget (#197).
+    #[test]
+    fn a_non_empty_selection_that_yields_no_cells_keeps_its_title_only_row() {
+        // (c) A pinned window the provider no longer reports.
+        let store = store_with(
+            vec![snap("a", vec![window("w", "W", 42.0)])],
+            AggregateStatus::default(),
+        );
+        let cfg = cfg_with(&["a"]);
+        let pinned_missing = WidgetInstanceConfig {
+            accounts: vec![WidgetAccountSelection {
+                provider_id: "a".into(),
+                headlines: Some(vec!["window:gone".into()]),
+            }],
+            privacy: false,
+        };
+        let p = project(
+            Some(&pinned_missing),
+            &store,
+            &cfg,
+            WidgetSize::Medium,
+            Utc::now(),
+        );
+        let RowState::Present { cells, .. } = &present(&p).rows[0].state else {
+            panic!("a dropped-window account keeps its row");
+        };
+        assert!(cells.is_empty(), "the pinned metric is absent, so no cells");
+
+        // (d) A failed account with automatic headlines: no window, no credits.
+        let failed_store = store_with(
+            vec![UsageSnapshot::failed(
+                "f",
+                "F",
+                FetchError::Network("boom".into()),
+            )],
+            AggregateStatus {
+                status: Status::Stale,
+                pct: 0.0,
+            },
+        );
+        let f_cfg = cfg_with(&["f"]);
+        let inst = instance(&["f"]);
+        let p = project(
+            Some(&inst),
+            &failed_store,
+            &f_cfg,
+            WidgetSize::Medium,
+            Utc::now(),
+        );
+        let RowState::Present { status, cells } = &present(&p).rows[0].state else {
+            panic!("a failed account keeps its row");
+        };
+        assert_eq!(*status, Status::Stale);
+        assert!(cells.is_empty(), "nothing to read, but the title stays");
+    }
+
+    /// Acceptance: a mute never hides a removed account. Snapshot absence is
+    /// decided before headline resolution, so a muted-and-removed selection
+    /// still projects the explicit `Removed` row — the host's "Account
+    /// removed—tap to configure" — whichever way the mute was set (#197).
+    #[test]
+    fn a_muted_account_that_is_also_removed_still_shows_the_removed_message() {
+        // The read model has only "b"; the instance still selects the gone "a".
+        let store = store_with(
+            vec![snap("b", vec![window("w", "W", 50.0)])],
+            AggregateStatus::default(),
+        );
+
+        // (a) Muted by the instance pin — and gone from the read model.
+        let pinned = WidgetInstanceConfig {
+            accounts: vec![WidgetAccountSelection {
+                provider_id: "a".into(),
+                headlines: Some(vec![]),
+            }],
+            privacy: false,
+        };
+        let cfg = cfg_with(&["b"]);
+        let p = project(Some(&pinned), &store, &cfg, WidgetSize::Medium, Utc::now());
+        let rows = &present(&p).rows;
+        assert_eq!(rows.len(), 1, "the removed row is kept, not dropped");
+        assert_eq!(rows[0].provider_id, "a");
+        assert_eq!(rows[0].state, RowState::Removed);
+
+        // (b) Muted by the provider's shared opt-out — and gone from the read
+        // model (the config still knows the account; the read model does not).
+        let mut opted_out = cfg_with(&["a", "b"]);
+        opted_out
+            .providers
+            .get_mut("a")
+            .unwrap()
+            .mini_summary_metrics = Some(vec![]);
+        let inherited = instance(&["a"]);
+        let p = project(
+            Some(&inherited),
+            &store,
+            &opted_out,
+            WidgetSize::Medium,
+            Utc::now(),
+        );
+        let rows = &present(&p).rows;
+        assert_eq!(rows.len(), 1, "the removed row is kept, not dropped");
+        assert_eq!(rows[0].provider_id, "a");
+        assert_eq!(rows[0].state, RowState::Removed);
     }
 
     // ---- Tiered content --------------------------------------------------

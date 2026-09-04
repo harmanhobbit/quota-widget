@@ -656,6 +656,85 @@ mod tests {
         assert!(!content.rows[1].removed);
     }
 
+    // ---- Muted accounts (#197) ----------------------------------------------
+
+    /// Acceptance: a deliberately muted account — a `Some([])` effective
+    /// headline selection, pinned per instance or inherited from the shared
+    /// compact summary — produces no row at the tiers that lay rows out, in
+    /// the flattened view or its JSON. The surviving account's row is intact,
+    /// so the host (which only draws, ADR-0006) never receives a title-only
+    /// row to render.
+    #[test]
+    fn a_muted_account_has_no_row_in_the_flattened_view_or_its_json() {
+        let snapshots = vec![
+            UsageSnapshot::ok("m", "Muted", vec![window("w", "M", 90.0)], None),
+            UsageSnapshot::ok("live", "Live", vec![window("w", "L", 30.0)], None),
+        ];
+        let plain_cfg = cfg_with(&["m", "live"]);
+
+        // (a) The instance pins the empty selection for "m".
+        let pinned = WidgetInstanceConfig {
+            accounts: vec![
+                widget::WidgetAccountSelection {
+                    provider_id: "m".into(),
+                    headlines: Some(vec![]),
+                },
+                widget::WidgetAccountSelection {
+                    provider_id: "live".into(),
+                    headlines: None,
+                },
+            ],
+            privacy: false,
+        };
+        // (b) The instance inherits the provider's compact-summary opt-out.
+        let mut opted_out_cfg = plain_cfg.clone();
+        opted_out_cfg
+            .providers
+            .get_mut("m")
+            .unwrap()
+            .mini_summary_metrics = Some(vec![]);
+        let inherited = instance(&["m", "live"]);
+
+        let cases = [
+            ("instance pin Some([])", &plain_cfg, pinned),
+            ("inherited Some([])", &opted_out_cfg, inherited),
+        ];
+        for (label, cfg, inst) in cases {
+            let dir = seed_dir(
+                cfg,
+                snapshots.clone(),
+                AggregateStatus::default(),
+                &[("id-1", inst)],
+            );
+            for (tier, w, h) in [("medium", 200.0, 140.0), ("large", 300.0, 260.0)] {
+                let view = render(dir.path(), "id-1", w, h, Utc::now());
+                assert_eq!(view.state, "content");
+                let content = view.content.expect("content");
+                let ids: Vec<&str> = content
+                    .rows
+                    .iter()
+                    .map(|r| r.provider_id.as_str())
+                    .collect();
+                assert_eq!(
+                    ids,
+                    vec!["live"],
+                    "{label} at {tier}: only the live row flattens"
+                );
+                // Neither the muted account's id nor its name crosses the wire.
+                let json = render_json(dir.path(), "id-1", w, h, Utc::now());
+                assert!(
+                    !json.contains("\"provider_id\":\"m\""),
+                    "{label} at {tier}: {json}"
+                );
+                assert!(!json.contains("Muted"), "{label} at {tier}: {json}");
+                assert!(
+                    json.contains("\"provider_id\":\"live\""),
+                    "{label} at {tier}: {json}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn privacy_redacts_the_value_but_keeps_label_status_and_reset() {
         let cfg = cfg_with(&["a"]);
