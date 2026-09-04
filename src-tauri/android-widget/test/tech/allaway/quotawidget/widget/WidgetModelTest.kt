@@ -25,6 +25,7 @@ class WidgetModelTest {
                 "aggregate_status": "warn",
                 "aggregate_pct": 42.0,
                 "data_age_secs": 90,
+                "updated_at_secs": 1750000000,
                 "privacy": false,
                 "rows": [
                   {
@@ -47,6 +48,7 @@ class WidgetModelTest {
         val content = view.content!!
         assertEquals(WidgetStatus.WARN, content.aggregateStatus)
         assertEquals(90L, content.dataAgeSecs)
+        assertEquals(1750000000L, content.updatedAtSecs)
         assertFalse(content.privacy)
         val row = content.rows.single()
         assertFalse(row.removed)
@@ -190,7 +192,8 @@ class WidgetModelTest {
 
     @Test
     fun missingOptionalFieldsDoNotThrow() {
-        // A minimal content object: no worst, no data_age, no rows array.
+        // A minimal content object: no worst, no data_age, no updated_at, no
+        // rows array.
         val json = """
             {
               "size": "medium",
@@ -200,6 +203,7 @@ class WidgetModelTest {
         """.trimIndent()
         val content = parseWidgetView(json).content!!
         assertNull(content.dataAgeSecs)
+        assertNull("an absent last-update instant parses to null (#195)", content.updatedAtSecs)
         assertNull(content.worst)
         assertTrue(content.rows.isEmpty())
     }

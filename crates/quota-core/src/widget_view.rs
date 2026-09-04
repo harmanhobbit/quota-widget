@@ -67,6 +67,13 @@ pub struct WidgetContentView {
     /// unrefreshed store to `no_data`), but the host tolerates it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_age_secs: Option<i64>,
+    /// The instant that age is measured from, as epoch seconds — the read
+    /// model's own refresh stamp (#195), so the host can render an absolute
+    /// local "Updated <datetime>" instead of a relative age that goes stale
+    /// between widget re-renders. Omitted when there is no refresh instant,
+    /// exactly like the age beside it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at_secs: Option<i64>,
     /// Whether privacy mode redacted the figures below — the host may show a
     /// small "hidden" affordance.
     pub privacy: bool,
@@ -173,6 +180,8 @@ fn content_view(content: &WidgetContent) -> WidgetContentView {
         aggregate_status: status_str(content.aggregate.status).into(),
         aggregate_pct: content.aggregate.pct,
         data_age_secs: content.data_age.map(|d| d.num_seconds()),
+        // The same instant the age above was derived from — not a fresh read.
+        updated_at_secs: content.refreshed_at.map(|t| t.timestamp()),
         privacy: content.privacy,
         worst: content.worst.as_ref().map(worst_view),
         rows: content.rows.iter().map(row_view).collect(),
@@ -712,6 +721,79 @@ mod tests {
         );
     }
 
+    /// Acceptance (#195): the refresh instant crosses the wire as an absolute
+    /// `updated_at_secs` — the mirror of the `resets_at_secs` treatment — and
+    /// it is the *same* instant `data_age_secs` is derived from, so
+    /// `now - data_age_secs` reconstructs it (within whole-second rounding).
+    #[test]
+    fn the_content_view_carries_updated_at_secs_from_the_read_model() {
+        let cfg = cfg_with(&["a"]);
+        let refreshed = Utc.with_ymd_and_hms(2025, 6, 1, 12, 0, 0).unwrap();
+        let now = refreshed + Duration::seconds(90);
+        let dir = seed_dir(
+            &cfg,
+            vec![UsageSnapshot::ok(
+                "a",
+                "A",
+                vec![window("w", "W", 10.0)],
+                None,
+            )],
+            AggregateStatus::default(),
+            &[("id-1", instance(&["a"]))],
+        );
+        // Re-stamp the persisted read model with a known refresh instant:
+        // `from_snapshots` stamps "now", which is exactly what must not leak
+        // into the assertion.
+        SnapshotStore {
+            refreshed_at: Some(refreshed),
+            ..store_with(
+                vec![UsageSnapshot::ok(
+                    "a",
+                    "A",
+                    vec![window("w", "W", 10.0)],
+                    None,
+                )],
+                AggregateStatus::default(),
+            )
+        }
+        .save(dir.path())
+        .unwrap();
+
+        let content = render(dir.path(), "id-1", 200.0, 140.0, now)
+            .content
+            .unwrap();
+        assert_eq!(content.updated_at_secs, Some(refreshed.timestamp()));
+        let age = content.data_age_secs.expect("an age beside the instant");
+        assert_eq!(
+            content.updated_at_secs.unwrap(),
+            now.timestamp() - age,
+            "one instant, two presentations"
+        );
+    }
+
+    /// Acceptance (#195): with no refresh instant there is nothing to show, so
+    /// `updated_at_secs` is omitted from the wire entirely rather than sent as
+    /// a misleading zero. The relative `data_age_secs` keeps its existing
+    /// None-omission too.
+    #[test]
+    fn updated_at_secs_is_omitted_from_the_wire_when_there_is_no_refresh_instant() {
+        let content = WidgetContent {
+            aggregate: AggregateStatus::default(),
+            data_age: None,
+            refreshed_at: None,
+            privacy: false,
+            worst: None,
+            rows: Vec::new(),
+        };
+        let view = WidgetView::from_projection(&WidgetProjection {
+            size: WidgetSize::Small,
+            state: WidgetState::Content(Box::new(content)),
+        });
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(!json.contains("updated_at_secs"), "{json}");
+        assert!(!json.contains("data_age_secs"), "{json}");
+    }
+
     #[test]
     fn the_view_json_round_trips_and_uses_stable_field_names() {
         let cfg = cfg_with(&["a"]);
@@ -735,6 +817,10 @@ mod tests {
         assert!(json.contains("\"state\":\"content\""));
         assert!(json.contains("\"aggregate_status\""));
         assert!(json.contains("\"resets_at_secs\""));
+        assert!(
+            json.contains("\"updated_at_secs\""),
+            "the last-update instant's wire name (#195): {json}"
+        );
         assert!(
             json.contains("\"period\""),
             "the marker's wire name: {json}"

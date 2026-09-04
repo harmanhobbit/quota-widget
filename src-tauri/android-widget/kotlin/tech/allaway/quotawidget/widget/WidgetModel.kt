@@ -46,6 +46,12 @@ data class WidgetContent(
     val aggregateStatus: WidgetStatus,
     val aggregatePct: Double,
     val dataAgeSecs: Long?,
+    /**
+     * The instant [dataAgeSecs] is measured from, as epoch seconds (#195) —
+     * the read model's own refresh stamp, for the absolute "Updated …"
+     * caption. Null when absent; the caption is then omitted entirely.
+     */
+    val updatedAtSecs: Long?,
     val privacy: Boolean,
     val worst: WorstHeadline?,
     val rows: List<WidgetRow>,
@@ -111,6 +117,7 @@ private fun parseContent(obj: JSONObject): WidgetContent {
         aggregateStatus = WidgetStatus.from(obj.optString("aggregate_status")),
         aggregatePct = obj.optDouble("aggregate_pct", 0.0),
         dataAgeSecs = obj.optLongOrNull("data_age_secs"),
+        updatedAtSecs = obj.optLongOrNull("updated_at_secs"),
         privacy = obj.optBoolean("privacy", false),
         worst = worst,
         rows = rows,
