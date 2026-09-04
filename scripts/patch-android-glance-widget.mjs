@@ -86,6 +86,13 @@ android {
     buildFeatures {
         compose = true
     }
+    // The widget host formats the last-update instant with java.time (issue
+    // #195). The generated project's minSdk is 24 (Tauri's default; java.time
+    // is API 26+), so core library desugaring is required for API 24/25
+    // devices — without it those throw NoClassDefFoundError on first render.
+    compileOptions {
+        isCoreLibraryDesugaringEnabled = true
+    }
 }
 dependencies {
     implementation("androidx.glance:glance-appwidget:1.1.1")
@@ -96,6 +103,7 @@ dependencies {
     implementation("androidx.compose.runtime:runtime:${COMPOSE}")
     implementation("androidx.compose.ui:ui-unit:${COMPOSE}")
     implementation("androidx.compose.ui:ui-graphics:${COMPOSE}")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

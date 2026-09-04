@@ -315,6 +315,12 @@ pub struct WidgetContent {
     /// before any refresh, which the projection already routes to
     /// [`WidgetState::NoData`], so `Content` carries `Some` in practice.
     pub data_age: Option<Duration>,
+    /// The instant `data_age` is measured from — the persisted read model's
+    /// own refresh stamp, carried verbatim so a host can render the absolute
+    /// "Updated <datetime>" the relative age answers less well (#195). The
+    /// same single clock reading as [`WidgetContent::data_age`], never a
+    /// second one.
+    pub refreshed_at: Option<DateTime<Utc>>,
     /// Whether privacy mode redacted the figures below.
     pub privacy: bool,
     /// The single worst selected headline — the small tier's whole body,
@@ -471,6 +477,9 @@ pub fn project(
             // The shared aggregate, verbatim — not a subset re-fold.
             aggregate: store.aggregate,
             data_age: store.age(now),
+            // The same instant the age above is derived from — the store's own
+            // refresh stamp, read once (#195).
+            refreshed_at: store.refreshed_at,
             privacy: instance.privacy,
             worst,
             // The small tier collapses to `worst`; only medium/large lay out
@@ -1171,6 +1180,37 @@ mod tests {
             panic!("present row");
         };
         assert_eq!(*status, Status::Ok);
+    }
+
+    /// Acceptance (#195): the read model's authoritative refresh instant rides
+    /// through the projection beside the relative `data_age` — derived from the
+    /// *same* single clock reading the age is, never a second one. A widget
+    /// showing "Updated <datetime>" must show the instant "as of <age>" is
+    /// measured from.
+    #[test]
+    fn the_projection_carries_the_read_models_refresh_instant() {
+        let refreshed = Utc.with_ymd_and_hms(2025, 6, 1, 12, 0, 0).unwrap();
+        let now = refreshed + Duration::seconds(90);
+        let store = SnapshotStore {
+            refreshed_at: Some(refreshed),
+            ..store_with(
+                vec![snap("a", vec![window("w", "W", 10.0)])],
+                AggregateStatus::default(),
+            )
+        };
+        let cfg = cfg_with(&["a"]);
+        let inst = instance(&["a"]);
+        let p = project(Some(&inst), &store, &cfg, WidgetSize::Medium, now);
+        let content = present(&p);
+
+        assert_eq!(
+            content.refreshed_at,
+            Some(refreshed),
+            "the content carries the store's refresh instant verbatim"
+        );
+        // `data_age` is unchanged: still exactly the store's age at `now`, so
+        // refresh + age reconstructs `now` — one instant, two presentations.
+        assert_eq!(content.data_age, Some(now - refreshed));
     }
 
     /// A failed fetch reads as Stale on the row, the same as every other

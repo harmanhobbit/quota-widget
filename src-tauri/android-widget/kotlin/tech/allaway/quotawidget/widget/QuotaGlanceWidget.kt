@@ -47,6 +47,9 @@ import androidx.glance.unit.ColorProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.time.Instant
+import java.time.ZoneId
+import java.util.Locale
 
 /**
  * The home-screen widget (issue #113). It renders purely from the persisted
@@ -99,14 +102,6 @@ private fun statusColor(status: WidgetStatus): ColorProvider = when (status) {
     WidgetStatus.CRITICAL -> ColorProvider(Color(0xFFE53935))
     WidgetStatus.STALE -> ColorProvider(Color(0xFF9E9E9E))
     WidgetStatus.UNKNOWN -> ColorProvider(Color(0xFF9E9E9E))
-}
-
-/** A compact "as of" age from whole seconds. */
-private fun formatAge(secs: Long): String = when {
-    secs < 60 -> "just now"
-    secs < 3600 -> "${secs / 60}m ago"
-    secs < 86_400 -> "${secs / 3600}h ago"
-    else -> "${secs / 86_400}d ago"
 }
 
 /** A compact "resets in …" from an epoch-seconds reset instant. */
@@ -167,9 +162,20 @@ private fun Content(size: String, content: WidgetContent, appWidgetId: Int) {
         Spacer(GlanceModifier.defaultWeight())
         RefreshButton()
     }
-    content.dataAgeSecs?.let {
+    // The caption is the absolute local date-time of the read model's last
+    // refresh (#195), formatted by the pure helper against the device's
+    // timezone and locale. A relative "5m ago" goes stale between widget
+    // re-renders — a Glance surface cannot update its own text — so the
+    // datetime stays true until the next refresh instead. Absent instant:
+    // no caption, never a relative-age fallback.
+    content.updatedAtSecs?.let { updated ->
         Text(
-            "as of ${formatAge(it)}",
+            formatUpdatedAt(
+                updated,
+                ZoneId.systemDefault(),
+                Locale.getDefault(),
+                Instant.now(),
+            ),
             style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = 11.sp),
         )
     }
