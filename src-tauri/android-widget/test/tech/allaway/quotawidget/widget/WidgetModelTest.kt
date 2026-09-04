@@ -99,6 +99,66 @@ class WidgetModelTest {
     }
 
     @Test
+    fun aMutedRowOmittedFromTheWireParsesToExactlyTheSurvivingRows() {
+        // The projection drops a muted account (a deliberately-empty headline
+        // selection) before the wire (#197), so the host never sees it and does
+        // not need to know it existed: what arrives is exactly what draws
+        // (ADR-0006 — the host only renders).
+        val json = """
+            {
+              "size": "medium",
+              "state": "content",
+              "content": {
+                "aggregate_status": "ok",
+                "aggregate_pct": 30.0,
+                "privacy": false,
+                "rows": [
+                  {
+                    "provider_id": "live", "name": "Live", "removed": false, "status": "ok",
+                    "cells": [ { "label": "Live", "value": "30%" } ]
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+        val content = parseWidgetView(json).content!!
+        assertEquals("the muted row never arrives", 1, content.rows.size)
+        val row = content.rows.single()
+        assertEquals("live", row.providerId)
+        assertFalse(row.removed)
+        assertEquals(WidgetStatus.OK, row.status)
+        assertEquals("30%", row.cells.single().value)
+    }
+
+    @Test
+    fun aPresentRowWithEmptyCellsStillParsesAsPresent() {
+        // A non-removed row with empty cells (a stale/failed account whose
+        // automatic pick found nothing) still parses present with its name,
+        // status and empty cells: the host renders what arrives and performs
+        // no independent drop — filtering here would hide stale accounts
+        // (ADR-0006), which is exactly what the #197 fix avoids.
+        val json = """
+            {
+              "size": "medium",
+              "state": "content",
+              "content": {
+                "aggregate_status": "stale",
+                "aggregate_pct": 0.0,
+                "privacy": false,
+                "rows": [
+                  { "provider_id": "stale", "name": "Stale", "removed": false, "status": "stale", "cells": [] }
+                ]
+              }
+            }
+        """.trimIndent()
+        val row = parseWidgetView(json).content!!.rows.single()
+        assertFalse(row.removed)
+        assertEquals("Stale", row.name)
+        assertEquals(WidgetStatus.STALE, row.status)
+        assertTrue(row.cells.isEmpty())
+    }
+
+    @Test
     fun aRedactedCellHasNoValueButKeepsLabelAndReset() {
         val json = """
             {
