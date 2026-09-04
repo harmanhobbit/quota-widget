@@ -40,7 +40,7 @@ impl Provider for Hermes {
         &self.key
     }
     fn name(&self) -> &str {
-        self.label.as_deref().unwrap_or("Hermes Portal")
+        self.label.as_deref().unwrap_or("Nous")
     }
 
     async fn fetch(&self, ctx: &ProviderCtx) -> Result<UsageSnapshot, FetchError> {
@@ -97,7 +97,7 @@ impl Provider for Hermes {
                 }
                 Ok(None) if source == "remote" => {
                     return Err(FetchError::NotConfigured(
-                        "set the remote SSH host (user@server) in Settings → Hermes".into(),
+                        "set the remote SSH host (user@server) in Settings → Nous".into(),
                     ))
                 }
                 Ok(None) => {}
@@ -794,10 +794,10 @@ mod tests {
         let broke = parse_subscription(&body, 0.0);
         assert!(!broke[0].informational);
 
-        let snap = UsageSnapshot::ok("hermes", "Hermes Portal", funded, None);
+        let snap = UsageSnapshot::ok("hermes", "Nous", funded, None);
         assert_eq!(snap.status(80.0, 95.0, None), crate::model::Status::Ok);
         assert_eq!(
-            UsageSnapshot::ok("hermes", "Hermes Portal", broke, None).status(80.0, 95.0, None),
+            UsageSnapshot::ok("hermes", "Nous", broke, None).status(80.0, 95.0, None),
             crate::model::Status::Critical
         );
     }

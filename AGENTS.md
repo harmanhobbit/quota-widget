@@ -5,7 +5,7 @@ Guidance for coding agents working in this repo. Read this fully before editing.
 ## What this is
 
 A system-tray widget for **Windows 11 and Linux** showing AI provider quotas
-(Claude 5-hour + weekly windows, Codex weekly, OpenRouter credits, Hermes Portal
+(Claude 5-hour + weekly windows, Codex weekly, OpenRouter credits, Nous
 credits). Tauri 2 (Rust) + Svelte 5. ~3,600 lines total — small enough to read
 end to end, and you should.
 

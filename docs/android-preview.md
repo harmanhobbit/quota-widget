@@ -53,7 +53,7 @@ gh workflow run android-preview.yml --ref main
    ships with **no** key baked in — embedding one would leak it, since the
    prerelease is public. Supported providers on Android:
    - **Claude** and **Codex** through built-in browser/device-flow sign-in.
-   - **Hermes Portal** by pasting a `portal.nousresearch.com` session cookie.
+   - **Nous** by pasting a `portal.nousresearch.com` session cookie.
    - Every direct-HTTPS provider by pasting its API key (OpenRouter, ElevenLabs,
      Firecrawl, DeepSeek, Moonshot, Venice, OneHop, Fireworks, Anthropic Admin,
      OpenAI Admin).

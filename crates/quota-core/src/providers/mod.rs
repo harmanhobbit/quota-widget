@@ -153,7 +153,7 @@ pub fn adapter_kinds() -> &'static [(&'static str, &'static str)] {
         ("fireworks", "Fireworks"),
         ("anthropic_admin", "Anthropic Admin"),
         ("openai_admin", "OpenAI Admin"),
-        ("hermes", "Hermes Portal"),
+        ("hermes", "Nous"),
         ("zai", "Z.ai"),
     ]
 }
