@@ -2,7 +2,7 @@
 
 A system-tray widget for **Windows 11 and Linux** that watches your AI provider
 allowances in one place: Claude's rolling 5-hour window and weekly cap, Codex's
-weekly allowance, Grok's SuperGrok allowance, Z.ai Coding Plan usage, Hermes Portal credits, OpenRouter credits, ElevenLabs
+weekly allowance, Grok's SuperGrok allowance, Z.ai Coding Plan usage, Nous credits, OpenRouter credits, ElevenLabs
 credits, Firecrawl credits, DeepSeek, Moonshot and Venice balances, and Fireworks, Anthropic and
 OpenAI organization spend. It collapses to
 the tray and pops up as a compact always-on-top window.
@@ -128,7 +128,7 @@ Platform differences are small but real:
 | **Fireworks** | An API key from [fireworks.ai/account/api-keys](https://fireworks.ai/account/api-keys), plus your **account ID** | Official `GET /v1/accounts/{account_id}/billingUsage` API, summing serverless, dedicated and training costs for the calendar month to date. Fireworks reports *spend*, not a balance or an allowance, so there is no percentage unless you say what a full month looks like: set an optional **Monthly budget** and the card shows spend against it as a usage window (with tray colour, thresholds and a period marker); leave it blank and the card shows month-to-date spend as a plain figure. Overspending a budget reads past 100% — it's your intention, not a cap Fireworks enforces. |
 | **Anthropic Admin** | An **admin** key (`sk-ant-admin…`) from Console → Settings → Admin keys | Official `GET /v1/organizations/cost_report` API, summing the daily cost buckets for the calendar month to date. Needs an admin key, not a normal API key, and the Admin API is unavailable on individual accounts. Like Fireworks it reports *spend*: set a **Monthly budget** to see it as a usage window, or leave it blank for a plain "Cost this month" figure. Note Priority Tier spend is excluded by the API itself. |
 | **OpenAI Admin** | An organization **Admin** key from [platform.openai.com/settings/organization/admin-keys](https://platform.openai.com/settings/organization/admin-keys) | Official `GET /v1/organization/costs` API, summing the daily cost buckets for the calendar month to date. Needs an admin key, not a normal API key. Same spend framing and **Monthly budget** option as the other spend providers. |
-| **Hermes Portal** | hermes-agent installed and logged in (`hermes`) — zero extra setup | Reads the Nous OAuth access token from `~/.hermes/auth.json` and calls the portal's billing API (`/api/billing/state` + `/api/billing/subscription`): purchased-credit balance in USD, monthly subscription allowance with tier name and cycle-reset countdown, and monthly-cap usage where configured. Subscription rollover appears as a negative usage percentage alongside its exact remaining/plan credits; the monthly cap remains a percentage only because it is a spending ceiling, not an allowance. Set an optional **Monthly budget** to add a monthly-spend target without hiding the purchased balance; Hermes' own `spentThisMonthUsd` is used when available, otherwise the widget tracks drawdown from the month's opening balance and handles top-ups. The subscription allowance is shown greyed-out and does **not** colour the card or tray while a purchased balance is still funding calls — on the Free tier that allowance is a fraction of a credit and reads 100% used permanently, which is not a quota you're actually hitting. The widget only ever uses the short-lived *access* token — never hermes's refresh token, which the portal rotates and revokes on reuse — so a stale token means "run any `hermes` command" (or keep hermes running; its keepalive refreshes it). **No hermes on this machine?** Set Settings → Hermes → Source to *Remote hermes over SSH* and enter `user@server`: the widget fetches the auth file from a machine that does run hermes (`ssh <host> cat .hermes/auth.json`, BatchMode — needs working key auth; Windows 10/11 include the OpenSSH client). Set **Transport** to *Tailscale SSH* instead when the remote is on your tailnet; the widget then runs `tailscale ssh <host>` and passes the same non-interactive SSH options through to OpenSSH. Last resort: paste a portal session cookie. |
+| **Nous** | hermes-agent installed and logged in (`hermes`) — zero extra setup | Reads the Nous OAuth access token from `~/.hermes/auth.json` and calls the portal's billing API (`/api/billing/state` + `/api/billing/subscription`): purchased-credit balance in USD, monthly subscription allowance with tier name and cycle-reset countdown, and monthly-cap usage where configured. Subscription rollover appears as a negative usage percentage alongside its exact remaining/plan credits; the monthly cap remains a percentage only because it is a spending ceiling, not an allowance. Set an optional **Monthly budget** to add a monthly-spend target without hiding the purchased balance; Nous' own `spentThisMonthUsd` is used when available, otherwise the widget tracks drawdown from the month's opening balance and handles top-ups. The subscription allowance is shown greyed-out and does **not** colour the card or tray while a purchased balance is still funding calls — on the Free tier that allowance is a fraction of a credit and reads 100% used permanently, which is not a quota you're actually hitting. The widget only ever uses the short-lived *access* token — never hermes's refresh token, which the portal rotates and revokes on reuse — so a stale token means "run any `hermes` command" (or keep hermes running; its keepalive refreshes it). **No hermes on this machine?** Set Settings → Nous → Source to *Remote hermes over SSH* and enter `user@server`: the widget fetches the auth file from a machine that does run hermes (`ssh <host> cat .hermes/auth.json`, BatchMode — needs working key auth; Windows 10/11 include the OpenSSH client). Set **Transport** to *Tailscale SSH* instead when the remote is on your tailnet; the widget then runs `tailscale ssh <host>` and passes the same non-interactive SSH options through to OpenSSH. Last resort: paste a portal session cookie. |
 | **Z.ai** | An API key from your Z.ai Coding Plan — the same key your coding tool uses | Paste the key and the widget calls Z.ai's quota endpoint (`https://api.z.ai/api/monitor/usage/quota/limit`) to show the plan's token usage windows: the rolling 5-hour window and the rolling weekly window, each as a **percentage only** with its reset time — Z.ai reports utilisation, not token counts, so no absolute figures are invented. The plan's windows are reported both as `TOKENS_LIMIT` and `CREDIT_LIMIT` entries (the latter observed live despite its name — it is the same percentage-only utilisation, not a credit balance). A monthly web-search/tool-call count appears when the plan reports one, shown as an **informational** row (greyed-out, never colouring the card or tray): exhausting it does not block model calls. The endpoint is undocumented and provider-internal, so it may change without notice; a changed or malformed response shows a clear error rather than guessed usage. |
 
 You can add multiple named accounts of each provider in Settings. The editable
@@ -139,7 +139,7 @@ Every account, including the original defaults, can be removed.
 
 **On Android**, the provider list is the same but the available credential sources
 are narrower: built-in sign-in for Claude and Codex, a pasted portal session cookie
-for Hermes, and pasted API keys for every direct-HTTPS provider. Desktop CLI files,
+for Nous, and pasted API keys for every direct-HTTPS provider. Desktop CLI files,
 local commands, SSH and Tailscale are not available on Android.
 
 On Android the app refreshes as soon as you switch to it and then at your chosen
@@ -154,7 +154,7 @@ data whether or not the app is running.
 Android Settings also has a **Credential export** section for moving accounts
 between devices or keeping a backup. **Export accounts…** writes every account to
 an encrypted `.qwb` file sealed with a passphrase you choose: pasted API keys
-travel inside the encryption, while Claude, Codex and Hermes accounts travel as
+travel inside the encryption, while Claude, Codex and Nous accounts travel as
 their account entries alone — a session is never copied between devices, so those
 accounts sign in again on the destination. **Import accounts…** merges such a
 file back in (including one exported on desktop, and vice versa), storing pasted
@@ -183,7 +183,7 @@ must be on the same network — Windows shows its usual firewall prompt the firs
 time a device waits to receive. The same move-and-report rules apply as the
 file transfer: pasted keys work immediately on arrival (into the Android
 Keystore when the receiver is a phone), OAuth and cookie accounts (Claude,
-Codex, Grok, Hermes Portal) arrive awaiting sign-in, the receiving device
+Codex, Grok, Nous) arrive awaiting sign-in, the receiving device
 reports what happened (added / updated / needs sign-in / could-not-store — on
 the phone, worded like its file and QR imports), and a cancelled, interrupted or
 wrong-coded attempt leaves the receiver exactly as it was. A code arms one
@@ -321,7 +321,7 @@ In a device flake, either add the overlay
 `environment.systemPackages = [ pkgs.quota-widget ];`) or take
 `quota-widget.packages.${system}.default` directly. The package wraps the
 binary with the GTK/WebKit runtime and puts `ssh` and `tailscale` on PATH for
-the Hermes remote source. The tray itself uses the native D-Bus
+the Nous remote source. The tray itself uses the native D-Bus
 StatusNotifierItem protocol.
 Bumping npm deps later means refreshing `npmDeps.hash` in `nix/package.nix`.
 

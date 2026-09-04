@@ -117,7 +117,7 @@ const SNAPSHOTS = [
   },
   {
     provider_id: 'hermes',
-    provider_name: 'Hermes Portal',
+    provider_name: 'Nous',
     error: null,
     credits: { balance: 12, unit: 'USD' },
     windows: [{ metric_id: 'monthly_allowance', label: 'Monthly allowance (Plus)', used_pct: 100, informational: true }],

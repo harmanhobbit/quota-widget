@@ -150,7 +150,7 @@
     Back up your accounts to an encrypted file, or restore them from one — for
     example one exported on your desktop. The file only opens with the
     passphrase you seal it with; lose it and the backup is unrecoverable.
-    Claude, Codex and Hermes accounts travel without their sign-in and ask you
+    Claude, Codex and Nous accounts travel without their sign-in and ask you
     to sign in again here, so a session is never shared between devices.
   </p>
   {#if mode === null}

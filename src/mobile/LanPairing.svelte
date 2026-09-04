@@ -164,8 +164,8 @@
     <p class="note">
       Move every account to another device over your local network — no server
       in between. Both devices enter the same 6-digit code. Pasted keys work
-      immediately; OAuth and cookie accounts (Claude, Codex, Hermes Portal)
-      arrive awaiting sign-in.
+      immediately; OAuth and cookie accounts (Claude, Codex, Nous) arrive
+      awaiting sign-in.
     </p>
   {:else if pairMode === 'send'}
     <label class="field">Pairing code

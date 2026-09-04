@@ -25,7 +25,7 @@
     { id: 'fireworks', name: 'Fireworks', secret: 'API key', note: 'Create a key at fireworks.ai/account/api-keys. Needs the account ID too. Reports spend, not a balance: set a monthly budget to see it as a percentage.' },
     { id: 'anthropic_admin', name: 'Anthropic Admin', secret: 'Admin API key', note: 'Needs an sk-ant-admin key from Console → Settings → Admin keys, not a normal API key. The Admin API is unavailable on individual accounts. Shows organization spend this month.' },
     { id: 'openai_admin', name: 'OpenAI Admin', secret: 'Admin API key', note: 'Needs an organization Admin key from platform.openai.com/settings/organization/admin-keys, not a normal API key. Shows organization spend this month.' },
-    { id: 'hermes', name: 'Hermes Portal', secret: 'Session cookie', note: 'Uses a hermes-agent login: local ~/.hermes/auth.json, or fetched from a remote machine over SSH (needs working key auth, e.g. via ssh-agent). Cookie paste is a last-resort fallback. Optional monthly budget tracks spend without replacing the purchased-credit balance.' },
+    { id: 'hermes', name: 'Nous', secret: 'Session cookie', note: 'Uses a hermes-agent login: local ~/.hermes/auth.json, or fetched from a remote machine over SSH (needs working key auth, e.g. via ssh-agent). Cookie paste is a last-resort fallback. Optional monthly budget tracks spend without replacing the purchased-credit balance.' },
     { id: 'zai', name: 'Z.ai', secret: 'API key', note: 'Paste the API key from your Z.ai Coding Plan (the same key your coding tool uses). Reports token usage as 5-hour and weekly percentages plus a monthly web/tool count. The quota endpoint is undocumented, so it may change without notice.' },
   ];
   const providerInfo = (kind) => PROVIDERS.find((p) => p.id === kind) ?? { id: kind, name: kind, secret: null, note: 'Unknown provider kind.' };
@@ -1446,8 +1446,8 @@
 
         <p class="note">
           Import accounts from a backup file. Pasted-key accounts work
-          immediately; OAuth and cookie accounts (Claude, Codex, Grok, Hermes
-          Portal) arrive awaiting sign-in.
+          immediately; OAuth and cookie accounts (Claude, Codex, Grok, Nous)
+          arrive awaiting sign-in.
         </p>
         {#if !importPath}
           <div class="row">
@@ -1527,7 +1527,7 @@
           Move every account to another device over your local network — desktop
           or Android — no server in between. Both devices enter the same 6-digit
           code. Pasted keys work immediately; OAuth and cookie accounts (Claude,
-          Codex, Grok, Hermes Portal) arrive awaiting sign-in.
+          Codex, Grok, Nous) arrive awaiting sign-in.
         </p>
       {:else if pairMode === 'send'}
         <label class="field">Pairing code

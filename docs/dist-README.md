@@ -2,7 +2,7 @@
 
 Download page for **Quota Widget**, a system-tray widget for Windows 11 and
 Linux that watches your AI provider allowances in one place: Claude's rolling
-5-hour window and weekly cap, Codex's weekly allowance, Hermes Portal credits,
+5-hour window and weekly cap, Codex's weekly allowance, Nous credits,
 OpenRouter, ElevenLabs, Firecrawl, DeepSeek, Moonshot and Venice balances,
 and Fireworks, Anthropic and OpenAI organization spend.
 
