@@ -52,6 +52,15 @@ pub struct ProviderCtx {
     /// refresh) so the host can persist it. Key is the secret name. Returns
     /// whether the write succeeded, which `persist_secret` records.
     pub on_secret_update: Option<SecretUpdateHook>,
+    /// The secret keys the host's credential store holds but *failed to read*
+    /// — as opposed to keys that were simply absent. Set after construction,
+    /// in the same style as `on_secret_update`, by hosts whose backend can
+    /// report such failures (Android's Keystore); defaults to empty, which is
+    /// why desktop — whose backends never do — needs no change. The shared
+    /// refresh reconciles these into an explicit *unavailable* state instead
+    /// of the generic *not configured* a merely-absent secret produces
+    /// (issue #199).
+    pub failed_secrets: Vec<String>,
     /// Every credential write requested during this context's lifetime (one
     /// refresh pass), in call order.
     credential_writes: Mutex<Vec<CredentialWrite>>,
@@ -99,6 +108,7 @@ impl ProviderCtx {
             secrets,
             config,
             on_secret_update: None,
+            failed_secrets: Vec::new(),
             credential_writes: Mutex::new(Vec::new()),
         }
     }

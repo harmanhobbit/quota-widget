@@ -35,6 +35,16 @@ pub fn oauth_key(account: &str) -> String {
     format!("{account}_oauth")
 }
 
+/// The inverse of [`oauth_key`]: the account key an OAuth secret name belongs
+/// to, or `None` for a name that is not an OAuth entry — a pasted key lives
+/// under the account key itself, with no suffix to strip. Lives here so the
+/// two halves of the `{account}_oauth` naming rule cannot drift apart, and so
+/// the shared refresh's reconciliation can resolve secret names to accounts
+/// without depending on host code (issue #199).
+pub fn account_from_oauth_key(secret_key: &str) -> Option<&str> {
+    secret_key.strip_suffix("_oauth")
+}
+
 /// Every entry name the configuration implies, in config order: one per
 /// account, plus an OAuth entry for the kinds that sign in rather than paste a
 /// key.
@@ -476,6 +486,21 @@ mod tests {
         assert_eq!(get(dir.path(), "openrouter"), None);
         set(dir.path(), "openrouter", "one").unwrap();
         assert_eq!(get(dir.path(), "openrouter").unwrap(), "one");
+    }
+
+    /// The inverse of `oauth_key` (issue #199): whatever named an OAuth entry
+    /// must be recoverable from the name itself, beside the convention that
+    /// produced it. Covers a plain account key, a labelled multi-account key,
+    /// and a pasted-key account's own entry name — which is *not* an OAuth
+    /// name and must not map.
+    #[test]
+    fn an_oauth_secret_name_maps_back_to_its_account_key() {
+        assert_eq!(account_from_oauth_key("claude_oauth"), Some("claude"));
+        assert_eq!(
+            account_from_oauth_key("claude#work_oauth"),
+            Some("claude#work")
+        );
+        assert_eq!(account_from_oauth_key("openrouter"), None);
     }
 
     #[test]

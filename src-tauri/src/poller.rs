@@ -36,11 +36,12 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
     let outcome = quota_core::refresh::refresh(&ctx, &prior, &mut engine).await;
     drop(engine);
 
-    for write in &outcome.credential_writes {
-        if let Err(e) = &write.result {
-            eprintln!("failed to persist rotated secret {}: {e}", write.key);
-        }
-    }
+    // Read-model reconciliation — a rotated token that failed to persist
+    // becoming a visible *auth expired* — happens inside the shared refresh
+    // itself (issue #199), superseding this poller's former log-only handling
+    // of credential-write failures. The *unavailable* rule is a no-op here:
+    // desktop's `provider_ctx` never populates `failed_secrets`, because its
+    // secret backends never report decrypt failures.
 
     // Update shared state with the ordered, stale-merged snapshots the
     // operation produced.

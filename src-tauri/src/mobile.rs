@@ -110,18 +110,14 @@ pub struct MobileState {
 }
 
 impl MobileState {
+    /// Builds the refresh context. The config keys whose stored credential
+    /// exists but could not be decrypted (Android Keystore only — see
+    /// `secrets.rs`) ride on the context as `failed_secrets`: they are
+    /// deliberately left out of `ctx.secrets` (an adapter must not be handed
+    /// a truncated/garbage credential), and the shared refresh reconciles
+    /// them into an explicit *unavailable* snapshot instead of the generic
+    /// "not configured" a merely-absent secret would produce (issue #199).
     fn provider_ctx(&self, config: Config) -> ProviderCtx {
-        let (ctx, _failed) = self.provider_ctx_and_failed_secrets(config);
-        ctx
-    }
-
-    /// Builds the refresh context plus the config keys whose stored
-    /// credential exists but could not be decrypted (Android Keystore only —
-    /// see `secrets.rs`). Those keys are deliberately left out of `ctx.secrets`
-    /// (an adapter must not be handed a truncated/garbage credential), and
-    /// `refresh_once` turns them into an explicit failed snapshot instead of
-    /// the generic "not configured" a merely-absent secret would produce.
-    fn provider_ctx_and_failed_secrets(&self, config: Config) -> (ProviderCtx, Vec<String>) {
         // No `dirs::home_dir()` on Android — nothing here reads it, since
         // Android's provider set is direct-HTTPS pasted-key only (no CLI
         // file, no SSH, no Tailscale), but ProviderCtx still needs a `home`
@@ -135,11 +131,12 @@ impl MobileState {
             secrets,
             config,
         );
+        ctx.failed_secrets = failed;
         let dir = self.config_dir.clone();
         ctx.on_secret_update = Some(std::sync::Arc::new(move |key: &str, value: &str| {
             crate::secrets::set(&dir, key, value)
         }));
-        (ctx, failed)
+        ctx
     }
 }
 
@@ -301,14 +298,14 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
         }
     };
     let cfg = state.config.read().await.clone();
-    let (ctx, failed_secrets) = state.provider_ctx_and_failed_secrets(cfg.clone());
+    let ctx = state.provider_ctx(cfg.clone());
     let prior = state
         .snapshots
         .read()
         .unwrap_or_else(|p| p.into_inner())
         .clone();
     let mut engine = state.alert_engine.lock().await;
-    let mut outcome = quota_core::refresh::refresh(&ctx, &prior, &mut engine).await;
+    let outcome = quota_core::refresh::refresh(&ctx, &prior, &mut engine).await;
     // Persist the alert memory this pass produced (edge-triggered levels,
     // baselines, and the prune to still-enabled accounts `refresh` applied) so
     // the next background worker or cold start measures crossings against it
@@ -364,95 +361,14 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
         let _ = app.emit("notification-permission-prompt", ());
     }
 
-    // A rotated credential that could not be persisted is an authentication/
-    // storage failure, not a healthy refresh. Keep any prior successful reading
-    // visible as stale and mark the affected provider so the user knows to
-    // reauthenticate rather than silently losing the rotation on process exit.
-    for write in &outcome.credential_writes {
-        if let Err(e) = &write.result {
-            if let Some(provider_id) =
-                crate::mobile_signin::provider_key_from_oauth_secret(&write.key)
-            {
-                let err = quota_core::model::FetchError::AuthExpired(format!(
-                    "rotated credential could not be stored: {e}. Sign in again."
-                ));
-                let replacement = match prior.get(provider_id) {
-                    Some(prev)
-                        if prev.error.is_none()
-                            && (!prev.windows.is_empty() || prev.credits.is_some()) =>
-                    {
-                        let mut merged = prev.clone();
-                        merged.error = Some(err);
-                        merged.fetched_at = chrono::Utc::now();
-                        merged
-                    }
-                    _ => {
-                        let name = providers_for(&cfg)
-                            .iter()
-                            .find(|p| p.id() == provider_id)
-                            .map(|p| p.name().to_string())
-                            .unwrap_or_else(|| provider_id.to_string());
-                        UsageSnapshot::failed(provider_id, &name, err)
-                    }
-                };
-                outcome.snapshots.retain(|s| s.provider_id != provider_id);
-                outcome.snapshots.push(replacement);
-            } else {
-                eprintln!("failed to persist rotated secret {}: {e}", write.key);
-            }
-        }
-    }
-
-    // A stored credential that exists but could not be decrypted must not
-    // read as "no key was ever pasted" — `refresh` above already produced a
-    // generic `NotConfigured` for these (their secret was simply absent from
-    // `ctx.secrets`), so replace it with the distinct `Unavailable` state so
-    // the card says a storage failure happened, not that nothing was ever
-    // configured. Ciphertext itself was never touched — only the read failed,
-    // and the fix is to remove and re-paste (issue #133).
-    if !failed_secrets.is_empty() {
-        // A failed key is either the account's own key (a pasted-key provider)
-        // or its `{id}_oauth` token entry (Claude/Codex sign-in). Match both, so
-        // an undecryptable OAuth *token* is reported as unavailable rather than
-        // slipping through as the generic "not configured" `refresh` produced.
-        let affected = |pid: &str| {
-            failed_secrets.iter().any(|k| {
-                k == pid || crate::mobile_signin::provider_key_from_oauth_secret(k) == Some(pid)
-            })
-        };
-        for provider in providers_for(&cfg) {
-            if !affected(provider.id()) {
-                continue;
-            }
-            if !cfg
-                .providers
-                .get(provider.id())
-                .map(|p| p.enabled)
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            let failed = UsageSnapshot::failed(
-                provider.id(),
-                provider.name(),
-                quota_core::model::FetchError::Unavailable(
-                    "stored credential could not be decrypted — remove and re-paste it in \
-                     Settings"
-                        .into(),
-                ),
-            );
-            outcome
-                .snapshots
-                .retain(|s| s.provider_id != failed.provider_id);
-            outcome.snapshots.push(failed);
-        }
-    }
-
-    // Re-establish display order after the post-refresh replacements above,
-    // which `retain`+`push` any failed provider to the end of what `refresh`
-    // had already sorted. The persisted read model and the webview event both
-    // want the list render-ready.
-    cfg.sort_snapshots(&mut outcome.snapshots);
+    // The outcome is already the finished read model: read-model
+    // reconciliation (a lost rotation becoming *auth expired*, an
+    // undecryptable secret becoming *unavailable*) and the final display-order
+    // sort now happen inside the shared refresh itself (issue #199), so the
+    // foreground app and the background worker cannot tell two different
+    // stories about one failure. What remains host-side is delivery only:
+    // generation allocation, notification planning/delivery, the
+    // snapshot-store merge and the webview publication below.
 
     // Persist the read model so a cold process — the Activity relaunched, or
     // later a home-screen widget with no app running — renders this exact
