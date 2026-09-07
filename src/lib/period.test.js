@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { periodProgress } from './period.js';
+import { periodProgress, periodTooltip } from './period.js';
 
 // Local-time instants so the assertions hold in any timezone: the function keys
 // off the device's local calendar, and these helpers build local dates and
@@ -33,6 +33,26 @@ const allSeven = {
   saturday: true,
   sunday: true,
 };
+
+describe('periodTooltip', () => {
+  it('labels the period reading so it is not misread as usage', () => {
+    // The card row directly above the bar already shows a usage percentage;
+    // the tooltip's number is the position through the period, so it carries
+    // the "Period:" prefix to keep the two figures from reading as conflicting
+    // usage calculations.
+    const w = { resets_at: iso(at(2025, 1, 13)) };
+    expect(periodTooltip(w, 0.25, at(2025, 1, 8, 12))).toBe(
+      'Period: 25% through · resets in 4d 12h',
+    );
+  });
+
+  it('rounds the fraction and caps the reset at "resets soon"', () => {
+    const w = { resets_at: iso(at(2025, 1, 8, 11)) };
+    expect(periodTooltip(w, 1 / 3, at(2025, 1, 8, 12))).toBe(
+      'Period: 33% through · resets soon',
+    );
+  });
+});
 
 describe('periodProgress with a usage schedule', () => {
   it('paces a Mon–Fri schedule across working days', () => {

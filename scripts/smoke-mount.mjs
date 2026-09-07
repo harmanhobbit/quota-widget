@@ -473,7 +473,7 @@ const CASES = [
       targetEl.dispatchEvent(new window.PointerEvent('pointermove', { bubbles: true, clientX: 0 }));
       flushSync();
       const tip = targetEl.getAttribute('data-tip') ?? '';
-      if (!/through/.test(tip) || !/resets/.test(tip)) {
+      if (!/^Period: \d+% through · resets/.test(tip)) {
         throw new Error(`tooltip read ${JSON.stringify(tip)}`);
       }
       // `data-armed` is what shows it; the text is held constant so the
@@ -1501,7 +1501,7 @@ const CASES = [
       hoverTarget.dispatchEvent(new window.PointerEvent('pointermove', { bubbles: true, clientX: 0 }));
       flushSync();
       const tip = hoverTarget.getAttribute('data-tip') ?? '';
-      if (!/through/.test(tip) || !/resets/.test(tip)) {
+      if (!/^Period: \d+% through · resets/.test(tip)) {
         throw new Error(`tooltip read ${JSON.stringify(tip)}`);
       }
       if (hoverTarget.getAttribute('data-armed') == null) {
