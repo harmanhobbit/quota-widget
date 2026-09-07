@@ -471,6 +471,18 @@ button.primary {
   --hover-bar-h: 6px;
 }
 
+/* The cell is a flex container, and the card's bar is a plain block with no
+   intrinsic width — as a flex child it would collapse to 0px, leaving no bar
+   to draw and no box for the proximity math to measure. The mini's bar gets
+   its fill-the-cell sizing from `.hover-bar`; this gives the card's the same,
+   so a percentage of the bar and a percentage of the cell put the marker in
+   the same place. Scoped to the hover wrapper, which only exists with the
+   prop on: the plain (prop-off) card and the mini are untouched. */
+.card .hover-bar-cell .bar {
+  flex: 1;
+  min-width: 30px;
+}
+
 .hover-bar {
   flex: 1;
   height: var(--hover-bar-h);
