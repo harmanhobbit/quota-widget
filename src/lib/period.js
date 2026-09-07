@@ -102,7 +102,10 @@ export function periodProgress(w, now, schedule) {
 
 // The period marker's tooltip. It names what the marker *is* — the mini
 // summary has no legend and no countdown text — and pairs it with the reset
-// time, which appears nowhere else on that surface.
+// time, which appears nowhere else on that surface. The `Period:` prefix
+// keeps that reading apart from the usage percentage shown on the card row
+// directly above: without it, "25% through" scans as a second, conflicting
+// usage calculation rather than a position through the period.
 export function periodTooltip(w, progress, now) {
-  return `${Math.round(progress * 100)}% through · ${resetsIn(w.resets_at, now)}`;
+  return `Period: ${Math.round(progress * 100)}% through · ${resetsIn(w.resets_at, now)}`;
 }

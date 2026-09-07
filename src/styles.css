@@ -461,6 +461,28 @@ button.primary {
   opacity: 1;
 }
 
+/* The shared usage card reuses the cell/target rules above when its `hover`
+   prop turns the affordance on (the desktop main window passes it; the
+   Android app omits it and never renders the wrapper). Only the geometry
+   differs: the card's bar is 6px where the mini's is 5px (see `.bar`), so the
+   marker's resting height and the target's reach measure against the right
+   bar. */
+.card .hover-bar-cell {
+  --hover-bar-h: 6px;
+}
+
+/* The cell is a flex container, and the card's bar is a plain block with no
+   intrinsic width — as a flex child it would collapse to 0px, leaving no bar
+   to draw and no box for the proximity math to measure. The mini's bar gets
+   its fill-the-cell sizing from `.hover-bar`; this gives the card's the same,
+   so a percentage of the bar and a percentage of the cell put the marker in
+   the same place. Scoped to the hover wrapper, which only exists with the
+   prop on: the plain (prop-off) card and the mini are untouched. */
+.card .hover-bar-cell .bar {
+  flex: 1;
+  min-width: 30px;
+}
+
 .hover-bar {
   flex: 1;
   height: var(--hover-bar-h);

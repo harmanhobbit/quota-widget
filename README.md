@@ -209,7 +209,10 @@ changes the usage fill, status colours, alerts, or tray gauge, and non-weekly
 windows (rolling 5-hour, monthly, credits) keep the raw calendar marker.
 Press and hold a bar (mouse or touch) to peek at the **calendar marker** — where
 the marker would sit with no schedule applied; releasing reverts to the
-scheduled marker. The peek is momentary and is never saved.
+scheduled marker. The peek is momentary and is never saved. On the desktop
+popup, moving the pointer toward a period marker also grows it and shows how far
+through the period you are with the time left until reset; moving away clears
+both. The phone app's cards keep the plain marker.
 
 Only the Settings fields scroll: **Save & close** sits in a fixed footer at the
 bottom of the window, with the app version beneath it, so the commit action is
