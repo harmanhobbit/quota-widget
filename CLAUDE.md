@@ -470,6 +470,10 @@ section accurate when behaviour changes.
 
 Issues and specifications are tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
 
+### Triage labels
+
+GitHub Issues use the canonical `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix` labels. See `docs/agents/triage-labels.md`.
+
 ### Domain docs
 
 This is a single-context repository with root `CONTEXT.md` and ADRs under `docs/adr/`. See `docs/agents/domain.md`.

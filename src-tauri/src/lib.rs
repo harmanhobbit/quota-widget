@@ -77,6 +77,7 @@ mod desktop_app {
     use std::sync::Arc;
     use tauri::{Emitter, Manager, WindowEvent};
     use tauri_plugin_autostart::ManagerExt;
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
     use tokio::sync::{Mutex, Notify, RwLock};
 
     pub struct AppState {
@@ -708,6 +709,22 @@ mod desktop_app {
             // Native save/open dialogs for encrypted credential export/import
             // (issue #151) — desktop-only, same as the updater above.
             .plugin(tauri_plugin_dialog::init())
+            // Process-global Ctrl+Shift+Q toggles the mini summary (issues
+            // #204/#205). Registered from Rust, so no capabilities entry is
+            // involved, and the handler reuses the same `toggle_mini` seam as
+            // both tray backends — the shortcut is only a keyboard way to make
+            // the tray-click call. The handler fires on press *and* release,
+            // so acting on anything but the pressed edge would toggle twice
+            // per keypress and the summary would appear to never open.
+            .plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(|app, _shortcut, event| {
+                        if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                            tray::toggle_mini(app, None);
+                        }
+                    })
+                    .build(),
+            )
             .plugin(tauri_plugin_autostart::init(
                 tauri_plugin_autostart::MacosLauncher::LaunchAgent,
                 None,
@@ -767,6 +784,17 @@ mod desktop_app {
                 if let Err(e) = tray::create_tray(app.handle()) {
                     eprintln!("failed to create tray: {e}; showing the main window instead");
                     tray::show_popup(app.handle(), None);
+                }
+                // Claim the global shortcut once, here, after the tray exists
+                // (issues #204/#205). `None` means the summary opens at its
+                // stored anchor — there is no pointer position for a keyboard
+                // trigger. A taken combo must not abort startup: like the
+                // tray-creation fallback above, log it and keep going, leaving
+                // the tray click as the always-available way in.
+                if let Err(e) = app.global_shortcut().register("Ctrl+Shift+Q") {
+                    eprintln!(
+                        "global shortcut Ctrl+Shift+Q unavailable ({e}); tray click still works"
+                    );
                 }
                 poller::spawn(app.handle().clone(), state.clone());
                 updates::spawn(app.handle().clone(), state.clone());
