@@ -324,12 +324,6 @@ pub fn list(dir: &Path) -> Result<Vec<PendingSignInView>, String> {
         .collect())
 }
 
-/// Maps a rotated-OAuth secret name back to the provider config key it belongs
-/// to. Convention: `{provider_key}_oauth`.
-pub fn provider_key_from_oauth_secret(secret_key: &str) -> Option<&str> {
-    secret_key.strip_suffix("_oauth")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,18 +381,5 @@ mod tests {
         });
         let json = serde_json::to_string(&stored).unwrap();
         assert_eq!(PendingSignIns::parse(Ok(Some(json))).unwrap(), stored);
-    }
-
-    #[test]
-    fn oauth_secret_key_maps_to_provider_key() {
-        assert_eq!(
-            provider_key_from_oauth_secret("claude_oauth"),
-            Some("claude")
-        );
-        assert_eq!(
-            provider_key_from_oauth_secret("claude#work_oauth"),
-            Some("claude#work")
-        );
-        assert_eq!(provider_key_from_oauth_secret("openrouter"), None);
     }
 }
