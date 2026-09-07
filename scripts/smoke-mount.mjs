@@ -1450,6 +1450,116 @@ const CASES = [
       if (parseFloat(mark.style.left) !== 0) throw new Error(`released marker did not revert: ${mark.style.left}`);
     },
   },
+  // Hover parity (issue #202), prop on: a bounded window gets the mini
+  // summary's proximity target — the marker hangs off the wrapper as a sibling
+  // of the bar (which keeps its overflow clipped for the fill), a pointermove
+  // near the marker arms the in-window tooltip and grows the marker inline, and
+  // a pointerleave disarms and resets the growth. An unbounded window gets
+  // neither marker nor target, the same guard that places the marker.
+  {
+    file: 'src/lib/shared/UsageCard.svelte',
+    props: () => ({
+      snap: {
+        provider_name: 'Claude',
+        fetched_at: new Date().toISOString(),
+        error: null,
+        credits: null,
+        windows: [
+          weeklyWindowOneDayIn(),
+          // No period_start: the marker guard must keep both the marker and
+          // the hover target off this window.
+          { metric_id: 'five_hour', label: '5h', used_pct: 42, informational: false, resets_at: new Date(Date.now() + 4 * 60 * 60_000).toISOString() },
+        ],
+      },
+      schedule: elapsedDaysOffSchedule(),
+      hover: true,
+    }),
+    verify: ({ target, flushSync }) => {
+      const cells = [...target.querySelectorAll('.window')].map((w) => w.querySelector('.hover-bar-cell'));
+      if (!cells[0]) throw new Error('hover mode rendered no bar wrapper');
+      // The fill stays inside the bar — the bar still clips it.
+      if (!cells[0].querySelector('.bar > .fill')) {
+        throw new Error('hover mode lost the fill inside the clipped bar');
+      }
+      // The marker hangs off the wrapper, not the bar: the bar is 6px tall and
+      // clips its overflow, so a marker inside it could never grow taller.
+      if (cells[0].querySelector('.bar .period-mark')) {
+        throw new Error('hover mode left the marker inside the clipped bar');
+      }
+      const mark = cells[0].querySelector(':scope > .period-mark');
+      const hoverTarget = cells[0].querySelector(':scope > .hover-bar-target');
+      if (!mark || !hoverTarget) throw new Error('bounded window rendered no marker/hover target');
+      if (mark.getAttribute('aria-hidden') !== 'true') {
+        throw new Error('the period marker must stay aria-hidden');
+      }
+      // The unbounded window gets neither.
+      if (cells[1].querySelector('.period-mark') || cells[1].querySelector('.hover-bar-target')) {
+        throw new Error('window without a period start drew a marker or hover target');
+      }
+      // jsdom reports a zero-sized bar, so the pointer reads as sitting on the
+      // marker — enough to prove the tooltip arms and states both of its parts.
+      hoverTarget.dispatchEvent(new window.PointerEvent('pointermove', { bubbles: true, clientX: 0 }));
+      flushSync();
+      const tip = hoverTarget.getAttribute('data-tip') ?? '';
+      if (!/through/.test(tip) || !/resets/.test(tip)) {
+        throw new Error(`tooltip read ${JSON.stringify(tip)}`);
+      }
+      if (hoverTarget.getAttribute('data-armed') == null) {
+        throw new Error('pointer on the marker did not arm the tooltip');
+      }
+      // The growth is inline height on the marker: at full approach it is the
+      // bar's resting height plus the whole extra 10px.
+      if (mark.style.height !== 'calc(var(--hover-bar-h) + 10px)') {
+        throw new Error(`pointer on the marker did not grow it: ${mark.style.height}`);
+      }
+      // The OS tooltip is gone rather than merely covered; both would show,
+      // the native one arriving late on top of the instant one.
+      if (hoverTarget.getAttribute('title')) {
+        throw new Error('native tooltip survived alongside the styled one');
+      }
+      hoverTarget.dispatchEvent(new window.PointerEvent('pointerleave', { bubbles: true }));
+      flushSync();
+      if (hoverTarget.getAttribute('data-armed') != null) {
+        throw new Error('tooltip stayed armed after the pointer left the bar');
+      }
+      // The text outlives the gesture by design — only the arming toggles.
+      if (!hoverTarget.getAttribute('data-tip')) {
+        throw new Error('tooltip text should persist so its box can fade');
+      }
+      // Leaving also resets the growth to the marker's resting height.
+      if (mark.style.height !== 'calc(var(--hover-bar-h) + 0px)' || mark.style.opacity !== '0.8') {
+        throw new Error(`leaving did not reset the marker: ${mark.style.height} / ${mark.style.opacity}`);
+      }
+    },
+  },
+  // Hover parity (issue #202), prop on: the press-and-hold peek survives. With
+  // hover on, the peek lives on the proximity target (which overlays the bar),
+  // so holding it swaps the frozen scheduled marker (0%) for the calendar
+  // marker (~14%) and releasing reverts — and a pointerleave mid-hold clears
+  // both the proximity state and the peek, leaving nothing stranded.
+  {
+    file: 'src/lib/shared/UsageCard.svelte',
+    props: () => ({ snap: { provider_name: 'Claude', fetched_at: new Date().toISOString(), error: null, credits: null, windows: [weeklyWindowOneDayIn()] }, schedule: elapsedDaysOffSchedule(), hover: true }),
+    verify: ({ target, flushSync }) => {
+      const mark = target.querySelector('.hover-bar-cell .period-mark');
+      if (!mark) throw new Error('weekly window with a schedule drew no marker');
+      if (parseFloat(mark.style.left) !== 0) throw new Error(`scheduled marker sat at ${mark.style.left}, expected 0%`);
+      const hoverTarget = target.querySelector('.hover-bar-target');
+      if (!hoverTarget) throw new Error('bounded window rendered no hover target');
+      hoverTarget.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }));
+      flushSync();
+      const peek = parseFloat(mark.style.left);
+      if (!(peek > 13 && peek < 16)) throw new Error(`held marker sat at ${mark.style.left}, expected ~14%`);
+      hoverTarget.dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true }));
+      flushSync();
+      if (parseFloat(mark.style.left) !== 0) throw new Error(`released marker did not revert: ${mark.style.left}`);
+      hoverTarget.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true }));
+      flushSync();
+      hoverTarget.dispatchEvent(new window.PointerEvent('pointerleave', { bubbles: true }));
+      flushSync();
+      if (parseFloat(mark.style.left) !== 0) throw new Error(`a leave stranded the held peek: ${mark.style.left}`);
+    },
+  },
   // The same peek on the mini summary: a weekly headline one day in, with the
   // elapsed days off, so the scheduled marker freezes at 0% and the calendar
   // marker sits at ~14%. Holding the row's bar swaps, releasing reverts. The

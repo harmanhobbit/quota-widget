@@ -267,7 +267,10 @@
         </p>
       {:else}
         {#each snapshots as snap (snap.provider_id)}
-          <ProviderCard {snap} schedule={appConfig?.providers?.[snap.provider_id]?.usage_schedule} />
+          <!-- hover: the desktop popup is a mouse surface, so it opts into the
+               period-marker proximity growth and tooltip. MobileApp omits the
+               prop, which keeps Android's press-and-hold peek as shipped. -->
+          <ProviderCard {snap} schedule={appConfig?.providers?.[snap.provider_id]?.usage_schedule} hover />
         {/each}
       {/if}
     </div>

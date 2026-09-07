@@ -461,6 +461,16 @@ button.primary {
   opacity: 1;
 }
 
+/* The shared usage card reuses the cell/target rules above when its `hover`
+   prop turns the affordance on (the desktop main window passes it; the
+   Android app omits it and never renders the wrapper). Only the geometry
+   differs: the card's bar is 6px where the mini's is 5px (see `.bar`), so the
+   marker's resting height and the target's reach measure against the right
+   bar. */
+.card .hover-bar-cell {
+  --hover-bar-h: 6px;
+}
+
 .hover-bar {
   flex: 1;
   height: var(--hover-bar-h);
