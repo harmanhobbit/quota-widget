@@ -227,13 +227,14 @@ fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(
     // be written, and WorkManager will retry.
     let attempt = quota_core::snapshots::next_generation(dir)
         .map_err(|e| format!("allocating refresh generation: {e}"))?;
-    // The Keystore-backed store must be registered before `load_all` can decrypt
-    // any stored credential. If it cannot be — a device/state where the worker's
-    // context init fails — we must NOT proceed: a refresh with no decryptable
-    // secrets marks every account "not configured"/failed and would overwrite the
-    // app's good read model with an all-stale one (the "stale as of now" bug).
-    // Bail instead, leaving snapshots.json intact so the widget keeps the
-    // last-known data, and let WorkManager retry.
+    // The Keystore-backed store must be registered before the secret loader
+    // below can decrypt any stored credential. If it cannot be — a
+    // device/state where the worker's context init fails — we must NOT
+    // proceed: a refresh with no decryptable secrets marks every account
+    // "not configured"/failed and would overwrite the app's good read model
+    // with an all-stale one (the "stale as of now" bug). Bail instead,
+    // leaving snapshots.json intact so the widget keeps the last-known data,
+    // and let WorkManager retry.
     init_worker_keystore(env, context)?;
 
     // Load the config for a headless refresh, which must never substitute the
@@ -256,8 +257,16 @@ fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(
             ));
         }
     };
-    let secrets = crate::secrets::load_all(dir, &cfg);
+    // The error-reporting loader, not the plain one (issue #199): keys the
+    // Keystore holds but cannot decrypt land in `failed` and ride the context
+    // as `failed_secrets`, so the shared refresh reconciles them into an
+    // explicit *unavailable* state — the same read the foreground app
+    // produces — instead of the generic "not configured" a merely-absent
+    // secret would yield. This is the change that closes the app/worker
+    // divergence the issue was filed for.
+    let (secrets, failed) = crate::secrets::load_all_reporting_errors(dir, &cfg);
     let mut ctx = ProviderCtx::new(dir.to_path_buf(), dir.to_path_buf(), secrets, cfg.clone());
+    ctx.failed_secrets = failed;
     let dir_owned: PathBuf = dir.to_path_buf();
     ctx.on_secret_update = Some(Arc::new(move |key: &str, value: &str| {
         crate::secrets::set(&dir_owned, key, value)
