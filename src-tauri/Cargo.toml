@@ -98,7 +98,7 @@ tauri-plugin-updater = "2.10.1"
 # never touches that schema, and it's also what a sandboxed (Flatpak) build
 # would need regardless.
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
-# Process-global Ctrl+Shift+Q toggles the mini summary (issues #204/#205).
+# Process-global Ctrl+Shift+M toggles the mini summary (issues #204/#205).
 # Desktop-only target gate keeps Android out: the shortcut is registered from
 # Rust (bypassing the ACL, so no capabilities entry) and its handler calls the
 # same `tray::toggle_mini` seam both tray backends use.
