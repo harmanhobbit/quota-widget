@@ -183,6 +183,18 @@ secret or a desktop CLI login. A provider may exist on every platform without
 every credential source existing there.
 _Avoid_: Provider, account, authentication method
 
+**Read-model reconciliation**:
+The step that rewrites a just-fetched snapshot to reflect a [[credential source]]
+outcome the fetch itself could not see: a rotated token that failed to persist
+becomes *auth expired*, and a stored secret that could not be decrypted becomes
+*unavailable* — never the *not configured* a genuinely missing secret yields. It
+runs once inside the shared refresh pass, after alerts are evaluated and before
+the status fold, so every host — foreground app, background worker, desktop tray
+— agrees on what one refresh means. A prior success keeps its figures with only
+the new error attached, rather than the card going blank.
+_Avoid_: Error mapping, fixup, merge (the snapshot store's generation merge is a
+separate operation)
+
 **Personal Android build**:
 A consistently signed APK produced on demand for the owner's direct install.
 It is not a public release or a [[distribution artifact]].
