@@ -23,7 +23,7 @@ Platform differences are small but real:
 | | Windows 11 | Linux |
 |---|---|---|
 | Tray left-click | Toggles the mini summary | Toggles the mini summary |
-| Global shortcut | `Ctrl+Shift+Q` toggles the mini summary | Same, via the shipped XWayland path |
+| Global shortcut | `Ctrl+Shift+M` toggles the mini summary | Same, via the shipped XWayland path |
 | Tray hover | Native detailed tooltip | Plasma-drawn native SNI tooltip |
 | Secret storage | Credential Manager (DPAPI) | `0600` plaintext file in the config dir |
 | Autostart | `HKCU` run entry | XDG autostart entry |
@@ -44,7 +44,7 @@ Platform differences are small but real:
   the nearest corner of the screen it's on, so growing to fit new content keeps
   it against that edge. A Settings checkbox controls whether the mini summary
   includes usage bars.
-- **Ctrl+Shift+Q** toggles that same mini summary from the keyboard, opening it
+- **Ctrl+Shift+M** toggles that same mini summary from the keyboard, opening it
   at its stored anchor exactly as a tray click would. The combination is fixed
   and offered on a first-come basis: if another app already owns it, the widget
   starts normally, logs one line to stderr, and the tray click keeps working.

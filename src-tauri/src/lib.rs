@@ -709,13 +709,15 @@ mod desktop_app {
             // Native save/open dialogs for encrypted credential export/import
             // (issue #151) — desktop-only, same as the updater above.
             .plugin(tauri_plugin_dialog::init())
-            // Process-global Ctrl+Shift+Q toggles the mini summary (issues
+            // Process-global Ctrl+Shift+M toggles the mini summary (issues
             // #204/#205). Registered from Rust, so no capabilities entry is
             // involved, and the handler reuses the same `toggle_mini` seam as
             // both tray backends — the shortcut is only a keyboard way to make
             // the tray-click call. The handler fires on press *and* release,
             // so acting on anything but the pressed edge would toggle twice
             // per keypress and the summary would appear to never open.
+            // Ctrl+Shift+M rather than the originally shipped Q combo, which
+            // Kitty binds to close/quit by default (issue #209).
             .plugin(
                 tauri_plugin_global_shortcut::Builder::new()
                     .with_handler(|app, _shortcut, event| {
@@ -791,9 +793,9 @@ mod desktop_app {
                 // trigger. A taken combo must not abort startup: like the
                 // tray-creation fallback above, log it and keep going, leaving
                 // the tray click as the always-available way in.
-                if let Err(e) = app.global_shortcut().register("Ctrl+Shift+Q") {
+                if let Err(e) = app.global_shortcut().register("Ctrl+Shift+M") {
                     eprintln!(
-                        "global shortcut Ctrl+Shift+Q unavailable ({e}); tray click still works"
+                        "global shortcut Ctrl+Shift+M unavailable ({e}); tray click still works"
                     );
                 }
                 poller::spawn(app.handle().clone(), state.clone());
