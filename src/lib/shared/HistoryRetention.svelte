@@ -22,7 +22,7 @@
   // [[usage history]]: ../../CONTEXT.md
   // [[cleaning preview]]: ../../CONTEXT.md
 
-  let { policy = 'forever', onpreview, onapply } = $props();
+  let { policy = 'forever', onpreview, onapply, onpreviewopenchange } = $props();
 
   const UNITS = ['days', 'weeks', 'months', 'years'];
 
@@ -82,6 +82,17 @@
     if (preview) {
       previewEl?.focus();
     }
+  });
+
+  // The parent/child Escape seam: while the destructive confirmation is on
+  // screen the shell's own Escape meanings must yield to this dialog's
+  // cancel. The shell listener may be registered BEFORE this component even
+  // mounts (desktop App registers at startup), so the yield travels by state
+  // through this callback — not by listener ordering. The cleanup closes the
+  // window when the dialog goes away OR the tab unmounts mid-confirmation.
+  $effect(() => {
+    onpreviewopenchange?.(preview !== null);
+    return () => onpreviewopenchange?.(false);
   });
 
   async function applyNow(wanted) {
@@ -161,12 +172,19 @@
   }
 
   // The exact figures the confirmation shows: how many points, what time
-  // span, and — for a file-size bound — how many bytes.
+  // span, and — for a file-size bound — how many bytes. When nothing would
+  // remain under the new bound, say that plainly rather than leaving an
+  // empty "the kept record begins …" clause.
   let previewText = $derived(
     preview
       ? `Applying this removes ${preview.figures.removed_count} recorded reading${preview.figures.removed_count === 1 ? '' : 's'}` +
         (preview.figures.removed_bytes != null ? ` (${formatBytes(preview.figures.removed_bytes)})` : '') +
-        `. The kept record begins ${formatWhen(preview.figures.oldest_kept)}; the newest reading removed is ${formatWhen(preview.figures.newest_removed)}.`
+        (preview.figures.oldest_kept != null
+          ? `. The kept record begins ${formatWhen(preview.figures.oldest_kept)}`
+          : '. No readings will remain') +
+        (preview.figures.newest_removed != null
+          ? `; the newest reading removed is ${formatWhen(preview.figures.newest_removed)}.`
+          : '.')
       : ''
   );
 </script>

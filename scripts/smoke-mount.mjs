@@ -1136,6 +1136,58 @@ const CASES = [
       }
     },
   },
+  // Escape over an open cleaning preview belongs to the dialog's cancel: the
+  // shell's Escape meaning — hide to tray — must yield while the destructive
+  // decision is on screen (the shell's listener registered first at startup,
+  // so it yields by the parent/child flag, not by listener order), and must
+  // resume the moment the dialog is gone.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    history: HISTORY,
+    historyPreview: {
+      removed_count: 3,
+      removed_bytes: null,
+      oldest_kept: new Date(Date.now() - 1 * 24 * 3600_000).toISOString(),
+      newest_removed: new Date(Date.now() - 20 * 24 * 3600_000).toISOString(),
+    },
+    verify: async ({ target, flushSync, shellCalls }) => {
+      target.querySelector('button[title="History"]').click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const mode = target.querySelector('.retention-mode');
+      mode.value = 'age';
+      mode.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const amount = target.querySelector('.retention-amount');
+      amount.value = '7';
+      amount.dispatchEvent(new window.Event('input', { bubbles: true }));
+      flushSync();
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!target.querySelector('.cleaning-preview')) {
+        throw new Error('no cleaning preview to test Escape against');
+      }
+      // Escape cancels the preview...
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      flushSync();
+      if (target.querySelector('.cleaning-preview')) {
+        throw new Error('Escape did not cancel the preview');
+      }
+      // ...and the shell must NOT have treated the same keypress as hide-to-tray.
+      if (shellCalls().includes('hide_window')) {
+        throw new Error(`Escape over the preview hid the window: ${shellCalls().join(',')}`);
+      }
+      // With the dialog gone, the shell's own Escape meaning resumes.
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      flushSync();
+      if (shellCalls().join(',') !== 'hide_window') {
+        throw new Error(`the shell Escape meaning did not resume: ${shellCalls().join(',')}`);
+      }
+    },
+  },
   {
     file: 'src/lib/shared/UsageCard.svelte',
     props: () => ({

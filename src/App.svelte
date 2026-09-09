@@ -34,6 +34,14 @@
   let history = $state(null);
   let historyLoading = $state(false);
 
+  // Raised by the History tab's retention control while a destructive
+  // cleaning-preview dialog is on screen (the parent/child Escape seam): the
+  // shell's own Escape meanings — hide to tray, leave Settings — yield until
+  // the dialog is gone, because Escape there is the dialog's cancel gesture.
+  // The startup-registered shell listener predates the tab's, so the yield
+  // must travel by state, not by listener ordering.
+  let escSuspended = $state(false);
+
   async function openHistory() {
     view = 'history';
     historyLoading = true;
@@ -180,6 +188,11 @@
     }).then((u) => unlisten.push(u));
     const esc = (e) => {
       if (e.key === 'Escape') {
+        // A destructive cleaning-preview dialog owns Escape while it is open:
+        // its own handler cancels it, and the shell must not also act on the
+        // same keypress (this handler registered before the tab's, so the
+        // yield is by flag, not by event mechanics). See `escSuspended`.
+        if (escSuspended) return;
         // Escape out of Settings discards the unsaved draft — the component is
         // unmounted with it — and takes the same exit as Save & close.
         if (view === 'settings') leaveSettings();
@@ -313,6 +326,7 @@
         policy={appConfig?.history_retention ?? 'forever'}
         onpreview={previewRetention}
         onapply={applyRetention}
+        onpreviewopenchange={(open) => (escSuspended = open)}
       />
       {#if historyLoading || history === null}
         <p class="empty">Loading…</p>
