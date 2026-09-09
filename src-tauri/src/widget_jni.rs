@@ -307,6 +307,22 @@ fn headless_refresh(env: &mut JNIEnv, context: &JObject, dir: &Path) -> Result<(
         }
     }
 
+    // Usage history: record + prune + save through the shared capture seam,
+    // before the read-model merge below consumes the outcome. This worker
+    // records exactly what the desktop poller and the foreground refresh
+    // record from their outcomes — that symmetry is the whole feature's
+    // parity point. Best-effort by contract: the read model and alert memory
+    // are already sound, so a history fault must not fail the worker (which
+    // would only retry an already-fine pass).
+    if let Err(e) = quota_core::history::UsageHistory::capture(
+        dir,
+        &outcome,
+        &cfg.history_retention,
+        chrono::Utc::now(),
+    ) {
+        eprintln!("[worker] recording usage history failed: {e}");
+    }
+
     // Configured display order, then merge-and-store the read model every cold
     // widget reads. The merge matters here more than anywhere else: this worker
     // races the foreground app's own refreshes — in this process or, for a

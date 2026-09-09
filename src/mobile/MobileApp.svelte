@@ -13,6 +13,8 @@
   import Ordering from '../lib/shared/Ordering.svelte';
   import Thresholds from '../lib/shared/Thresholds.svelte';
   import Disclosure from '../lib/shared/Disclosure.svelte';
+  import HistoryView from '../lib/shared/HistoryView.svelte';
+  import HistoryRetention from '../lib/shared/HistoryRetention.svelte';
   import SimpleKeyAccount from '../lib/shared/SimpleKeyAccount.svelte';
   import OAuthAccount from './OAuthAccount.svelte';
   import CredentialTransfer from './CredentialTransfer.svelte';
@@ -37,6 +39,9 @@
     notificationPermissionState,
     requestNotificationPermission,
     openNotificationSettings,
+    getUsageHistory,
+    previewHistoryRetention,
+    setHistoryRetention,
   } from '../lib/host.js';
   import { runCredentialTest } from './credentialTest.js';
   import { foregroundRefresh } from './foregroundRefresh.js';
@@ -86,7 +91,25 @@
     zai: [{ id: 'window:five_hour', label: '5-hour' }, { id: 'window:weekly', label: 'Weekly' }, { id: 'window:web_tool_month', label: 'Web/tool this month' }],
   };
 
-  let view = $state('list'); // 'list' | 'settings'
+  let view = $state('list'); // 'list' | 'history' | 'settings'
+  // The usage history read (issue #211 Slice 3): loaded fresh each time the
+  // tab is entered, exactly like the desktop tab. `null` until the first
+  // load resolves is the honest loading state.
+  let history = $state(null);
+  let historyLoading = $state(false);
+
+  async function openHistory() {
+    view = 'history';
+    historyLoading = true;
+    try {
+      history = await getUsageHistory();
+    } catch {
+      // A history read failure is not a fatal state: the empty tab is the
+      // honest answer for a surface that only ever grows.
+      history = [];
+    }
+    historyLoading = false;
+  }
   // Top-level section disclosures (issue #184): the same collapse-by-default
   // treatment desktop Settings uses, so Android Settings opens on a page of
   // headings rather than a long expanded form. Disclosure is presentation
@@ -466,6 +489,7 @@
     <span class="spacer"></span>
     {#if view === 'list'}
       <button class="icon" title="Refresh now" class:spin={refreshing} onclick={refresh}>⟳</button>
+      <button class="icon" title="History" aria-label="History" onclick={openHistory}>◷</button>
       <button class="icon" title="Settings" onclick={() => (view = 'settings')}>⚙</button>
     {:else}
       <button class="icon" title="Back" onclick={() => (view = 'list')}>←</button>
@@ -484,6 +508,23 @@
         {#each snapshots as snap (snap.provider_id)}
           <UsageCard {snap} schedule={config?.providers?.[snap.provider_id]?.usage_schedule} />
         {/each}
+      {/if}
+    </div>
+  {:else if view === 'history'}
+    <div class="history mobile-history">
+      <HistoryRetention
+        policy={config?.history_retention ?? 'forever'}
+        onpreview={previewHistoryRetention}
+        onapply={setHistoryRetention}
+      />
+      {#if historyLoading || history === null}
+        <p class="empty">Loading…</p>
+      {:else if history.length === 0}
+        <p class="empty">
+          No usage history recorded yet — readings build up here as the widget refreshes.
+        </p>
+      {:else}
+        <HistoryView {history} {snapshots} />
       {/if}
     </div>
   {:else}

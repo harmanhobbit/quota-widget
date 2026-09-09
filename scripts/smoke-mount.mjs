@@ -2851,6 +2851,98 @@ const CASES = [
       }
     },
   },
+  // ---- Usage history on Android (issue #211, Slice 3) ----------------------
+  //
+  // The phone shell gets the same History tab as the desktop by reusing the
+  // same shared HistoryView and HistoryRetention components — outcome parity
+  // is the shared component, not a mobile re-render. The tab opens from the
+  // list header, renders the recorded charts, and Back returns to the list.
+  {
+    file: 'src/mobile/MobileApp.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, providers: { openrouter: provider({ enabled: true }) } },
+    history: HISTORY,
+    verify: async ({ target, flushSync }) => {
+      if (!target.querySelector('button[title="History"]')) {
+        throw new Error('the mobile list header offered no History tab');
+      }
+      target.querySelector('button[title="History"]').click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const history = target.querySelector('.history');
+      if (!history) throw new Error('the mobile History button did not open the history tab');
+      const names = [...history.querySelectorAll('.history-account h3')].map((h) => h.textContent.trim());
+      if (names.join('|') !== 'Claude|OpenRouter') {
+        throw new Error(`mobile account sections rendered as ${names.join('|')}`);
+      }
+      if (!history.querySelector('.credits-chart polyline.credits-line')) {
+        throw new Error('the mobile credits chart did not render');
+      }
+      // The retention control rides the same tab, seeded from the config the
+      // shell already holds.
+      if (!target.querySelector('.retention-mode')) {
+        throw new Error('the mobile history tab offered no retention control');
+      }
+      // Back returns to the usage list.
+      target.querySelector('.mobile-header button[title="Back"]').click();
+      flushSync();
+      if (target.querySelector('.history') || !target.querySelector('.cards')) {
+        throw new Error('mobile Back did not return to the usage list');
+      }
+    },
+  },
+  // The retention flow on Android goes through the same commands with the
+  // same contract: preview first, confirm to apply, Cancel inert.
+  {
+    file: 'src/mobile/MobileApp.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, providers: { openrouter: provider({ enabled: true }) } },
+    historyPreview: {
+      removed_count: 9,
+      removed_bytes: 4096,
+      oldest_kept: new Date(Date.now() - 1 * 24 * 3600_000).toISOString(),
+      newest_removed: new Date(Date.now() - 15 * 24 * 3600_000).toISOString(),
+    },
+    verify: async ({ target, flushSync }) => {
+      target.querySelector('button[title="History"]').click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const mode = target.querySelector('.retention-mode');
+      mode.value = 'age';
+      mode.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const amount = target.querySelector('.retention-amount');
+      amount.value = '14';
+      amount.dispatchEvent(new window.Event('input', { bubbles: true }));
+      flushSync();
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const dialog = target.querySelector('.cleaning-preview');
+      if (!dialog?.textContent.includes('9')) {
+        throw new Error(`the mobile cleaning preview did not show: ${dialog?.textContent}`);
+      }
+      // Cancel first: inert, nothing applied.
+      dialog.querySelector('.cleaning-cancel').click();
+      flushSync();
+      if (globalThis.__SMOKE_LAST_RETENTION__ !== undefined) {
+        throw new Error('mobile Cancel applied the policy anyway');
+      }
+      // Then confirm: set_history_retention receives the serde shape.
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      target.querySelector('.cleaning-confirm').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const saved = globalThis.__SMOKE_LAST_RETENTION__;
+      if (JSON.stringify(saved) !== JSON.stringify({ age: { unit: 'days', amount: 14 } })) {
+        throw new Error(`mobile confirm applied ${JSON.stringify(saved)}`);
+      }
+    },
+  },
 ];
 
 function stubTauri() {
@@ -3237,6 +3329,7 @@ for (const c of CASES) {
     globalThis.__SMOKE_HISTORY__ = c.history ?? null;
     globalThis.__SMOKE_HISTORY_PREVIEW__ = c.historyPreview ?? null;
     globalThis.__SMOKE_RETENTION_CALLS__ = [];
+    globalThis.__SMOKE_LAST_RETENTION__ = undefined;
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle
