@@ -996,21 +996,55 @@ const CASES = [
       if (calls().some((c) => c.startsWith('apply:'))) {
         throw new Error('the preview applied the policy before confirmation');
       }
-      // Cancel is inert: no apply, and the dialog is gone.
-      dialog.querySelector('.cleaning-cancel').click();
+      // While the dialog is up, the decision is frozen: the controls and the
+      // Apply button are locked, the dialog is marked modal and holds focus.
+      if (!target.querySelector('.retention-mode').disabled) {
+        throw new Error('the mode select stayed editable while the preview was open');
+      }
+      if (!amount.disabled) {
+        throw new Error('the amount input stayed editable while the preview was open');
+      }
+      if (!target.querySelector('.retention-apply').disabled) {
+        throw new Error('Apply stayed clickable while the preview was open');
+      }
+      if (dialog.getAttribute('aria-modal') !== 'true' || dialog.getAttribute('role') !== 'alertdialog') {
+        throw new Error(`the preview dialog is not a modal alertdialog: ${dialog.outerHTML.slice(0, 120)}`);
+      }
+      if (document.activeElement !== dialog) {
+        throw new Error(`focus did not land on the preview dialog: ${document.activeElement?.className}`);
+      }
+      // Escape over the dialog is the cancel gesture — and it must not fall
+      // through to the shell's other Escape meanings.
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      flushSync();
+      if (target.querySelector('.cleaning-preview')) throw new Error('Escape did not cancel the preview');
+      if (calls().some((c) => c.startsWith('apply:'))) throw new Error('Escape applied the policy');
+      // Re-open the preview and cancel with the button: still inert.
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      target.querySelector('.cleaning-cancel').click();
       flushSync();
       if (target.querySelector('.cleaning-preview')) throw new Error('Cancel left the preview up');
       if (calls().some((c) => c.startsWith('apply:'))) throw new Error('Cancel applied the policy anyway');
-      // Confirming applies exactly the policy that was previewed.
+      // Confirming applies exactly the policy that was PREVIEWED — not
+      // whatever the draft says by the time the click lands. Re-open, then
+      // mutate the draft to a stricter bound despite the lock, and confirm:
+      // the applied policy must still be the previewed one.
       target.querySelector('.retention-apply').click();
       await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const draftAmount = target.querySelector('.retention-amount');
+      draftAmount.disabled = false; // simulate any draft change mid-dialog
+      draftAmount.value = '1';
+      draftAmount.dispatchEvent(new window.Event('input', { bubbles: true }));
       flushSync();
       target.querySelector('.cleaning-confirm').click();
       await new Promise((resolve) => setTimeout(resolve, 0));
       flushSync();
       const apply = calls().find((c) => c.startsWith('apply:'));
       if (apply !== `apply:${JSON.stringify({ age: { unit: 'days', amount: 7 } })}`) {
-        throw new Error(`confirming applied ${apply}`);
+        throw new Error(`confirming applied a policy other than the previewed one: ${apply}`);
       }
       if (target.querySelector('.cleaning-preview')) throw new Error('the preview stayed up after applying');
     },

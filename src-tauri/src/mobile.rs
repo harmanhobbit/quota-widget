@@ -492,6 +492,12 @@ async fn preview_history_retention(
 /// apply the cleaning it implies under the lock, then mirror and broadcast —
 /// the mobile tail of desktop's `apply_config`, minus the tray/autostart
 /// concerns that do not exist here.
+///
+/// Ordering and failure mirror desktop's command: the policy is persisted
+/// first, so memory is mirrored and the config broadcast even when the
+/// cleaning errors (it is convergent — the next record's prune applies the
+/// same bound), and the cleaning failure is reported on top rather than
+/// leaving in-memory policy stale over a persisted one.
 #[tauri::command]
 async fn set_history_retention(
     app: tauri::AppHandle,
@@ -501,15 +507,15 @@ async fn set_history_retention(
     let mut cfg = state.config.read().await.clone();
     cfg.history_retention = policy;
     cfg.save(&state.config_dir).map_err(|e| e.to_string())?;
-    let removed = quota_core::history::UsageHistory::apply_policy(
+    let cleaned = quota_core::history::UsageHistory::apply_policy(
         &state.config_dir,
         &policy,
         chrono::Utc::now(),
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string());
     *state.config.write().await = cfg.clone();
     let _ = app.emit("config", &cfg);
-    Ok(removed)
+    cleaned
 }
 
 // ---- Notification permission (issue #112) ----------------------------------

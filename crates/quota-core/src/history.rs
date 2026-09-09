@@ -298,33 +298,62 @@ impl UsageHistory {
                 }
             }
             HistoryRetention::FileSize { bytes } => {
-                // Start whole, then drop the globally oldest point repeatedly
-                // until the store measures under the bound. Ties on time are
-                // broken by account id, so the outcome is deterministic.
+                // Measure each point once and decide all the drops in one
+                // oldest-first walk. The naive form — re-find the globally
+                // oldest point and re-measure the whole store every
+                // iteration — is quadratic in the point count, and a
+                // file-size bound must not degrade like that on a large
+                // history. Enumeration in (account, position) order plus a
+                // STABLE sort by (time, account) drops exactly the points —
+                // and in exactly the order — the naive loop dropped, so
+                // preview and apply remain one partition.
                 for (id, points) in &self.accounts {
                     kept.insert(id.clone(), points.clone());
                 }
-                loop {
-                    let total: u64 = kept.values().flatten().map(point_bytes).sum();
+                let mut ordered: Vec<(DateTime<Utc>, &str, usize, u64, HistoryPoint)> = Vec::new();
+                for (id, points) in &self.accounts {
+                    for (pos, point) in points.iter().enumerate() {
+                        ordered.push((
+                            point.at,
+                            id.as_str(),
+                            pos,
+                            point_bytes(point),
+                            point.clone(),
+                        ));
+                    }
+                }
+                ordered.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+                let mut total: u64 = ordered.iter().map(|e| e.3).sum();
+                let mut cut = 0usize;
+                for entry in &ordered {
                     if total <= *bytes {
                         break;
                     }
-                    let Some(victim) = kept
-                        .iter()
-                        .min_by(|a, b| match (a.1.first(), b.1.first()) {
-                            (Some(pa), Some(pb)) => pa.at.cmp(&pb.at).then_with(|| a.0.cmp(b.0)),
-                            (Some(_), None) => std::cmp::Ordering::Less,
-                            (None, Some(_)) => std::cmp::Ordering::Greater,
-                            (None, None) => std::cmp::Ordering::Equal,
-                        })
-                        .map(|(id, _)| id.clone())
-                    else {
-                        break;
-                    };
-                    let points = kept.get_mut(&victim).expect("victim came from kept");
-                    let dropped = points.remove(0);
-                    removed.push(dropped);
+                    total -= entry.3;
+                    cut += 1;
                 }
+                // Remove the dropped positions from their accounts.
+                let mut drop_positions: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+                for entry in &ordered[..cut] {
+                    drop_positions.entry(entry.1).or_default().push(entry.2);
+                }
+                for (id, positions) in &drop_positions {
+                    let points = kept
+                        .get_mut(*id)
+                        .expect("drop positions name a kept account");
+                    let mut next = 0usize;
+                    let mut retained = Vec::with_capacity(points.len() - positions.len());
+                    for (i, point) in points.iter().enumerate() {
+                        if next < positions.len() && positions[next] == i {
+                            next += 1;
+                        } else {
+                            retained.push(point.clone());
+                        }
+                    }
+                    kept.insert((*id).to_string(), retained);
+                }
+                // The removed list in global drop order, oldest first.
+                removed.extend(ordered[..cut].iter().map(|e| e.4.clone()));
             }
         }
         (kept, removed)
@@ -715,6 +744,91 @@ mod tests {
             .insert("claude".into(), vec![point(now, 10.0)]);
         history.prune(&HistoryRetention::FileSize { bytes: 1 }, now);
         assert!(history.accounts["claude"].is_empty());
+    }
+
+    /// The one-pass file-size prune must remove exactly what the naive
+    /// repeated-drop loop it replaced removed — the same points, leaving the
+    /// same store, whatever the interleaving of accounts and equal-time
+    /// points. This is the regression pin for the O(n log n) rewrite: the
+    /// reference below is that loop, written out literally.
+    #[test]
+    fn file_size_prune_matches_the_naive_reference_over_a_larger_history() {
+        let now = Utc::now();
+        // Six accounts, forty points each, pseudo-random timestamps and
+        // window counts (which vary the measured bytes), with some points
+        // sharing a timestamp to exercise the account-id tie-break.
+        let mut history = UsageHistory::default();
+        let mut seed = 0x5eed_u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed >> 33
+        };
+        for account in ["claude", "claude#2", "openrouter", "codex", "zai", "hermes"] {
+            let mut points: Vec<HistoryPoint> = (0..40)
+                .map(|i| {
+                    let days_back = next() % 45;
+                    let windows = (next() % 3) as f64;
+                    HistoryPoint {
+                        at: days_before(now, days_back as u32)
+                            + chrono::Duration::seconds(i as i64),
+                        windows: (0..windows as usize)
+                            .map(|w| (format!("w{w}"), 10.0 + i as f64))
+                            .collect(),
+                        credits_balance: (next() % 2 == 0).then_some(3.0 + i as f64 * 0.1),
+                        failed: next() % 7 == 0,
+                    }
+                })
+                .collect();
+            // The store's documented invariant: per-account points are
+            // ordered oldest-first (`record` keeps them that way). The naive
+            // reference below pops the front element, which is only the
+            // oldest under this invariant — the same assumption the real
+            // store always satisfies.
+            points.sort_by_key(|p| p.at);
+            history.accounts.insert(account.into(), points);
+        }
+
+        let bound = HistoryRetention::FileSize { bytes: 9_000 };
+        let original = history.clone();
+
+        // The reference: repeatedly find the globally oldest point (account
+        // id breaks ties) and drop it, re-measuring the whole store each
+        // iteration — exactly what the implementation used to do.
+        let mut reference = history.clone();
+        let mut total: u64 = reference.accounts.values().flatten().map(point_bytes).sum();
+        while total > 9_000 {
+            let victim = reference
+                .accounts
+                .iter()
+                .min_by(|a, b| match (a.1.first(), b.1.first()) {
+                    (Some(pa), Some(pb)) => pa.at.cmp(&pb.at).then_with(|| a.0.cmp(b.0)),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                })
+                .map(|(id, _)| id.clone());
+            let Some(victim) = victim else { break };
+            let points = reference.accounts.get_mut(&victim).unwrap();
+            let dropped = points.remove(0);
+            total -= point_bytes(&dropped);
+        }
+
+        history.prune(&bound, now);
+        assert_eq!(
+            history, reference,
+            "the one-pass prune diverged from the naive loop"
+        );
+
+        // And the preview over the ORIGINAL store still describes the same
+        // removal exactly — count, and the applied result.
+        let fresh_preview = original.preview_prune(&bound, now);
+        let mut applied = original.clone();
+        applied.prune(&bound, now);
+        let kept_count = history.accounts.values().flatten().count();
+        assert_eq!(fresh_preview.removed_count, 240 - kept_count);
+        assert_eq!(applied, history);
     }
 
     /// The size bound is global across accounts: the globally oldest point

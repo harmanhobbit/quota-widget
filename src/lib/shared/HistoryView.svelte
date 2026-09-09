@@ -66,11 +66,12 @@
 
   // The credits polyline, auto-scaled to the plotted balances with a small
   // margin; a flat balance draws as a mid-height line rather than dividing
-  // by zero.
+  // by zero. Bounds come from a reduction, not spread over Math.min/max —
+  // an all-time history can outgrow the argument count an engine accepts.
   function creditCoords(points, t0, t1) {
     const values = points.map((p) => p.credits_balance);
-    const lo = Math.min(...values);
-    const hi = Math.max(...values);
+    const lo = values.reduce((a, b) => (b < a ? b : a));
+    const hi = values.reduce((a, b) => (b > a ? b : a));
     const span = hi - lo;
     return points
       .map((p) => {

@@ -269,6 +269,15 @@ mod desktop_app {
     /// why they cannot drift. `apply_config` then mirrors the new policy into
     /// in-memory state and broadcasts it, and the next poll's capture prunes
     /// under it too.
+    ///
+    /// Ordering and failure: the policy is persisted FIRST, so from that
+    /// moment memory must agree with disk whichever way the cleaning goes —
+    /// hence the config is mirrored and broadcast even when the cleaning
+    /// errors, and the error is reported on top. The cleaning itself is
+    /// convergent (the next record's steady-state prune applies the same
+    /// bound), so a failed clean never leaves a store the policy disagrees
+    /// with for long; what it must never do is leave in-memory policy stale
+    /// over a persisted one.
     #[tauri::command]
     async fn set_history_retention(
         app: tauri::AppHandle,
@@ -278,14 +287,18 @@ mod desktop_app {
         let mut cfg = state.config.read().await.clone();
         cfg.history_retention = policy;
         cfg.save(&state.config_dir).map_err(|e| e.to_string())?;
-        let removed = quota_core::history::UsageHistory::apply_policy(
+        let cleaned = quota_core::history::UsageHistory::apply_policy(
             &state.config_dir,
             &policy,
             chrono::Utc::now(),
         )
-        .map_err(|e| e.to_string())?;
-        apply_config(app, state, cfg).await?;
-        Ok(removed)
+        .map_err(|e| e.to_string());
+        let mirrored = apply_config(app, state, cfg).await;
+        match (cleaned, mirrored) {
+            (Ok(removed), Ok(())) => Ok(removed),
+            (Err(e), _) => Err(e),
+            (_, Err(e)) => Err(e),
+        }
     }
 
     #[tauri::command]

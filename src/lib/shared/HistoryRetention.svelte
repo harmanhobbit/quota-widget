@@ -59,15 +59,29 @@
   }
 
   let draft = $state(fromPolicy(policy));
+  // The open confirmation, holding the FROZEN policy together with the
+  // figures that were shown for it — `null` when no confirmation is due.
   let preview = $state(null);
   let busy = $state(false);
   let error = $state('');
+  let previewEl = $state(null);
 
   // The controls describe the persisted policy: when it changes — applied
   // here, or reloaded from the host's `config` broadcast — the draft follows.
   // The effect reads only `policy`, so it can never loop on its own write.
   $effect(() => {
     draft = fromPolicy(policy);
+  });
+
+  // While the confirmation is up, nothing editable may move under it — and
+  // the dialog takes focus so a keyboard user lands inside the decision
+  // they're being asked to make.
+  let locked = $derived(busy || preview !== null);
+
+  $effect(() => {
+    if (preview) {
+      previewEl?.focus();
+    }
   });
 
   async function applyNow(wanted) {
@@ -93,7 +107,12 @@
     try {
       const result = await onpreview(wanted);
       if (result && result.removed_count > 0) {
-        preview = result;
+        // The policy is captured WITH its figures and stays frozen for the
+        // confirmation: confirming applies exactly the policy that was
+        // previewed, never whatever the draft controls say by the time the
+        // click lands. The controls are locked (below) while the dialog is
+        // open; the capture is what makes the guarantee hold even so.
+        preview = { policy: wanted, figures: result };
       } else {
         // The store answers that this bound would clean nothing: applying
         // needs no gate, exactly like a loosening change.
@@ -106,15 +125,28 @@
   }
 
   async function confirmApply() {
-    const wanted = toPolicy(draft);
+    const wanted = preview?.policy;
     preview = null;
-    await applyNow(wanted);
+    if (wanted != null) {
+      await applyNow(wanted);
+    }
   }
 
   // Cancel is inert by contract: the preview computed nothing on disk and
   // changed nothing in the store, so discarding it is exactly that.
   function cancelPreview() {
     preview = null;
+  }
+
+  // Escape over an open preview is the cancel gesture, and must not fall
+  // through to the shell's other Escape meanings (hiding the window). The
+  // handler is registered before the shells' own window listeners, so
+  // stopping it here ends the event's journey.
+  function onKeydown(event) {
+    if (event.key === 'Escape' && preview) {
+      event.stopImmediatePropagation();
+      cancelPreview();
+    }
   }
 
   function formatBytes(bytes) {
@@ -132,16 +164,18 @@
   // span, and — for a file-size bound — how many bytes.
   let previewText = $derived(
     preview
-      ? `Applying this removes ${preview.removed_count} recorded reading${preview.removed_count === 1 ? '' : 's'}` +
-        (preview.removed_bytes != null ? ` (${formatBytes(preview.removed_bytes)})` : '') +
-        `. The kept record begins ${formatWhen(preview.oldest_kept)}; the newest reading removed is ${formatWhen(preview.newest_removed)}.`
+      ? `Applying this removes ${preview.figures.removed_count} recorded reading${preview.figures.removed_count === 1 ? '' : 's'}` +
+        (preview.figures.removed_bytes != null ? ` (${formatBytes(preview.figures.removed_bytes)})` : '') +
+        `. The kept record begins ${formatWhen(preview.figures.oldest_kept)}; the newest reading removed is ${formatWhen(preview.figures.newest_removed)}.`
       : ''
   );
 </script>
 
+<svelte:window onkeydown={onKeydown} />
+
 <div class="history-retention">
   <label>Keep history
-    <select class="retention-mode" bind:value={draft.mode} disabled={busy}>
+    <select class="retention-mode" bind:value={draft.mode} disabled={locked}>
       <option value="forever">Forever</option>
       <option value="age">By age</option>
       <option value="size">By file size</option>
@@ -149,8 +183,8 @@
   </label>
   {#if draft.mode === 'age'}
     <label>for
-      <input class="num retention-amount" type="number" min="0" bind:value={draft.amount} disabled={busy} />
-      <select class="retention-unit" bind:value={draft.unit} disabled={busy}>
+      <input class="num retention-amount" type="number" min="0" bind:value={draft.amount} disabled={locked} />
+      <select class="retention-unit" bind:value={draft.unit} disabled={locked}>
         {#each UNITS as unit (unit)}
           <option value={unit}>{unit}</option>
         {/each}
@@ -158,13 +192,20 @@
     </label>
   {:else if draft.mode === 'size'}
     <label>up to
-      <input class="num retention-mb" type="number" min="1" bind:value={draft.mb} disabled={busy} />
+      <input class="num retention-mb" type="number" min="1" bind:value={draft.mb} disabled={locked} />
       MB
     </label>
   {/if}
-  <button class="retention-apply" disabled={busy} onclick={requestApply}>Apply</button>
+  <button class="retention-apply" disabled={locked} onclick={requestApply}>Apply</button>
   {#if preview}
-    <div class="cleaning-preview" role="alertdialog" aria-label="Cleaning preview">
+    <div
+      class="cleaning-preview"
+      role="alertdialog"
+      aria-modal="true"
+      aria-label="Cleaning preview"
+      tabindex="-1"
+      bind:this={previewEl}
+    >
       <p>{previewText}</p>
       <p class="cleaning-warning">This deletes the recorded readings above. It cannot be undone.</p>
       <div class="cleaning-actions">
