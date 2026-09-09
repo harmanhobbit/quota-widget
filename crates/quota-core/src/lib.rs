@@ -1,6 +1,7 @@
 pub mod alerts;
 pub mod config;
 pub mod desktop;
+pub mod history;
 pub mod linux_launch;
 pub mod model;
 pub mod pairing;
