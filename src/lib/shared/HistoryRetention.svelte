@@ -58,6 +58,10 @@
     return 'forever';
   }
 
+  // Seeding the draft from the policy as of mount is deliberate — the
+  // initializer only needs that initial value, and the effect below owns
+  // reactivity, re-normalising the draft whenever the saved policy changes.
+  // svelte-ignore state_referenced_locally
   let draft = $state(fromPolicy(policy));
   // The open confirmation, holding the FROZEN policy together with the
   // figures that were shown for it — `null` when no confirmation is due.

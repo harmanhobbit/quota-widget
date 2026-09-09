@@ -7,6 +7,11 @@
 // doesn't open" rather than as any build failure. This mounts each top-level
 // component against jsdom with the Tauri IPC stubbed, so those throw here.
 //
+// Compiler warnings fail the run too: a Svelte warning marks code that does
+// not mean what it looks like (`state_referenced_locally`, for one, silently
+// pins a reactive value's initial value) — the same compiles-clean-but-
+// misbehaves class, caught one step earlier.
+//
 // Requires jsdom, which is deliberately NOT a package.json dependency —
 // adding one forces an npmDeps.hash regen in nix/package.nix. Install it
 // on demand:
@@ -861,6 +866,40 @@ const CASES = [
       if (!target.querySelector('.history')) throw new Error('empty history did not open the tab');
       if (!target.textContent.includes('No usage history recorded yet')) {
         throw new Error(`empty history showed no explanation: ${target.textContent}`);
+      }
+    },
+  },
+  // The History tab scrolls like the cards and the Settings form do, so a
+  // wheel over it keeps its normal meaning and must leave the window's fade
+  // level alone: only chrome outside the tab's own scroll surface may fade
+  // the window (the `.history` exclusion in fadeOnWheel). Before that
+  // exclusion, scrolling the recorded charts faded the whole window away.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    history: [
+      {
+        provider_id: 'claude',
+        points: [
+          { at: new Date(Date.now() - 3600_000).toISOString(), windows: [['five_hour', 42.4]], credits_balance: null, failed: false },
+          { at: new Date(Date.now() - 60_000).toISOString(), windows: [['five_hour', 87.2]], credits_balance: null, failed: false },
+        ],
+      },
+    ],
+    verify: async ({ target, flushSync }) => {
+      target.querySelector('button[title="History"]').click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const history = target.querySelector('.history');
+      if (!history) throw new Error('the History button did not open the history tab');
+      const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
+      const before = opacity();
+      if (before !== '1') throw new Error(`the history tab did not open at full opacity: ${before}`);
+      history.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
+      flushSync();
+      if (opacity() !== before) {
+        throw new Error(`a wheel over the history tab faded the window: ${before} -> ${opacity()}`);
       }
     },
   },
@@ -3309,12 +3348,22 @@ function rewriteTauriImports(code, rel) {
 
 // Compile a component and its local .svelte imports, rewriting bare Tauri
 // specifiers to the stubs above.
+//
+// Warnings are collected and reported, not swallowed: each prints where and
+// what as it is found, and any warning at all fails the run (see the tail of
+// the script). Files compile once each (`built`), so a warning cannot repeat.
 const built = new Set();
+const compileWarnings = [];
 function build(rel) {
   if (built.has(rel)) return join(WORK, rel.replace(/\.svelte$/, '.js'));
   built.add(rel);
   const src = readFileSync(join(ROOT, rel), 'utf8');
-  const { js } = compile(src, { generate: 'client', filename: rel });
+  const { js, warnings } = compile(src, { generate: 'client', filename: rel });
+  for (const w of warnings) {
+    compileWarnings.push(w);
+    const at = w.start ? `${rel}:${w.start.line}` : rel;
+    console.error(`WARN ${at} ${w.code}\n      ${w.message.split('\n').join('\n      ')}`);
+  }
   let code = rewriteTauriImports(js.code, rel);
   // Recurse into sibling component imports so App pulls in its children.
   for (const m of code.matchAll(/from\s+'(\.[^']*\.svelte)'/g)) {
@@ -3453,8 +3502,14 @@ for (const c of CASES) {
 }
 
 rmSync(WORK, { recursive: true, force: true });
-if (failed) {
-  console.error(`\nsmoke-mount: ${failed} component(s) failed to render`);
+if (failed || compileWarnings.length) {
+  if (failed) console.error(`\nsmoke-mount: ${failed} component(s) failed to render`);
+  if (compileWarnings.length) {
+    console.error(`\nsmoke-mount: ${compileWarnings.length} compiler warning(s) — warnings fail the run`);
+    for (const w of compileWarnings) {
+      console.error(`  ${w.filename ?? '?'}:${w.start ? w.start.line : '?'} ${w.code}`);
+    }
+  }
   process.exit(1);
 }
-console.log('\nsmoke-mount: all components mounted and rendered');
+console.log('\nsmoke-mount: all components mounted and rendered, warning-free');
