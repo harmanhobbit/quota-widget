@@ -245,6 +245,49 @@ mod desktop_app {
             .collect())
     }
 
+    /// The [[cleaning preview]] for a candidate [[retention policy]]: exactly
+    /// what applying it would remove, computed by quota-core's pure
+    /// `preview_prune` over the store as it is right now. This command deletes
+    /// nothing and persists nothing — only [`set_history_retention`] does,
+    /// and only once the user has confirmed the figures this returned.
+    ///
+    /// [[cleaning preview]]: ../../../CONTEXT.md
+    /// [[retention policy]]: ../../../CONTEXT.md
+    #[tauri::command]
+    async fn preview_history_retention(
+        state: tauri::State<'_, Arc<AppState>>,
+        policy: quota_core::history::HistoryRetention,
+    ) -> Result<quota_core::history::PrunePreview, String> {
+        let history = quota_core::history::UsageHistory::load(&state.config_dir);
+        Ok(history.preview_prune(&policy, chrono::Utc::now()))
+    }
+
+    /// The confirmed retention change: persist the policy through the ordinary
+    /// configuration save, then apply the cleaning it implies under the store
+    /// lock. The figures removed are the same partition the preview showed —
+    /// preview and apply are one contract in quota-core, which is precisely
+    /// why they cannot drift. `apply_config` then mirrors the new policy into
+    /// in-memory state and broadcasts it, and the next poll's capture prunes
+    /// under it too.
+    #[tauri::command]
+    async fn set_history_retention(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, Arc<AppState>>,
+        policy: quota_core::history::HistoryRetention,
+    ) -> Result<quota_core::history::PrunePreview, String> {
+        let mut cfg = state.config.read().await.clone();
+        cfg.history_retention = policy;
+        cfg.save(&state.config_dir).map_err(|e| e.to_string())?;
+        let removed = quota_core::history::UsageHistory::apply_policy(
+            &state.config_dir,
+            &policy,
+            chrono::Utc::now(),
+        )
+        .map_err(|e| e.to_string())?;
+        apply_config(app, state, cfg).await?;
+        Ok(removed)
+    }
+
     #[tauri::command]
     async fn set_config(
         app: tauri::AppHandle,
@@ -768,6 +811,8 @@ mod desktop_app {
                 get_snapshots,
                 app_version,
                 get_usage_history,
+                preview_history_retention,
+                set_history_retention,
                 set_config,
                 recover_config,
                 set_secret,

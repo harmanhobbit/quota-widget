@@ -5,6 +5,8 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { LogicalSize } from '@tauri-apps/api/dpi';
   import ProviderCard from './lib/shared/UsageCard.svelte';
+  import HistoryView from './lib/shared/HistoryView.svelte';
+  import HistoryRetention from './lib/shared/HistoryRetention.svelte';
   import Settings from './lib/Settings.svelte';
   import { resetOpacity, stepOpacity } from './lib/opacity.js';
 
@@ -32,23 +34,6 @@
   let history = $state(null);
   let historyLoading = $state(false);
 
-  // Display helpers for the recorded points. History deliberately stores
-  // quantities rather than labels, so names, window labels and credit units
-  // come from the live snapshots where the account still exists — and fall
-  // back to the stored identity where it does not, rather than inventing one.
-  function accountName(providerId) {
-    return snapshots.find((s) => s.provider_id === providerId)?.provider_name ?? providerId;
-  }
-  function windowLabel(providerId, metricId) {
-    const window = snapshots
-      .find((s) => s.provider_id === providerId)
-      ?.windows?.find((w) => w.metric_id === metricId);
-    return window?.label ?? metricId;
-  }
-  function creditsUnit(providerId) {
-    return snapshots.find((s) => s.provider_id === providerId)?.credits?.unit ?? '';
-  }
-
   async function openHistory() {
     view = 'history';
     historyLoading = true;
@@ -60,6 +45,16 @@
       history = [];
     }
     historyLoading = false;
+  }
+
+  // The retention control's two host calls (Slice 2). The preview is pure —
+  // it deletes nothing — and only the confirmed apply persists the policy and
+  // cleans; the component owns that gate, these are just the wires.
+  function previewRetention(policy) {
+    return invoke('preview_history_retention', { policy });
+  }
+  function applyRetention(policy) {
+    return invoke('set_history_retention', { policy });
   }
 
   // First-run desktop integration, AppImage only. Shown once: whichever way it
@@ -314,6 +309,11 @@
     </div>
   {:else if view === 'history'}
     <div class="history">
+      <HistoryRetention
+        policy={appConfig?.history_retention ?? 'forever'}
+        onpreview={previewRetention}
+        onapply={applyRetention}
+      />
       {#if historyLoading || history === null}
         <p class="empty">Loading…</p>
       {:else if history.length === 0}
@@ -321,30 +321,7 @@
           No usage history recorded yet — readings build up here as the widget refreshes.
         </p>
       {:else}
-        {#each history as account (account.provider_id)}
-          <section class="history-account">
-            <h3>{accountName(account.provider_id)}</h3>
-            {#if account.points.length === 0}
-              <p class="empty">No readings recorded for this account.</p>
-            {:else}
-              <!-- Newest first: a readings list is read back-to-front. -->
-              <ul class="history-points">
-                {#each [...account.points].reverse() as point (point.at)}
-                  <li>
-                    <span class="history-when">{new Date(point.at).toLocaleString()}</span>
-                    {#if point.failed}<span class="history-failed">unavailable</span>{/if}
-                    {#each point.windows as [metricId, pct] (metricId)}
-                      <span class="history-window">{windowLabel(account.provider_id, metricId)} {Math.round(pct)}%</span>
-                    {/each}
-                    {#if point.credits_balance != null}
-                      <span class="history-credits">{point.credits_balance} {creditsUnit(account.provider_id)}</span>
-                    {/if}
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          </section>
-        {/each}
+        <HistoryView {history} {snapshots} />
       {/if}
     </div>
   {:else}

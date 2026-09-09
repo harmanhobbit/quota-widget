@@ -152,6 +152,34 @@ const SNAPSHOTS = [
   },
 ];
 
+// Recorded usage history spanning ~30 days, for the chart cases: two windows
+// on Claude (one day-5 reading is a failure, which must plot as a gap, not a
+// made-up point), and a credits-only OpenRouter. Anchored to now so range
+// arithmetic is stable whenever the suite runs.
+const HISTORY = (() => {
+  const day = (n) => new Date(Date.now() - n * 24 * 3600_000).toISOString();
+  return [
+    {
+      provider_id: 'claude',
+      points: Array.from({ length: 30 }, (_, i) => ({
+        at: day(29 - i),
+        windows: i === 24 ? [] : [['five_hour', 10 + i], ['weekly', 40 + i * 2]],
+        credits_balance: null,
+        failed: i === 24,
+      })),
+    },
+    {
+      provider_id: 'openrouter',
+      points: Array.from({ length: 30 }, (_, i) => ({
+        at: day(29 - i),
+        windows: [],
+        credits_balance: 10 - i * 0.2,
+        failed: false,
+      })),
+    },
+  ];
+})();
+
 // Reveal a top-level Settings disclosure (issue #184) so a case can drive the
 // controls that now start collapsed behind it. Idempotent — a section already
 // open is left open. Scoped to the section headers (`.disclosure > h2`) so it
@@ -764,11 +792,10 @@ const CASES = [
   },
   // ---- Usage history (issue #211, Slice 1): the desktop History tab --------
   //
-  // Recorded points render as a plain per-account readings list. History
-  // stores quantities only, so the account name, the window label and the
-  // credit unit are looked up from the snapshots the app already holds —
-  // "5h 87%" must be the snapshot's label, not the raw metric_id — and the
-  // failed reading carries its unavailable marker. Newest first.
+  // The tab mounts the shared HistoryView (Slice 2 replaced the plain list
+  // with charts): one section per recorded account, window labels and credit
+  // units looked up from the snapshots the app already holds, the failed
+  // reading reported rather than invented, and Back returning to the popup.
   {
     file: 'src/App.svelte',
     props: () => ({}),
@@ -796,20 +823,22 @@ const CASES = [
       const history = target.querySelector('.history');
       if (!history) throw new Error('the History button did not open the history tab');
       // One section per recorded account, named from the snapshots.
-      const names = [...history.querySelectorAll('h3')].map((h) => h.textContent.trim());
+      const names = [...history.querySelectorAll('.history-account h3')].map((h) => h.textContent.trim());
       if (names.join('|') !== 'Claude|OpenRouter') {
         throw new Error(`account sections rendered as ${names.join('|')}`);
       }
       const text = history.textContent;
-      for (const expected of ['Claude', 'OpenRouter', '5h 42%', '5h 87%', 'unavailable', '3.42 USD']) {
+      for (const expected of ['5h', 'USD', 'unavailable']) {
         if (!text.includes(expected)) {
-          throw new Error(`the readings list is missing ${JSON.stringify(expected)}: ${text}`);
+          throw new Error(`the charts are missing ${JSON.stringify(expected)}: ${text}`);
         }
       }
-      // Newest first: the 87% reading must appear before the 42% one.
-      if (text.indexOf('87%') > text.indexOf('42%')) {
-        throw new Error('readings did not render newest first');
-      }
+      // Two plotted readings for Claude's five-hour line; the failed reading
+      // is reported, never invented as a point.
+      const line = history.querySelector('.history-chart polyline[data-metric="five_hour"]');
+      if (!line) throw new Error('claude drew no five_hour line');
+      const coords = line.getAttribute('points').trim().split(/\s+/).filter(Boolean);
+      if (coords.length !== 2) throw new Error(`five_hour plotted ${coords.length} points, expected 2`);
       // Back returns to the usage popup — the tab is one window, one view.
       target.querySelector('button[title="Back"]').click();
       flushSync();
@@ -832,6 +861,244 @@ const CASES = [
       if (!target.querySelector('.history')) throw new Error('empty history did not open the tab');
       if (!target.textContent.includes('No usage history recorded yet')) {
         throw new Error(`empty history showed no explanation: ${target.textContent}`);
+      }
+    },
+  },
+  // ---- Slice 2 (#214): shared per-account charts ---------------------------
+  //
+  // One inline-SVG chart per account with one line per usage window, plus a
+  // separate credits chart where the account has credits — percentages and
+  // money are different quantities and never share an axis. Failed readings
+  // plot as gaps (the figures they carried were not new), and the range
+  // selector actually changes the plotted span.
+  {
+    file: 'src/lib/shared/HistoryView.svelte',
+    props: ($) => ({ history: $.proxy(structuredClone(HISTORY)), snapshots: $.proxy(structuredClone(SNAPSHOTS)) }),
+    expect: ['Claude', 'OpenRouter', '5h', 'Weekly', 'USD'],
+    verify: async ({ target, flushSync }) => {
+      // The whole history first — the default view is the last 7 days.
+      const select = target.querySelector('.history-range');
+      select.value = 'all';
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const sections = [...target.querySelectorAll('.history-account')];
+      if (sections.length !== 2) throw new Error(`expected 2 account sections, got ${sections.length}`);
+      const claude = sections[0];
+      // One line per usage window, keyed by metric id.
+      const lines = [...claude.querySelectorAll('.history-chart polyline')];
+      const metrics = lines.map((l) => l.getAttribute('data-metric')).sort();
+      if (metrics.join(',') !== 'five_hour,weekly') {
+        throw new Error(`window lines rendered as ${metrics.join(',')}`);
+      }
+      // 30 points, one failed with no figures: the line plots 29 real
+      // observations, never inventing a point for the gap.
+      const coords = lines[0].getAttribute('points').trim().split(/\s+/);
+      if (coords.length !== 29) throw new Error(`five_hour line plotted ${coords.length} points, expected 29 (gap for the failed reading)`);
+      // Percentages and money do not share a chart: Claude (no credits) has
+      // no credits chart, OpenRouter (credits only, no windows) has no
+      // percentage lines at all.
+      if (claude.querySelector('.credits-chart')) throw new Error('an account without credits drew a credits chart');
+      const openrouter = sections[1];
+      if (openrouter.querySelectorAll('.history-chart polyline').length) {
+        throw new Error('a credits-only account drew percentage lines');
+      }
+      if (!openrouter.querySelector('.credits-chart polyline.credits-line')) {
+        throw new Error('the credits balance drew no line');
+      }
+      // The credits line plots every non-failed point (30 here).
+      const creditCoords = openrouter.querySelector('.credits-line').getAttribute('points').trim().split(/\s+/);
+      if (creditCoords.length !== 30) throw new Error(`credits line plotted ${creditCoords.length} points, expected 30`);
+    },
+  },
+  // Empty history mounts without throwing: the selector is there, no charts.
+  {
+    file: 'src/lib/shared/HistoryView.svelte',
+    props: ($) => ({ history: $.proxy([]), snapshots: $.proxy(structuredClone(SNAPSHOTS)) }),
+    expect: ['7 days'],
+    verify: ({ target }) => {
+      if (target.querySelector('.history-chart')) throw new Error('an empty history drew a chart');
+    },
+  },
+  // The range selector changes the plotted span: narrowing to 24 hours from a
+  // 30-day history shrinks every line to its last-day readings.
+  {
+    file: 'src/lib/shared/HistoryView.svelte',
+    props: ($) => ({ history: $.proxy(structuredClone(HISTORY)), snapshots: $.proxy(structuredClone(SNAPSHOTS)) }),
+    verify: ({ target, flushSync }) => {
+      const coordCount = () => [...target.querySelectorAll('polyline')]
+        .map((l) => l.getAttribute('points').trim().split(/\s+/).filter(Boolean).length);
+      const select = target.querySelector('.history-range');
+      // The full history first — the default view is the last 7 days, and
+      // this case is about the selector changing the span.
+      select.value = 'all';
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const all = coordCount();
+      if (!all.length || all.some((n) => n < 29)) {
+        throw new Error(`the full range did not plot the history: ${all.join(',')}`);
+      }
+      select.value = '24h';
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const narrowed = coordCount();
+      if (!narrowed.length || !narrowed.every((n) => n < all[0])) {
+        throw new Error(`narrowing to 24h did not shrink the span: ${all.join(',')} -> ${narrowed.join(',')}`);
+      }
+    },
+  },
+  // ---- Slice 2 (#214): the retention control and its cleaning preview ------
+  //
+  // A tighter policy previews exactly what would go (count, bytes, span) and
+  // applies nothing until confirmed; Cancel is inert — no apply call, and the
+  // draft returns to the saved policy. A looser policy or forever cleans
+  // nothing, so it applies with no preview at all.
+  {
+    file: 'src/lib/shared/HistoryRetention.svelte',
+    props: ($) => ({
+      policy: 'forever',
+      onpreview: async (p) => {
+        (globalThis.__SMOKE_RETENTION_CALLS__ ??= []).push(`preview:${JSON.stringify(p)}`);
+        return globalThis.__SMOKE_HISTORY_PREVIEW__ ?? { removed_count: 0, removed_bytes: null, oldest_kept: null, newest_removed: null };
+      },
+      onapply: async (p) => {
+        (globalThis.__SMOKE_RETENTION_CALLS__ ??= []).push(`apply:${JSON.stringify(p)}`);
+      },
+    }),
+    historyPreview: {
+      removed_count: 12,
+      removed_bytes: 20480,
+      oldest_kept: new Date(Date.now() - 2 * 24 * 3600_000).toISOString(),
+      newest_removed: new Date(Date.now() - 9 * 24 * 3600_000).toISOString(),
+    },
+    expect: ['Forever'],
+    verify: async ({ target, flushSync }) => {
+      const calls = () => globalThis.__SMOKE_RETENTION_CALLS__;
+      // Pick a tighter bound: age, 7 days.
+      const mode = target.querySelector('.retention-mode');
+      mode.value = 'age';
+      mode.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const amount = target.querySelector('.retention-amount');
+      amount.value = '7';
+      amount.dispatchEvent(new window.Event('input', { bubbles: true }));
+      flushSync();
+      // Applying it first PREVIEWS: the figures appear, nothing is applied.
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const dialog = target.querySelector('.cleaning-preview');
+      if (!dialog) throw new Error('a tighter policy showed no cleaning preview');
+      for (const expected of ['12', '20.0 KB', 'Clean history', 'Cancel']) {
+        if (!dialog.textContent.includes(expected)) {
+          throw new Error(`the preview is missing ${JSON.stringify(expected)}: ${dialog.textContent}`);
+        }
+      }
+      if (calls().some((c) => c.startsWith('apply:'))) {
+        throw new Error('the preview applied the policy before confirmation');
+      }
+      // Cancel is inert: no apply, and the dialog is gone.
+      dialog.querySelector('.cleaning-cancel').click();
+      flushSync();
+      if (target.querySelector('.cleaning-preview')) throw new Error('Cancel left the preview up');
+      if (calls().some((c) => c.startsWith('apply:'))) throw new Error('Cancel applied the policy anyway');
+      // Confirming applies exactly the policy that was previewed.
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      target.querySelector('.cleaning-confirm').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const apply = calls().find((c) => c.startsWith('apply:'));
+      if (apply !== `apply:${JSON.stringify({ age: { unit: 'days', amount: 7 } })}`) {
+        throw new Error(`confirming applied ${apply}`);
+      }
+      if (target.querySelector('.cleaning-preview')) throw new Error('the preview stayed up after applying');
+    },
+  },
+  // Forever loosens: it cleans nothing, so it applies immediately — no
+  // preview, no confirmation gate on a change that cannot delete anything.
+  {
+    file: 'src/lib/shared/HistoryRetention.svelte',
+    props: ($) => ({
+      policy: { age: { unit: 'days', amount: 7 } },
+      onpreview: async (p) => {
+        (globalThis.__SMOKE_RETENTION_CALLS__ ??= []).push(`preview:${JSON.stringify(p)}`);
+        return globalThis.__SMOKE_HISTORY_PREVIEW__ ?? { removed_count: 0, removed_bytes: null, oldest_kept: null, newest_removed: null };
+      },
+      onapply: async (p) => {
+        (globalThis.__SMOKE_RETENTION_CALLS__ ??= []).push(`apply:${JSON.stringify(p)}`);
+      },
+    }),
+    expect: ['Forever'],
+    verify: async ({ target, flushSync }) => {
+      const calls = () => globalThis.__SMOKE_RETENTION_CALLS__;
+      // The saved age policy round-trips into the draft controls: mode,
+      // amount, and the unit select the age mode reveals.
+      const mode = target.querySelector('.retention-mode');
+      if (mode.value !== 'age') throw new Error(`the saved age policy loaded as ${mode.value}`);
+      if (target.querySelector('.retention-amount')?.value !== '7') {
+        throw new Error(`the saved amount loaded as ${target.querySelector('.retention-amount')?.value}`);
+      }
+      if (target.querySelector('.retention-unit')?.value !== 'days') {
+        throw new Error(`the saved unit loaded as ${target.querySelector('.retention-unit')?.value}`);
+      }
+      // Back to forever: no preview, straight to apply.
+      mode.value = 'forever';
+      mode.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (calls().some((c) => c.startsWith('preview:'))) {
+        throw new Error('a loosening change previewed a cleaning it would never do');
+      }
+      if (!calls().includes(`apply:${JSON.stringify('forever')}`)) {
+        throw new Error(`forever did not apply: ${calls().join(',')}`);
+      }
+    },
+  },
+  // End to end through the desktop shell: the History tab hosts the charts
+  // and the retention control, and its preview/apply go through the host
+  // commands (stubbed here) rather than any component-local shortcut.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    history: HISTORY,
+    historyPreview: {
+      removed_count: 4,
+      removed_bytes: null,
+      oldest_kept: new Date(Date.now() - 1 * 24 * 3600_000).toISOString(),
+      newest_removed: new Date(Date.now() - 20 * 24 * 3600_000).toISOString(),
+    },
+    verify: async ({ target, flushSync }) => {
+      target.querySelector('button[title="History"]').click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!target.querySelector('.history-account')) throw new Error('the tab rendered no charts');
+      // Tighten to age/30d through the shell: preview surfaces, confirm
+      // reaches set_history_retention with the serde shape Rust expects.
+      const mode = target.querySelector('.retention-mode');
+      mode.value = 'age';
+      mode.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const amount = target.querySelector('.retention-amount');
+      amount.value = '30';
+      amount.dispatchEvent(new window.Event('input', { bubbles: true }));
+      flushSync();
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      target.querySelector('.cleaning-confirm').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (globalThis.__SMOKE_LAST_RETENTION__ === undefined) {
+        throw new Error('confirming never reached set_history_retention');
+      }
+      const saved = globalThis.__SMOKE_LAST_RETENTION__;
+      const expected = { age: { unit: 'days', amount: 30 } };
+      if (JSON.stringify(saved) !== JSON.stringify(expected)) {
+        throw new Error(`set_history_retention received ${JSON.stringify(saved)}`);
       }
     },
   },
@@ -2598,6 +2865,19 @@ export async function invoke(cmd, args) {
     // __SMOKE_HISTORY__ decides what is recorded; null (the default) is the
     // honest empty store.
     case 'get_usage_history': return globalThis.__SMOKE_HISTORY__ ?? [];
+    // Retention preview/apply (issue #211, Slice 2). The preview is pure: it
+    // records what it was asked and answers from __SMOKE_HISTORY_PREVIEW__,
+    // whose removed_count decides whether the component may show the
+    // confirmation before any apply reaches set_history_retention.
+    case 'preview_history_retention': {
+      (globalThis.__SMOKE_RETENTION_CALLS__ ??= []).push(\`preview:\${JSON.stringify(args.policy)}\`);
+      return globalThis.__SMOKE_HISTORY_PREVIEW__ ?? { removed_count: 0, removed_bytes: null, oldest_kept: null, newest_removed: null };
+    }
+    case 'set_history_retention': {
+      (globalThis.__SMOKE_RETENTION_CALLS__ ??= []).push(\`apply:\${JSON.stringify(args.policy)}\`);
+      globalThis.__SMOKE_LAST_RETENTION__ = args.policy;
+      return { removed_count: 0, removed_bytes: null, oldest_kept: null, newest_removed: null };
+    }
     case 'has_secret': return false;
     case 'on_wayland': return true;
     case 'set_config':
@@ -2955,6 +3235,8 @@ for (const c of CASES) {
     globalThis.__SMOKE_LAN_SEND_ERROR__ = '';
     globalThis.__SMOKE_LAN_START_ERROR__ = '';
     globalThis.__SMOKE_HISTORY__ = c.history ?? null;
+    globalThis.__SMOKE_HISTORY_PREVIEW__ = c.historyPreview ?? null;
+    globalThis.__SMOKE_RETENTION_CALLS__ = [];
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle

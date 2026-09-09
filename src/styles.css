@@ -1025,3 +1025,100 @@ select option {
   color: var(--critical);
   font-size: 11px;
 }
+
+/* History charts (shared HistoryView). Sparkline-style SVGs on a fixed
+   viewBox, stretched to the pane; non-scaling strokes keep the lines 1px
+   whatever the stretch. Colours are presentation only — the legend text
+   carries the meaning. */
+.history-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-range-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.history-chart svg,
+.credits-chart svg {
+  display: block;
+  width: 100%;
+  height: 56px;
+}
+
+.usage-line {
+  fill: none;
+  stroke: var(--muted);
+}
+
+.usage-line:nth-of-type(1) {
+  stroke: #4c9be8;
+}
+
+.usage-line:nth-of-type(2) {
+  stroke: #e6a817;
+}
+
+.usage-line:nth-of-type(3) {
+  stroke: #9a6dd7;
+}
+
+.credits-line {
+  fill: none;
+  stroke: #2fa46a;
+}
+
+.history-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.history-note {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--critical);
+}
+
+/* Retention control + cleaning preview. The preview is louder than the rest
+   of the tab on purpose: it is the last word before history is deleted. */
+.history-retention {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.cleaning-preview {
+  flex-basis: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+}
+
+.cleaning-preview p {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.cleaning-warning {
+  color: var(--critical);
+}
+
+.cleaning-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
