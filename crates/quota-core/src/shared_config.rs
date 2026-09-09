@@ -15,6 +15,7 @@
 //! re-clicked toggles and which is therefore freely replaceable.
 
 use crate::config::{AlertToggles, Config, ProviderConfig, SortBasis, SortOrder, Thresholds};
+use crate::history::HistoryRetention;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -40,6 +41,14 @@ pub struct SharedConfig {
     /// per-account override (thresholds, alerts, headline picks) are keyed
     /// on.
     pub providers: IndexMap<String, ProviderConfig>,
+    /// The [[retention policy]] bounding how much [[usage history]] each host
+    /// keeps. Shared meaning, so it lives here rather than in platform
+    /// preferences; `Forever` is the default, which is also what a file that
+    /// predates the field loads as.
+    ///
+    /// [[retention policy]]: ../CONTEXT.md
+    /// [[usage history]]: ../CONTEXT.md
+    pub history_retention: HistoryRetention,
 }
 
 impl Default for SharedConfig {
@@ -51,6 +60,7 @@ impl Default for SharedConfig {
             sort_order: SortOrder::default(),
             sort_basis: SortBasis::default(),
             providers: Config::default().providers,
+            history_retention: HistoryRetention::default(),
         }
     }
 }
@@ -69,6 +79,7 @@ impl SharedConfig {
             sort_order: config.sort_order,
             sort_basis: config.sort_basis,
             providers: config.providers.clone(),
+            history_retention: config.history_retention,
         }
     }
 
@@ -213,6 +224,7 @@ fn free_backup_path(dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::history::{AgeUnit, HistoryRetention};
 
     fn load(dir: &Path) -> SharedConfig {
         SharedConfig::load(dir).config
@@ -407,5 +419,68 @@ mod tests {
                 .warn_pct,
             10.0
         );
+    }
+
+    // ---- History retention (usage history, #211 slice 1) --------------------
+
+    /// Default is *forever* — an account list that has never heard of the
+    /// retention field keeps everything, byte-for-byte the behaviour of every
+    /// build before the field existed.
+    #[test]
+    fn retention_defaults_to_forever() {
+        assert_eq!(
+            SharedConfig::default().history_retention,
+            HistoryRetention::Forever
+        );
+    }
+
+    /// A chosen policy is shared configuration: it survives a save/load round
+    /// trip and the legacy `Config` split, so its meaning is identical on
+    /// every platform.
+    #[test]
+    fn a_chosen_retention_survives_a_round_trip_and_the_split() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = SharedConfig {
+            history_retention: HistoryRetention::Age {
+                unit: AgeUnit::Months,
+                amount: 6,
+            },
+            ..Default::default()
+        };
+        cfg.save(dir.path()).unwrap();
+        assert_eq!(load(dir.path()).history_retention, cfg.history_retention);
+
+        // Through the legacy combined shape too — `Config::split` /
+        // `from_parts` are how the hosts actually move the value.
+        let legacy = Config {
+            history_retention: HistoryRetention::FileSize { bytes: 1 << 20 },
+            ..Default::default()
+        };
+        let (shared, prefs) = legacy.split();
+        assert_eq!(
+            shared.history_retention,
+            HistoryRetention::FileSize { bytes: 1 << 20 }
+        );
+        let reassembled = Config::from_parts(shared, prefs);
+        assert_eq!(
+            reassembled.history_retention,
+            HistoryRetention::FileSize { bytes: 1 << 20 }
+        );
+    }
+
+    /// A shared-config.json written by a build that predates the field loads
+    /// with *forever* — the field is `#[serde(default)]`, so nothing older
+    /// breaks and nothing is silently tightened.
+    #[test]
+    fn a_config_that_predates_the_field_loads_forever() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(FILE_NAME),
+            r#"{ "version": 1, "providers": {} }"#,
+        )
+        .unwrap();
+        let loaded = SharedConfig::load(dir.path());
+        assert_eq!(loaded.recovery, None, "an old file is not a corruption");
+        assert_eq!(loaded.config.history_retention, HistoryRetention::Forever);
     }
 }

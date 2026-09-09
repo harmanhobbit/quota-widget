@@ -213,6 +213,38 @@ mod desktop_app {
         env!("CARGO_PKG_VERSION")
     }
 
+    /// One account's recorded [[usage history]] for the History tab. Points
+    /// only, keyed by the account's `String` identity: history deliberately
+    /// keeps quantities rather than display labels, so the tab names accounts
+    /// from the snapshots it already has (and falls back to the key for an
+    /// account that has since been removed).
+    ///
+    /// [[usage history]]: ../../../CONTEXT.md
+    #[derive(serde::Serialize)]
+    struct AccountHistory {
+        provider_id: String,
+        points: Vec<quota_core::history::HistoryPoint>,
+    }
+
+    /// The recorded usage history, as the History tab renders it. A plain
+    /// read: retention has already been applied at record time, and a corrupt
+    /// store renames itself aside per quota-core's policy rather than erroring
+    /// here. Safe without the store lock — saves publish by atomic rename.
+    #[tauri::command]
+    async fn get_usage_history(
+        state: tauri::State<'_, Arc<AppState>>,
+    ) -> Result<Vec<AccountHistory>, String> {
+        let history = quota_core::history::UsageHistory::load(&state.config_dir);
+        Ok(history
+            .accounts
+            .into_iter()
+            .map(|(provider_id, points)| AccountHistory {
+                provider_id,
+                points,
+            })
+            .collect())
+    }
+
     #[tauri::command]
     async fn set_config(
         app: tauri::AppHandle,
@@ -735,6 +767,7 @@ mod desktop_app {
             .invoke_handler(tauri::generate_handler![
                 get_snapshots,
                 app_version,
+                get_usage_history,
                 set_config,
                 recover_config,
                 set_secret,

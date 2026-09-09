@@ -52,6 +52,20 @@ async fn poll_once(app: &AppHandle, state: &Arc<AppState>) {
         }
     }
 
+    // Usage history: record + prune + save under the store lock — the
+    // desktop's first persistence responsibility, one call into quota-core so
+    // what is recorded is exactly what every other host records from the same
+    // outcome. Best-effort by contract: a history-persist failure must never
+    // break the poll, the tray, or the alerts below.
+    if let Err(e) = quota_core::history::UsageHistory::capture(
+        &state.config_dir,
+        &outcome,
+        &cfg.history_retention,
+        chrono::Utc::now(),
+    ) {
+        eprintln!("history: {e}");
+    }
+
     // Tray icon: the operation already folded every tray-eligible account into
     // one aggregate status and percentage.
     let tip_lines: Vec<String> = outcome.snapshots.iter().map(tooltip_line).collect();

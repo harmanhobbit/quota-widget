@@ -762,6 +762,79 @@ const CASES = [
       }
     },
   },
+  // ---- Usage history (issue #211, Slice 1): the desktop History tab --------
+  //
+  // Recorded points render as a plain per-account readings list. History
+  // stores quantities only, so the account name, the window label and the
+  // credit unit are looked up from the snapshots the app already holds —
+  // "5h 87%" must be the snapshot's label, not the raw metric_id — and the
+  // failed reading carries its unavailable marker. Newest first.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    history: [
+      {
+        provider_id: 'claude',
+        points: [
+          { at: new Date(Date.now() - 3600_000).toISOString(), windows: [['five_hour', 42.4]], credits_balance: null, failed: false },
+          { at: new Date(Date.now() - 60_000).toISOString(), windows: [['five_hour', 87.2]], credits_balance: null, failed: false },
+          { at: new Date(Date.now() - 30_000).toISOString(), windows: [], credits_balance: null, failed: true },
+        ],
+      },
+      {
+        provider_id: 'openrouter',
+        points: [
+          { at: new Date(Date.now() - 120_000).toISOString(), windows: [], credits_balance: 3.42, failed: false },
+        ],
+      },
+    ],
+    verify: async ({ target, flushSync }) => {
+      target.querySelector('button[title="History"]').click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const history = target.querySelector('.history');
+      if (!history) throw new Error('the History button did not open the history tab');
+      // One section per recorded account, named from the snapshots.
+      const names = [...history.querySelectorAll('h3')].map((h) => h.textContent.trim());
+      if (names.join('|') !== 'Claude|OpenRouter') {
+        throw new Error(`account sections rendered as ${names.join('|')}`);
+      }
+      const text = history.textContent;
+      for (const expected of ['Claude', 'OpenRouter', '5h 42%', '5h 87%', 'unavailable', '3.42 USD']) {
+        if (!text.includes(expected)) {
+          throw new Error(`the readings list is missing ${JSON.stringify(expected)}: ${text}`);
+        }
+      }
+      // Newest first: the 87% reading must appear before the 42% one.
+      if (text.indexOf('87%') > text.indexOf('42%')) {
+        throw new Error('readings did not render newest first');
+      }
+      // Back returns to the usage popup — the tab is one window, one view.
+      target.querySelector('button[title="Back"]').click();
+      flushSync();
+      if (target.querySelector('.history') || !target.querySelector('.cards')) {
+        throw new Error('Back did not return to the usage popup');
+      }
+    },
+  },
+  // An empty store is an honest state, not an error: the tab says nothing has
+  // been recorded yet rather than rendering a blank pane.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    history: [],
+    verify: async ({ target, flushSync }) => {
+      target.querySelector('button[title="History"]').click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!target.querySelector('.history')) throw new Error('empty history did not open the tab');
+      if (!target.textContent.includes('No usage history recorded yet')) {
+        throw new Error(`empty history showed no explanation: ${target.textContent}`);
+      }
+    },
+  },
   {
     file: 'src/lib/shared/UsageCard.svelte',
     props: () => ({
@@ -2521,6 +2594,10 @@ export async function invoke(cmd, args) {
   switch (cmd) {
     case 'get_snapshots': if (globalThis.__SMOKE_SNAPSHOTS_ERROR__) throw new Error('IPC unavailable'); return { ...(globalThis.__SMOKE_CONFIG__ ?? ${JSON.stringify({ snapshots: SNAPSHOTS, config: CONFIG })}), config_recovery: globalThis.__SMOKE_RECOVERY__ ?? null };
     case 'app_version': return '0.0.0-test';
+    // Usage history (issue #211): the tab's one read. The per-case
+    // __SMOKE_HISTORY__ decides what is recorded; null (the default) is the
+    // honest empty store.
+    case 'get_usage_history': return globalThis.__SMOKE_HISTORY__ ?? [];
     case 'has_secret': return false;
     case 'on_wayland': return true;
     case 'set_config':
@@ -2877,6 +2954,7 @@ for (const c of CASES) {
     globalThis.__SMOKE_LAN_ADDRESS__ = c.lanAddress ?? ['192.168.1.20:45454'];
     globalThis.__SMOKE_LAN_SEND_ERROR__ = '';
     globalThis.__SMOKE_LAN_START_ERROR__ = '';
+    globalThis.__SMOKE_HISTORY__ = c.history ?? null;
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle

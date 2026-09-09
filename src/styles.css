@@ -982,3 +982,46 @@ select option {
 .schedule-day span {
   font-size: 12px;
 }
+
+/* History tab: a plain per-account readings list. Quiet by design — the
+   figures are the content, so the chrome stays out of the way the way the
+   usage cards do. */
+.history {
+  padding: 8px 12px 16px;
+  overflow-y: auto;
+}
+
+.history-account h3 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+}
+
+.history-points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.history-points li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.history-when {
+  color: var(--muted);
+  min-width: 0;
+}
+
+.history-failed {
+  color: var(--critical);
+  font-size: 11px;
+}

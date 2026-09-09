@@ -376,6 +376,11 @@ pub struct Config {
     /// whatever monitor the window is already on, which is what every build
     /// before this one did unconditionally.
     pub mini_anchor: MiniAnchor,
+    /// How much usage history each host keeps. Shared meaning — it is stored
+    /// in `SharedConfig` — but the combined `Config` shape carries it as a
+    /// pass-through because IPC, the poller and Settings all read `Config`.
+    /// `#[serde(default)]` makes an older config.json load as `Forever`.
+    pub history_retention: crate::history::HistoryRetention,
     /// Account iteration order is the user-selected display order everywhere.
     pub providers: IndexMap<String, ProviderConfig>,
 }
@@ -431,6 +436,7 @@ impl Default for Config {
             sort_order: SortOrder::default(),
             sort_basis: SortBasis::default(),
             mini_anchor: MiniAnchor::default(),
+            history_retention: crate::history::HistoryRetention::default(),
             providers,
         }
     }
@@ -796,6 +802,7 @@ impl Config {
             sort_order: shared.sort_order,
             sort_basis: shared.sort_basis,
             mini_anchor: prefs.mini_anchor,
+            history_retention: shared.history_retention,
             providers: shared.providers,
         }
     }

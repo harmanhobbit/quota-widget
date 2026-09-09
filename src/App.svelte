@@ -10,7 +10,7 @@
 
   const APP_VERSION = __QUOTA_WIDGET_VERSION__;
   const BUILD_BRANCH = __QUOTA_WIDGET_BRANCH__;
-  let view = $state('popup'); // 'popup' | 'settings'
+  let view = $state('popup'); // 'popup' | 'history' | 'settings'
   // The Settings return state: where a Settings visit goes when it exits
   // through Save & close, Back, or Escape. 'popup' | 'mini' | 'hidden'.
   // Captured per visit and never persisted — it describes what was on screen a
@@ -24,6 +24,43 @@
   let refreshing = $state(false);
   let headerEl = $state(null);
   let cardsEl = $state(null);
+
+  // The recorded usage history, loaded from the host each time the History
+  // tab is entered — an in-flight refresh may have grown it since the last
+  // visit. `null` until the first load resolves, which is the honest loading
+  // state; an empty array afterwards is the honest "nothing recorded yet".
+  let history = $state(null);
+  let historyLoading = $state(false);
+
+  // Display helpers for the recorded points. History deliberately stores
+  // quantities rather than labels, so names, window labels and credit units
+  // come from the live snapshots where the account still exists — and fall
+  // back to the stored identity where it does not, rather than inventing one.
+  function accountName(providerId) {
+    return snapshots.find((s) => s.provider_id === providerId)?.provider_name ?? providerId;
+  }
+  function windowLabel(providerId, metricId) {
+    const window = snapshots
+      .find((s) => s.provider_id === providerId)
+      ?.windows?.find((w) => w.metric_id === metricId);
+    return window?.label ?? metricId;
+  }
+  function creditsUnit(providerId) {
+    return snapshots.find((s) => s.provider_id === providerId)?.credits?.unit ?? '';
+  }
+
+  async function openHistory() {
+    view = 'history';
+    historyLoading = true;
+    try {
+      history = await invoke('get_usage_history');
+    } catch {
+      // No history to show is not a fatal state: show the empty tab rather
+      // than an error screen for a cosmetic surface.
+      history = [];
+    }
+    historyLoading = false;
+  }
 
   // First-run desktop integration, AppImage only. Shown once: whichever way it
   // is answered, Rust records that the question was put, so "Not now" is
@@ -214,6 +251,7 @@
     <span class="spacer" data-tauri-drag-region></span>
     {#if view === 'popup'}
       <button class="icon" title="Refresh now" class:spin={refreshing} onclick={refresh}>⟳</button>
+      <button class="icon" title="History" aria-label="History" onclick={openHistory}>◷</button>
       <button class="icon" title="Settings" onclick={openSettings}>⚙</button>
     {:else}
       <button class="icon" title="Back" onclick={backToUsage}>←</button>
@@ -271,6 +309,41 @@
                period-marker proximity growth and tooltip. MobileApp omits the
                prop, which keeps Android's press-and-hold peek as shipped. -->
           <ProviderCard {snap} schedule={appConfig?.providers?.[snap.provider_id]?.usage_schedule} hover />
+        {/each}
+      {/if}
+    </div>
+  {:else if view === 'history'}
+    <div class="history">
+      {#if historyLoading || history === null}
+        <p class="empty">Loading…</p>
+      {:else if history.length === 0}
+        <p class="empty">
+          No usage history recorded yet — readings build up here as the widget refreshes.
+        </p>
+      {:else}
+        {#each history as account (account.provider_id)}
+          <section class="history-account">
+            <h3>{accountName(account.provider_id)}</h3>
+            {#if account.points.length === 0}
+              <p class="empty">No readings recorded for this account.</p>
+            {:else}
+              <!-- Newest first: a readings list is read back-to-front. -->
+              <ul class="history-points">
+                {#each [...account.points].reverse() as point (point.at)}
+                  <li>
+                    <span class="history-when">{new Date(point.at).toLocaleString()}</span>
+                    {#if point.failed}<span class="history-failed">unavailable</span>{/if}
+                    {#each point.windows as [metricId, pct] (metricId)}
+                      <span class="history-window">{windowLabel(account.provider_id, metricId)} {Math.round(pct)}%</span>
+                    {/each}
+                    {#if point.credits_balance != null}
+                      <span class="history-credits">{point.credits_balance} {creditsUnit(account.provider_id)}</span>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </section>
         {/each}
       {/if}
     </div>
