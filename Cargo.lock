@@ -3204,7 +3204,7 @@ dependencies = [
 
 [[package]]
 name = "quota-core"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "argon2",
  "async-trait",
@@ -3228,7 +3228,7 @@ dependencies = [
 
 [[package]]
 name = "quota-widget"
-version = "0.28.1"
+version = "0.29.0"
 dependencies = [
  "android-native-keyring-store",
  "base64 0.22.1",
