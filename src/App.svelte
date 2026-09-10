@@ -5,12 +5,13 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { LogicalSize } from '@tauri-apps/api/dpi';
   import ProviderCard from './lib/shared/UsageCard.svelte';
+  import HistoryView from './lib/shared/HistoryView.svelte';
   import Settings from './lib/Settings.svelte';
   import { resetOpacity, stepOpacity } from './lib/opacity.js';
 
   const APP_VERSION = __QUOTA_WIDGET_VERSION__;
   const BUILD_BRANCH = __QUOTA_WIDGET_BRANCH__;
-  let view = $state('popup'); // 'popup' | 'settings'
+  let view = $state('popup'); // 'popup' | 'history' | 'settings'
   // The Settings return state: where a Settings visit goes when it exits
   // through Save & close, Back, or Escape. 'popup' | 'mini' | 'hidden'.
   // Captured per visit and never persisted — it describes what was on screen a
@@ -24,6 +25,46 @@
   let refreshing = $state(false);
   let headerEl = $state(null);
   let cardsEl = $state(null);
+
+  // The recorded usage history, loaded from the host each time the History
+  // tab is entered — an in-flight refresh may have grown it since the last
+  // visit. `null` until the first load resolves, which is the honest loading
+  // state; an empty array afterwards is the honest "nothing recorded yet".
+  let history = $state(null);
+  let historyLoading = $state(false);
+
+  // Raised by the retention control (Settings → Usage history) while a
+  // destructive cleaning-preview dialog is on screen (the parent/child Escape
+  // seam): the shell's own Escape meanings — hide to tray, leave Settings —
+  // yield until the dialog is gone, because Escape there is the dialog's
+  // cancel gesture. The startup-registered shell listener predates the
+  // control's, so the yield must travel by state, not by listener ordering.
+  let escSuspended = $state(false);
+
+  async function openHistory() {
+    view = 'history';
+    historyLoading = true;
+    try {
+      history = await invoke('get_usage_history');
+    } catch {
+      // No history to show is not a fatal state: show the empty tab rather
+      // than an error screen for a cosmetic surface.
+      history = [];
+    }
+    historyLoading = false;
+  }
+
+  // The retention control's two host calls (Slice 2). The control itself
+  // lives in Settings (→ Usage history) on both platforms, and these wires
+  // are threaded down to it. The preview is pure — it deletes nothing — and
+  // only the confirmed apply persists the policy and cleans; the component
+  // owns that gate, these are just the wires.
+  function previewRetention(policy) {
+    return invoke('preview_history_retention', { policy });
+  }
+  function applyRetention(policy) {
+    return invoke('set_history_retention', { policy });
+  }
 
   // First-run desktop integration, AppImage only. Shown once: whichever way it
   // is answered, Rust records that the question was put, so "Not now" is
@@ -148,6 +189,12 @@
     }).then((u) => unlisten.push(u));
     const esc = (e) => {
       if (e.key === 'Escape') {
+        // A destructive cleaning-preview dialog owns Escape while it is open:
+        // its own handler cancels it, and the shell must not also act on the
+        // same keypress (this handler registered before the retention
+        // control's, so the yield is by flag, not by event mechanics). See
+        // `escSuspended`.
+        if (escSuspended) return;
         // Escape out of Settings discards the unsaved draft — the component is
         // unmounted with it — and takes the same exit as Save & close.
         if (view === 'settings') leaveSettings();
@@ -201,8 +248,9 @@
   function fadeOnWheel(event) {
     if (!appConfig?.scroll_opacity) return;
     // The popup's actual content is scrollable, so only its chrome fades.
-    // Let the cards and the Settings form keep their normal wheel behaviour.
-    if (event.target.closest('.cards, .settings')) return;
+    // Let the cards, the Settings form and the History tab keep their normal
+    // wheel behaviour.
+    if (event.target.closest('.cards, .settings, .history')) return;
     if (stepOpacity(event.deltaY, 0.15, appConfig.scroll_opacity_invert)) event.preventDefault();
   }
 
@@ -214,6 +262,7 @@
     <span class="spacer" data-tauri-drag-region></span>
     {#if view === 'popup'}
       <button class="icon" title="Refresh now" class:spin={refreshing} onclick={refresh}>⟳</button>
+      <button class="icon" title="History" aria-label="History" onclick={openHistory}>◷</button>
       <button class="icon" title="Settings" onclick={openSettings}>⚙</button>
     {:else}
       <button class="icon" title="Back" onclick={backToUsage}>←</button>
@@ -274,9 +323,29 @@
         {/each}
       {/if}
     </div>
+  {:else if view === 'history'}
+    <div class="history">
+      {#if historyLoading || history === null}
+        <p class="empty">Loading…</p>
+      {:else if history.length === 0}
+        <p class="empty">
+          No usage history recorded yet — readings build up here as the widget refreshes.
+        </p>
+      {:else}
+        <HistoryView {history} {snapshots} />
+      {/if}
+    </div>
   {:else}
     {#if appConfig}
-      <Settings initialConfig={appConfig} {snapshots} onclose={leaveSettings} />
+      <Settings
+        initialConfig={appConfig}
+        {snapshots}
+        onclose={leaveSettings}
+        historyRetention={appConfig?.history_retention ?? 'forever'}
+        onpreview={previewRetention}
+        onapply={applyRetention}
+        onpreviewopenchange={(open) => (escSuspended = open)}
+      />
     {:else}
       <p class="empty">Loading…</p>
     {/if}

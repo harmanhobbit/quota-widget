@@ -118,6 +118,25 @@ Platform differences are small but real:
 - Where a provider reports exact allowance figures or you set a monthly budget,
   the main window shows remaining and total below the percentage meter. The
   compact summary and tray keep their percentage-only form for quick scanning.
+- **Usage history** builds up on its own: every refresh records each account's
+  readings (each usage window's percentage, the credits balance if the account
+  has one, and whether the reading failed), and a reading is only recorded when
+  the displayed figures changed since the last one — an account sitting still
+  adds nothing. The **History** tab (desktop popup and Android app) charts each
+  account's record: one line per usage window, a separate credits line where
+  the account has credits — percentages and money never share an axis — with a
+  time-range selector. Readings that failed are reported, never plotted as if
+  they were measurements.
+- **Retention** of that history is your choice, shared between desktop and
+  Android: *Forever* (the default), by age (days, weeks, months or years), or
+  by file size. Steady-state cleaning under the active policy happens
+  silently, but **tightening** the bound first shows exactly what would be
+  deleted — how many readings, covering what time span, and for a file-size
+  bound how many bytes — and deletes nothing until you confirm. Cancelling
+  changes nothing. History is kept per device, never synced, transferred or
+  exported, and a history file that cannot be read is kept aside (renamed
+  `usage-history.json.corrupt`) while recording starts over — the fault never
+  blocks refreshing.
 
 ## Provider setup
 

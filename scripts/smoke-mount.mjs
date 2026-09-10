@@ -7,6 +7,11 @@
 // doesn't open" rather than as any build failure. This mounts each top-level
 // component against jsdom with the Tauri IPC stubbed, so those throw here.
 //
+// Compiler warnings fail the run too: a Svelte warning marks code that does
+// not mean what it looks like (`state_referenced_locally`, for one, silently
+// pins a reactive value's initial value) — the same compiles-clean-but-
+// misbehaves class, caught one step earlier.
+//
 // Requires jsdom, which is deliberately NOT a package.json dependency —
 // adding one forces an npmDeps.hash regen in nix/package.nix. Install it
 // on demand:
@@ -151,6 +156,34 @@ const SNAPSHOTS = [
     windows: [],
   },
 ];
+
+// Recorded usage history spanning ~30 days, for the chart cases: two windows
+// on Claude (one day-5 reading is a failure, which must plot as a gap, not a
+// made-up point), and a credits-only OpenRouter. Anchored to now so range
+// arithmetic is stable whenever the suite runs.
+const HISTORY = (() => {
+  const day = (n) => new Date(Date.now() - n * 24 * 3600_000).toISOString();
+  return [
+    {
+      provider_id: 'claude',
+      points: Array.from({ length: 30 }, (_, i) => ({
+        at: day(29 - i),
+        windows: i === 24 ? [] : [['five_hour', 10 + i], ['weekly', 40 + i * 2]],
+        credits_balance: null,
+        failed: i === 24,
+      })),
+    },
+    {
+      provider_id: 'openrouter',
+      points: Array.from({ length: 30 }, (_, i) => ({
+        at: day(29 - i),
+        windows: [],
+        credits_balance: 10 - i * 0.2,
+        failed: false,
+      })),
+    },
+  ];
+})();
 
 // Reveal a top-level Settings disclosure (issue #184) so a case can drive the
 // controls that now start collapsed behind it. Idempotent — a section already
@@ -759,6 +792,490 @@ const CASES = [
       flushSync();
       if (shellCalls().length) {
         throw new Error(`a stale return state survived the reshow: ${shellCalls().join(',')}`);
+      }
+    },
+  },
+  // ---- Usage history (issue #211, Slice 1): the desktop History tab --------
+  //
+  // The tab mounts the shared HistoryView (Slice 2 replaced the plain list
+  // with charts): one section per recorded account, window labels and credit
+  // units looked up from the snapshots the app already holds, the failed
+  // reading left out of the line rather than invented, and Back returning to
+  // the popup.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    history: [
+      {
+        provider_id: 'claude',
+        points: [
+          { at: new Date(Date.now() - 3600_000).toISOString(), windows: [['five_hour', 42.4]], credits_balance: null, failed: false },
+          { at: new Date(Date.now() - 60_000).toISOString(), windows: [['five_hour', 87.2]], credits_balance: null, failed: false },
+          { at: new Date(Date.now() - 30_000).toISOString(), windows: [], credits_balance: null, failed: true },
+        ],
+      },
+      {
+        provider_id: 'openrouter',
+        points: [
+          { at: new Date(Date.now() - 120_000).toISOString(), windows: [], credits_balance: 3.42, failed: false },
+        ],
+      },
+    ],
+    verify: async ({ target, flushSync }) => {
+      target.querySelector('button[title="History"]').click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const history = target.querySelector('.history');
+      if (!history) throw new Error('the History button did not open the history tab');
+      // One section per recorded account, named from the snapshots.
+      const names = [...history.querySelectorAll('.history-account h3')].map((h) => h.textContent.trim());
+      if (names.join('|') !== 'Claude|OpenRouter') {
+        throw new Error(`account sections rendered as ${names.join('|')}`);
+      }
+      const text = history.textContent;
+      for (const expected of ['5h', 'USD']) {
+        if (!text.includes(expected)) {
+          throw new Error(`the charts are missing ${JSON.stringify(expected)}: ${text}`);
+        }
+      }
+      // A failed reading is a gap in the line, full stop: the red
+      // "unavailable reading(s) not plotted" note is gone from the component.
+      if (text.includes('unavailable')) {
+        throw new Error(`a removed unavailable-reading note is still rendered: ${text}`);
+      }
+      // Two plotted readings for Claude's five-hour line; the failed reading
+      // plots as a gap, never invented as a point.
+      const line = history.querySelector('.history-chart polyline[data-metric="five_hour"]');
+      if (!line) throw new Error('claude drew no five_hour line');
+      const coords = line.getAttribute('points').trim().split(/\s+/).filter(Boolean);
+      if (coords.length !== 2) throw new Error(`five_hour plotted ${coords.length} points, expected 2`);
+      // Back returns to the usage popup — the tab is one window, one view.
+      target.querySelector('button[title="Back"]').click();
+      flushSync();
+      if (target.querySelector('.history') || !target.querySelector('.cards')) {
+        throw new Error('Back did not return to the usage popup');
+      }
+    },
+  },
+  // An empty store is an honest state, not an error: the tab says nothing has
+  // been recorded yet rather than rendering a blank pane.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    history: [],
+    verify: async ({ target, flushSync }) => {
+      target.querySelector('button[title="History"]').click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!target.querySelector('.history')) throw new Error('empty history did not open the tab');
+      if (!target.textContent.includes('No usage history recorded yet')) {
+        throw new Error(`empty history showed no explanation: ${target.textContent}`);
+      }
+    },
+  },
+  // The History tab scrolls like the cards and the Settings form do, so a
+  // wheel over it keeps its normal meaning and must leave the window's fade
+  // level alone: only chrome outside the tab's own scroll surface may fade
+  // the window (the `.history` exclusion in fadeOnWheel). Before that
+  // exclusion, scrolling the recorded charts faded the whole window away.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    history: [
+      {
+        provider_id: 'claude',
+        points: [
+          { at: new Date(Date.now() - 3600_000).toISOString(), windows: [['five_hour', 42.4]], credits_balance: null, failed: false },
+          { at: new Date(Date.now() - 60_000).toISOString(), windows: [['five_hour', 87.2]], credits_balance: null, failed: false },
+        ],
+      },
+    ],
+    verify: async ({ target, flushSync }) => {
+      target.querySelector('button[title="History"]').click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const history = target.querySelector('.history');
+      if (!history) throw new Error('the History button did not open the history tab');
+      const opacity = () => document.documentElement.style.getPropertyValue('--window-opacity');
+      const before = opacity();
+      if (before !== '1') throw new Error(`the history tab did not open at full opacity: ${before}`);
+      history.dispatchEvent(new window.WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
+      flushSync();
+      if (opacity() !== before) {
+        throw new Error(`a wheel over the history tab faded the window: ${before} -> ${opacity()}`);
+      }
+    },
+  },
+  // ---- Slice 2 (#214): shared per-account charts ---------------------------
+  //
+  // One inline-SVG chart per account with one line per usage window, plus a
+  // separate credits chart where the account has credits — percentages and
+  // money are different quantities and never share an axis. Failed readings
+  // plot as gaps (the figures they carried were not new), and the range
+  // selector actually changes the plotted span.
+  {
+    file: 'src/lib/shared/HistoryView.svelte',
+    props: ($) => ({ history: $.proxy(structuredClone(HISTORY)), snapshots: $.proxy(structuredClone(SNAPSHOTS)) }),
+    expect: ['Claude', 'OpenRouter', '5h', 'Weekly', 'USD', '100%', '0%'],
+    verify: async ({ target, flushSync }) => {
+      // The whole history first — the default view is the last 7 days.
+      const select = target.querySelector('.history-range');
+      select.value = 'all';
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const sections = [...target.querySelectorAll('.history-account')];
+      if (sections.length !== 2) throw new Error(`expected 2 account sections, got ${sections.length}`);
+      const claude = sections[0];
+      // One line per usage window, keyed by metric id.
+      const lines = [...claude.querySelectorAll('.history-chart polyline')];
+      const metrics = lines.map((l) => l.getAttribute('data-metric')).sort();
+      if (metrics.join(',') !== 'five_hour,weekly') {
+        throw new Error(`window lines rendered as ${metrics.join(',')}`);
+      }
+      // 30 points, one failed with no figures: the line plots 29 real
+      // observations, never inventing a point for the gap.
+      const coords = lines[0].getAttribute('points').trim().split(/\s+/);
+      if (coords.length !== 29) throw new Error(`five_hour line plotted ${coords.length} points, expected 29 (gap for the failed reading)`);
+      // Percentages and money do not share a chart: Claude (no credits) has
+      // no credits chart, OpenRouter (credits only, no windows) has no
+      // percentage lines at all.
+      if (claude.querySelector('.credits-chart')) throw new Error('an account without credits drew a credits chart');
+      const openrouter = sections[1];
+      if (openrouter.querySelectorAll('.history-chart polyline').length) {
+        throw new Error('a credits-only account drew percentage lines');
+      }
+      if (!openrouter.querySelector('.credits-chart polyline.credits-line')) {
+        throw new Error('the credits balance drew no line');
+      }
+      // The credits line plots every non-failed point (30 here).
+      const creditCoords = openrouter.querySelector('.credits-line').getAttribute('points').trim().split(/\s+/);
+      if (creditCoords.length !== 30) throw new Error(`credits line plotted ${creditCoords.length} points, expected 30`);
+      // ---- Axis treatment: the charts must communicate their scale --------
+      // The percentage chart carries a fixed, labelled 0–100 scale: three
+      // gridlines (100/50/0) with a matching HTML label column, top first.
+      const pctGrid = claude.querySelectorAll('.history-chart .chart-grid');
+      if (pctGrid.length !== 3) throw new Error(`the percentage chart drew ${pctGrid.length} gridlines, expected 3`);
+      const pctY = [...claude.querySelectorAll('.history-chart .chart-y span')].map((s) => s.textContent);
+      if (pctY.join('|') !== '100%|50%|0%') throw new Error(`percentage scale labelled ${pctY.join('|')}`);
+      // A time axis under the plot: start, middle, end, all populated.
+      const xLabels = [...claude.querySelectorAll('.history-chart .chart-x span')].map((s) => s.textContent.trim());
+      if (xLabels.length !== 3 || xLabels.some((t) => !t)) {
+        throw new Error(`the time axis rendered as ${xLabels.join('|')}`);
+      }
+      // The credits chart gets its own value scale — never percentages —
+      // with one gridline per labelled tick.
+      const creditY = [...openrouter.querySelectorAll('.credits-chart .chart-y span')].map((s) => s.textContent);
+      if (creditY.length < 2 || creditY.some((t) => t.includes('%'))) {
+        throw new Error(`the credits scale is not its own quantity: ${creditY.join('|')}`);
+      }
+      if (openrouter.querySelectorAll('.credits-chart .chart-grid').length !== creditY.length) {
+        throw new Error('credits gridlines and their labels disagree');
+      }
+      // Line and scale agree: the plotted balances peak exactly at the axis
+      // top, so the line's oldest point starts at the very top of the plot.
+      const first = creditCoords[0];
+      if (first !== '0.00,0.00') throw new Error(`the credits line starts at ${first}, off its labelled scale`);
+      // The accessible names survive the axis work: role="img" on both
+      // charts, named for the account.
+      for (const svg of [claude.querySelector('.history-chart svg'), openrouter.querySelector('.credits-chart svg')]) {
+        if (svg.getAttribute('role') !== 'img' || !svg.getAttribute('aria-label').trim()) {
+          throw new Error(`a chart lost its accessible name: ${svg.getAttribute('aria-label')}`);
+        }
+      }
+    },
+  },
+  // Empty history mounts without throwing: the selector is there, no charts.
+  {
+    file: 'src/lib/shared/HistoryView.svelte',
+    props: ($) => ({ history: $.proxy([]), snapshots: $.proxy(structuredClone(SNAPSHOTS)) }),
+    expect: ['7 days'],
+    verify: ({ target }) => {
+      if (target.querySelector('.history-chart')) throw new Error('an empty history drew a chart');
+    },
+  },
+  // The range selector changes the plotted span: narrowing to 24 hours from a
+  // 30-day history shrinks every line to its last-day readings.
+  {
+    file: 'src/lib/shared/HistoryView.svelte',
+    props: ($) => ({ history: $.proxy(structuredClone(HISTORY)), snapshots: $.proxy(structuredClone(SNAPSHOTS)) }),
+    verify: ({ target, flushSync }) => {
+      const coordCount = () => [...target.querySelectorAll('polyline')]
+        .map((l) => l.getAttribute('points').trim().split(/\s+/).filter(Boolean).length);
+      const select = target.querySelector('.history-range');
+      // The full history first — the default view is the last 7 days, and
+      // this case is about the selector changing the span.
+      select.value = 'all';
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const all = coordCount();
+      if (!all.length || all.some((n) => n < 29)) {
+        throw new Error(`the full range did not plot the history: ${all.join(',')}`);
+      }
+      select.value = '24h';
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const narrowed = coordCount();
+      if (!narrowed.length || !narrowed.every((n) => n < all[0])) {
+        throw new Error(`narrowing to 24h did not shrink the span: ${all.join(',')} -> ${narrowed.join(',')}`);
+      }
+    },
+  },
+  // ---- Slice 2 (#214): the retention control and its cleaning preview ------
+  //
+  // A tighter policy previews exactly what would go (count, bytes, span) and
+  // applies nothing until confirmed; Cancel is inert — no apply call, and the
+  // draft returns to the saved policy. A looser policy or forever cleans
+  // nothing, so it applies with no preview at all.
+  {
+    file: 'src/lib/shared/HistoryRetention.svelte',
+    props: ($) => ({
+      policy: 'forever',
+      onpreview: async (p) => {
+        (globalThis.__SMOKE_RETENTION_CALLS__ ??= []).push(`preview:${JSON.stringify(p)}`);
+        return globalThis.__SMOKE_HISTORY_PREVIEW__ ?? { removed_count: 0, removed_bytes: null, oldest_kept: null, newest_removed: null };
+      },
+      onapply: async (p) => {
+        (globalThis.__SMOKE_RETENTION_CALLS__ ??= []).push(`apply:${JSON.stringify(p)}`);
+      },
+    }),
+    historyPreview: {
+      removed_count: 12,
+      removed_bytes: 20480,
+      oldest_kept: new Date(Date.now() - 2 * 24 * 3600_000).toISOString(),
+      newest_removed: new Date(Date.now() - 9 * 24 * 3600_000).toISOString(),
+    },
+    expect: ['Forever'],
+    verify: async ({ target, flushSync }) => {
+      const calls = () => globalThis.__SMOKE_RETENTION_CALLS__;
+      // Pick a tighter bound: age, 7 days.
+      const mode = target.querySelector('.retention-mode');
+      mode.value = 'age';
+      mode.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const amount = target.querySelector('.retention-amount');
+      amount.value = '7';
+      amount.dispatchEvent(new window.Event('input', { bubbles: true }));
+      flushSync();
+      // Applying it first PREVIEWS: the figures appear, nothing is applied.
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const dialog = target.querySelector('.cleaning-preview');
+      if (!dialog) throw new Error('a tighter policy showed no cleaning preview');
+      for (const expected of ['12', '20.0 KB', 'Clean history', 'Cancel']) {
+        if (!dialog.textContent.includes(expected)) {
+          throw new Error(`the preview is missing ${JSON.stringify(expected)}: ${dialog.textContent}`);
+        }
+      }
+      if (calls().some((c) => c.startsWith('apply:'))) {
+        throw new Error('the preview applied the policy before confirmation');
+      }
+      // While the dialog is up, the decision is frozen: the controls and the
+      // Apply button are locked, the dialog is marked modal and holds focus.
+      if (!target.querySelector('.retention-mode').disabled) {
+        throw new Error('the mode select stayed editable while the preview was open');
+      }
+      if (!amount.disabled) {
+        throw new Error('the amount input stayed editable while the preview was open');
+      }
+      if (!target.querySelector('.retention-apply').disabled) {
+        throw new Error('Apply stayed clickable while the preview was open');
+      }
+      if (dialog.getAttribute('aria-modal') !== 'true' || dialog.getAttribute('role') !== 'alertdialog') {
+        throw new Error(`the preview dialog is not a modal alertdialog: ${dialog.outerHTML.slice(0, 120)}`);
+      }
+      if (document.activeElement !== dialog) {
+        throw new Error(`focus did not land on the preview dialog: ${document.activeElement?.className}`);
+      }
+      // Escape over the dialog is the cancel gesture — and it must not fall
+      // through to the shell's other Escape meanings.
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      flushSync();
+      if (target.querySelector('.cleaning-preview')) throw new Error('Escape did not cancel the preview');
+      if (calls().some((c) => c.startsWith('apply:'))) throw new Error('Escape applied the policy');
+      // Re-open the preview and cancel with the button: still inert.
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      target.querySelector('.cleaning-cancel').click();
+      flushSync();
+      if (target.querySelector('.cleaning-preview')) throw new Error('Cancel left the preview up');
+      if (calls().some((c) => c.startsWith('apply:'))) throw new Error('Cancel applied the policy anyway');
+      // Confirming applies exactly the policy that was PREVIEWED — not
+      // whatever the draft says by the time the click lands. Re-open, then
+      // mutate the draft to a stricter bound despite the lock, and confirm:
+      // the applied policy must still be the previewed one.
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const draftAmount = target.querySelector('.retention-amount');
+      draftAmount.disabled = false; // simulate any draft change mid-dialog
+      draftAmount.value = '1';
+      draftAmount.dispatchEvent(new window.Event('input', { bubbles: true }));
+      flushSync();
+      target.querySelector('.cleaning-confirm').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const apply = calls().find((c) => c.startsWith('apply:'));
+      if (apply !== `apply:${JSON.stringify({ age: { unit: 'days', amount: 7 } })}`) {
+        throw new Error(`confirming applied a policy other than the previewed one: ${apply}`);
+      }
+      if (target.querySelector('.cleaning-preview')) throw new Error('the preview stayed up after applying');
+    },
+  },
+  // Forever loosens: it cleans nothing, so it applies immediately — no
+  // preview, no confirmation gate on a change that cannot delete anything.
+  {
+    file: 'src/lib/shared/HistoryRetention.svelte',
+    props: ($) => ({
+      policy: { age: { unit: 'days', amount: 7 } },
+      onpreview: async (p) => {
+        (globalThis.__SMOKE_RETENTION_CALLS__ ??= []).push(`preview:${JSON.stringify(p)}`);
+        return globalThis.__SMOKE_HISTORY_PREVIEW__ ?? { removed_count: 0, removed_bytes: null, oldest_kept: null, newest_removed: null };
+      },
+      onapply: async (p) => {
+        (globalThis.__SMOKE_RETENTION_CALLS__ ??= []).push(`apply:${JSON.stringify(p)}`);
+      },
+    }),
+    expect: ['Forever'],
+    verify: async ({ target, flushSync }) => {
+      const calls = () => globalThis.__SMOKE_RETENTION_CALLS__;
+      // The saved age policy round-trips into the draft controls: mode,
+      // amount, and the unit select the age mode reveals.
+      const mode = target.querySelector('.retention-mode');
+      if (mode.value !== 'age') throw new Error(`the saved age policy loaded as ${mode.value}`);
+      if (target.querySelector('.retention-amount')?.value !== '7') {
+        throw new Error(`the saved amount loaded as ${target.querySelector('.retention-amount')?.value}`);
+      }
+      if (target.querySelector('.retention-unit')?.value !== 'days') {
+        throw new Error(`the saved unit loaded as ${target.querySelector('.retention-unit')?.value}`);
+      }
+      // Back to forever: no preview, straight to apply.
+      mode.value = 'forever';
+      mode.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (calls().some((c) => c.startsWith('preview:'))) {
+        throw new Error('a loosening change previewed a cleaning it would never do');
+      }
+      if (!calls().includes(`apply:${JSON.stringify('forever')}`)) {
+        throw new Error(`forever did not apply: ${calls().join(',')}`);
+      }
+    },
+  },
+  // End to end through the desktop shell: the History tab hosts the charts
+  // and the range selector ONLY — retention is a Settings decision — and the
+  // retention control in Settings (→ Usage history) sends its preview/apply
+  // through the host commands (stubbed here) rather than any component-local
+  // shortcut.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    history: HISTORY,
+    historyPreview: {
+      removed_count: 4,
+      removed_bytes: null,
+      oldest_kept: new Date(Date.now() - 1 * 24 * 3600_000).toISOString(),
+      newest_removed: new Date(Date.now() - 20 * 24 * 3600_000).toISOString(),
+    },
+    verify: async ({ target, flushSync }) => {
+      target.querySelector('button[title="History"]').click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!target.querySelector('.history-account')) throw new Error('the tab rendered no charts');
+      if (target.querySelector('.retention-mode')) {
+        throw new Error('the History tab still hosts the retention control');
+      }
+      target.querySelector('button[title="Back"]').click();
+      flushSync();
+      // Tighten to age/30d through Settings: preview surfaces there, confirm
+      // reaches set_history_retention with the serde shape Rust expects.
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+      openSection(target, 'history', flushSync);
+      const mode = target.querySelector('.retention-mode');
+      mode.value = 'age';
+      mode.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const amount = target.querySelector('.retention-amount');
+      amount.value = '30';
+      amount.dispatchEvent(new window.Event('input', { bubbles: true }));
+      flushSync();
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!target.querySelector('.cleaning-preview')) {
+        throw new Error('tightening in Settings showed no cleaning preview');
+      }
+      target.querySelector('.cleaning-confirm').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (globalThis.__SMOKE_LAST_RETENTION__ === undefined) {
+        throw new Error('confirming never reached set_history_retention');
+      }
+      const saved = globalThis.__SMOKE_LAST_RETENTION__;
+      const expected = { age: { unit: 'days', amount: 30 } };
+      if (JSON.stringify(saved) !== JSON.stringify(expected)) {
+        throw new Error(`set_history_retention received ${JSON.stringify(saved)}`);
+      }
+    },
+  },
+  // Escape over an open cleaning preview belongs to the dialog's cancel: the
+  // shell's Escape meanings — leave Settings, hide to tray — must yield while
+  // the destructive decision is on screen (the shell's listener registered
+  // first at startup, so it yields by the parent/child flag, not by listener
+  // order), and must resume the moment the dialog is gone. The preview lives
+  // in Settings, so the shell meaning it defers is leaving Settings.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    historyPreview: {
+      removed_count: 3,
+      removed_bytes: null,
+      oldest_kept: new Date(Date.now() - 1 * 24 * 3600_000).toISOString(),
+      newest_removed: new Date(Date.now() - 20 * 24 * 3600_000).toISOString(),
+    },
+    verify: async ({ target, flushSync, emit, shellCalls }) => {
+      // A tray visit, so leaving Settings asks the shell for exit_settings —
+      // the meaning Escape must be shown to yield and then to resume.
+      emit('navigate', { view: 'settings', return_to: 'mini' });
+      openSection(target, 'history', flushSync);
+      const mode = target.querySelector('.retention-mode');
+      mode.value = 'age';
+      mode.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const amount = target.querySelector('.retention-amount');
+      amount.value = '7';
+      amount.dispatchEvent(new window.Event('input', { bubbles: true }));
+      flushSync();
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      if (!target.querySelector('.cleaning-preview')) {
+        throw new Error('no cleaning preview to test Escape against');
+      }
+      // Escape cancels the preview...
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      flushSync();
+      if (target.querySelector('.cleaning-preview')) {
+        throw new Error('Escape did not cancel the preview');
+      }
+      // ...and the shell must NOT have treated the same keypress as
+      // leaving Settings.
+      if (shellCalls().length) {
+        throw new Error(`Escape over the preview drove the shell: ${shellCalls().join(',')}`);
+      }
+      // With the dialog gone, the shell's own Escape meaning resumes.
+      window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      flushSync();
+      if (shellCalls().join(',') !== 'exit_settings:mini') {
+        throw new Error(`the shell Escape meaning did not resume: ${shellCalls().join(',')}`);
       }
     },
   },
@@ -2330,7 +2847,7 @@ const CASES = [
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     desktop: { state: 'absent', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
     verify: async ({ target, flushSync }) => {
-      const ids = ['providers', 'thresholds', 'alerts', 'general', 'backup', 'transfer', 'pairing', 'desktop'];
+      const ids = ['providers', 'thresholds', 'alerts', 'general', 'history', 'backup', 'transfer', 'pairing', 'desktop'];
       // Nothing is open on arrival: every heading is a real button that points
       // at a panel not yet in the DOM.
       for (const id of ids) {
@@ -2426,7 +2943,7 @@ const CASES = [
     props: () => ({}),
     config: { ...CONFIG, providers: { openrouter: provider({ enabled: true }) } },
     verify: async ({ target, flushSync }) => {
-      const ids = ['providers', 'transfer', 'pairing', 'ordering', 'thresholds', 'notifications', 'background'];
+      const ids = ['providers', 'transfer', 'pairing', 'ordering', 'thresholds', 'notifications', 'background', 'history'];
       target.querySelector('button[title="Settings"]').click();
       flushSync();
       if (!target.querySelector('.mobile-settings')) throw new Error('the gear did not open mobile Settings');
@@ -2511,6 +3028,113 @@ const CASES = [
       }
     },
   },
+  // ---- Usage history on Android (issue #211, Slice 3) ----------------------
+  //
+  // The phone shell gets the same History tab as the desktop by reusing the
+  // same shared HistoryView component — outcome parity is the shared
+  // component, not a mobile re-render. The tab opens from the list header,
+  // renders the recorded charts, and Back returns to the list. Retention is
+  // NOT on the tab: it lives in mobile Settings (→ Usage history), same as
+  // desktop.
+  {
+    file: 'src/mobile/MobileApp.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, providers: { openrouter: provider({ enabled: true }) } },
+    history: HISTORY,
+    verify: async ({ target, flushSync }) => {
+      if (!target.querySelector('button[title="History"]')) {
+        throw new Error('the mobile list header offered no History tab');
+      }
+      target.querySelector('button[title="History"]').click();
+      flushSync();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const history = target.querySelector('.history');
+      if (!history) throw new Error('the mobile History button did not open the history tab');
+      const names = [...history.querySelectorAll('.history-account h3')].map((h) => h.textContent.trim());
+      if (names.join('|') !== 'Claude|OpenRouter') {
+        throw new Error(`mobile account sections rendered as ${names.join('|')}`);
+      }
+      if (!history.querySelector('.credits-chart polyline.credits-line')) {
+        throw new Error('the mobile credits chart did not render');
+      }
+      // The tab is charts and range only — the retention control belongs to
+      // mobile Settings.
+      if (target.querySelector('.retention-mode')) {
+        throw new Error('the mobile history tab still hosts the retention control');
+      }
+      // The charts carry their axis treatment here too: a labelled
+      // percentage scale and a time axis, same as desktop.
+      const pctY = [...history.querySelectorAll('.history-chart .chart-y span')].map((s) => s.textContent);
+      if (pctY.join('|') !== '100%|50%|0%') throw new Error(`mobile percentage scale labelled ${pctY.join('|')}`);
+      if (!history.querySelector('.history-chart .chart-x span')) throw new Error('mobile chart drew no time axis');
+      // Back returns to the usage list.
+      target.querySelector('.mobile-header button[title="Back"]').click();
+      flushSync();
+      if (target.querySelector('.history') || !target.querySelector('.cards')) {
+        throw new Error('mobile Back did not return to the usage list');
+      }
+      // The shared retention control surfaces in mobile Settings instead,
+      // seeded from the config the shell already holds.
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+      openSection(target, 'history', flushSync);
+      if (!target.querySelector('.retention-mode')) {
+        throw new Error('mobile Settings offered no retention control');
+      }
+    },
+  },
+  // The retention flow on Android goes through the same commands with the
+  // same contract, now from mobile Settings (→ Usage history): preview first,
+  // confirm to apply, Cancel inert.
+  {
+    file: 'src/mobile/MobileApp.svelte',
+    props: () => ({}),
+    config: { ...CONFIG, providers: { openrouter: provider({ enabled: true }) } },
+    historyPreview: {
+      removed_count: 9,
+      removed_bytes: 4096,
+      oldest_kept: new Date(Date.now() - 1 * 24 * 3600_000).toISOString(),
+      newest_removed: new Date(Date.now() - 15 * 24 * 3600_000).toISOString(),
+    },
+    verify: async ({ target, flushSync }) => {
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+      openSection(target, 'history', flushSync);
+      const mode = target.querySelector('.retention-mode');
+      mode.value = 'age';
+      mode.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const amount = target.querySelector('.retention-amount');
+      amount.value = '14';
+      amount.dispatchEvent(new window.Event('input', { bubbles: true }));
+      flushSync();
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const dialog = target.querySelector('.cleaning-preview');
+      if (!dialog?.textContent.includes('9')) {
+        throw new Error(`the mobile cleaning preview did not show: ${dialog?.textContent}`);
+      }
+      // Cancel first: inert, nothing applied.
+      dialog.querySelector('.cleaning-cancel').click();
+      flushSync();
+      if (globalThis.__SMOKE_LAST_RETENTION__ !== undefined) {
+        throw new Error('mobile Cancel applied the policy anyway');
+      }
+      // Then confirm: set_history_retention receives the serde shape.
+      target.querySelector('.retention-apply').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      target.querySelector('.cleaning-confirm').click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      flushSync();
+      const saved = globalThis.__SMOKE_LAST_RETENTION__;
+      if (JSON.stringify(saved) !== JSON.stringify({ age: { unit: 'days', amount: 14 } })) {
+        throw new Error(`mobile confirm applied ${JSON.stringify(saved)}`);
+      }
+    },
+  },
 ];
 
 function stubTauri() {
@@ -2521,6 +3145,23 @@ export async function invoke(cmd, args) {
   switch (cmd) {
     case 'get_snapshots': if (globalThis.__SMOKE_SNAPSHOTS_ERROR__) throw new Error('IPC unavailable'); return { ...(globalThis.__SMOKE_CONFIG__ ?? ${JSON.stringify({ snapshots: SNAPSHOTS, config: CONFIG })}), config_recovery: globalThis.__SMOKE_RECOVERY__ ?? null };
     case 'app_version': return '0.0.0-test';
+    // Usage history (issue #211): the tab's one read. The per-case
+    // __SMOKE_HISTORY__ decides what is recorded; null (the default) is the
+    // honest empty store.
+    case 'get_usage_history': return globalThis.__SMOKE_HISTORY__ ?? [];
+    // Retention preview/apply (issue #211, Slice 2). The preview is pure: it
+    // records what it was asked and answers from __SMOKE_HISTORY_PREVIEW__,
+    // whose removed_count decides whether the component may show the
+    // confirmation before any apply reaches set_history_retention.
+    case 'preview_history_retention': {
+      (globalThis.__SMOKE_RETENTION_CALLS__ ??= []).push(\`preview:\${JSON.stringify(args.policy)}\`);
+      return globalThis.__SMOKE_HISTORY_PREVIEW__ ?? { removed_count: 0, removed_bytes: null, oldest_kept: null, newest_removed: null };
+    }
+    case 'set_history_retention': {
+      (globalThis.__SMOKE_RETENTION_CALLS__ ??= []).push(\`apply:\${JSON.stringify(args.policy)}\`);
+      globalThis.__SMOKE_LAST_RETENTION__ = args.policy;
+      return { removed_count: 0, removed_bytes: null, oldest_kept: null, newest_removed: null };
+    }
     case 'has_secret': return false;
     case 'on_wayland': return true;
     case 'set_config':
@@ -2774,12 +3415,22 @@ function rewriteTauriImports(code, rel) {
 
 // Compile a component and its local .svelte imports, rewriting bare Tauri
 // specifiers to the stubs above.
+//
+// Warnings are collected and reported, not swallowed: each prints where and
+// what as it is found, and any warning at all fails the run (see the tail of
+// the script). Files compile once each (`built`), so a warning cannot repeat.
 const built = new Set();
+const compileWarnings = [];
 function build(rel) {
   if (built.has(rel)) return join(WORK, rel.replace(/\.svelte$/, '.js'));
   built.add(rel);
   const src = readFileSync(join(ROOT, rel), 'utf8');
-  const { js } = compile(src, { generate: 'client', filename: rel });
+  const { js, warnings } = compile(src, { generate: 'client', filename: rel });
+  for (const w of warnings) {
+    compileWarnings.push(w);
+    const at = w.start ? `${rel}:${w.start.line}` : rel;
+    console.error(`WARN ${at} ${w.code}\n      ${w.message.split('\n').join('\n      ')}`);
+  }
   let code = rewriteTauriImports(js.code, rel);
   // Recurse into sibling component imports so App pulls in its children.
   for (const m of code.matchAll(/from\s+'(\.[^']*\.svelte)'/g)) {
@@ -2877,6 +3528,10 @@ for (const c of CASES) {
     globalThis.__SMOKE_LAN_ADDRESS__ = c.lanAddress ?? ['192.168.1.20:45454'];
     globalThis.__SMOKE_LAN_SEND_ERROR__ = '';
     globalThis.__SMOKE_LAN_START_ERROR__ = '';
+    globalThis.__SMOKE_HISTORY__ = c.history ?? null;
+    globalThis.__SMOKE_HISTORY_PREVIEW__ = c.historyPreview ?? null;
+    globalThis.__SMOKE_RETENTION_CALLS__ = [];
+    globalThis.__SMOKE_LAST_RETENTION__ = undefined;
     app = mount((await import(build(c.file))).default, { target, props: c.props($) });
     flushSync();
     await new Promise((r) => setTimeout(r, 60)); // let onMount's awaits settle
@@ -2914,8 +3569,14 @@ for (const c of CASES) {
 }
 
 rmSync(WORK, { recursive: true, force: true });
-if (failed) {
-  console.error(`\nsmoke-mount: ${failed} component(s) failed to render`);
+if (failed || compileWarnings.length) {
+  if (failed) console.error(`\nsmoke-mount: ${failed} component(s) failed to render`);
+  if (compileWarnings.length) {
+    console.error(`\nsmoke-mount: ${compileWarnings.length} compiler warning(s) — warnings fail the run`);
+    for (const w of compileWarnings) {
+      console.error(`  ${w.filename ?? '?'}:${w.start ? w.start.line : '?'} ${w.code}`);
+    }
+  }
   process.exit(1);
 }
-console.log('\nsmoke-mount: all components mounted and rendered');
+console.log('\nsmoke-mount: all components mounted and rendered, warning-free');

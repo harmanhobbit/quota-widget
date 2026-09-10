@@ -337,3 +337,35 @@ is lost, because nothing else holds the key. It is the backup and
 disaster-recovery form of a transfer, and doubles as an offline way to provision
 a device that cannot [[device pairing|pair]] live.
 _Avoid_: Backup file, key dump, plaintext export
+
+**Usage history**:
+The retained, append-over-time record of an [[account]]'s past quota readings,
+distinct from the current-state snapshot store.
+_Avoid_: Snapshot log, usage log, history cache
+
+**History point**:
+One recorded observation for one [[account]] at a moment: each [[usage
+window]]'s percentage, the [[credits|credits balance]] if any, and whether the
+reading was a failure. Written only when it differs from the account's last
+point (see Coalescing).
+_Avoid_: Sample, datapoint, snapshot
+
+**Retention policy**:
+The rule bounding how much [[usage history]] is kept: *forever*, an *age* bound
+(a count of days / weeks / months / years), or a *file-size* bound. Part of
+[[shared configuration]], so its meaning is common to every platform.
+_Avoid_: History limit, expiry, TTL
+
+**History cleaning**:
+Deleting the [[history point]]s that fall outside the active [[retention
+policy]]. Happens silently in steady state under the active policy; a *policy
+change to a tighter bound* is gated (see Cleaning preview).
+_Avoid_: Purge, prune, trim, cleanup
+
+**Cleaning preview**:
+The summary shown before a [[retention policy]] change that would delete
+history takes effect: how many points, what time span, and (for a file-size
+bound) how many bytes would be removed. Confirming applies the change and the
+cleaning together; cancelling changes nothing and deletes nothing. A change to
+*forever* or to a looser bound previews nothing because it cleans nothing.
+_Avoid_: Deletion warning, confirm dialog, prune preview

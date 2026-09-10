@@ -982,3 +982,172 @@ select option {
 .schedule-day span {
   font-size: 12px;
 }
+
+/* History tab: a plain per-account readings list. Quiet by design — the
+   figures are the content, so the chrome stays out of the way the way the
+   usage cards do. */
+.history {
+  padding: 8px 12px 16px;
+  overflow-y: auto;
+}
+
+.history-account h3 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+}
+
+.history-points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.history-points li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.history-when {
+  color: var(--muted);
+  min-width: 0;
+}
+
+.history-failed {
+  color: var(--critical);
+  font-size: 11px;
+}
+
+/* History charts (shared HistoryView). Sparkline-style SVGs on a fixed
+   viewBox, stretched to the pane; non-scaling strokes keep the lines 1px
+   whatever the stretch. Colours are presentation only — the legend text
+   carries the meaning. */
+.history-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.history-range-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Axis treatment, shared by both chart kinds. Gridlines are SVG so they
+   stretch with the pane and stay 1px via non-scaling strokes; the tick
+   labels are HTML around the plot, because text inside a non-uniformly
+   scaled viewBox would distort. The X row is offset by the Y gutter
+   (26px + the 4px gap) so its labels line up with the plot. */
+.chart-plot {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.chart-y {
+  display: flex;
+  flex: 0 0 26px;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--muted);
+  text-align: right;
+}
+
+.history-chart svg,
+.credits-chart svg {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  height: 56px;
+}
+
+.chart-grid {
+  stroke: var(--border);
+}
+
+.chart-x {
+  display: flex;
+  justify-content: space-between;
+  margin-left: 30px; /* the Y-label gutter plus its gap */
+  font-size: 9px;
+  color: var(--muted);
+}
+
+.usage-line {
+  fill: none;
+  stroke: var(--muted);
+}
+
+.usage-line:nth-of-type(1) {
+  stroke: #4c9be8;
+}
+
+.usage-line:nth-of-type(2) {
+  stroke: #e6a817;
+}
+
+.usage-line:nth-of-type(3) {
+  stroke: #9a6dd7;
+}
+
+.credits-line {
+  fill: none;
+  stroke: #2fa46a;
+}
+
+.history-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Retention control + cleaning preview. The preview is louder than the rest
+   of the tab on purpose: it is the last word before history is deleted. */
+.history-retention {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.cleaning-preview {
+  flex-basis: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+}
+
+.cleaning-preview p {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.cleaning-warning {
+  color: var(--critical);
+}
+
+.cleaning-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

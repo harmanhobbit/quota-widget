@@ -8,8 +8,17 @@
   import { qrTransferFrames, lanPairingSend, lanPairingReceiveStart, lanPairingCancel, lanPairingGenerateCode } from './host.js';
   import { runLanSend, runLanReceiveWait, handleLanResult } from './lanPairing.js';
   import Disclosure from './shared/Disclosure.svelte';
+  import HistoryRetention from './shared/HistoryRetention.svelte';
 
-  let { onclose, initialConfig, snapshots = [] } = $props();
+  // The retention control for [[usage history]] lives here (→ Usage history),
+  // not on the History tab — that tab is for reading the record, this panel
+  // decides everything that governs it. The policy's wires (preview/apply and
+  // the parent/child Escape seam) cross from App, which owns the host calls;
+  // see HistoryRetention for the one-flow contract they serve.
+  //
+  // [[usage history]]: ../../CONTEXT.md
+  // [[retention policy]]: ../../CONTEXT.md
+  let { onclose, initialConfig, snapshots = [], historyRetention = 'forever', onpreview, onapply, onpreviewopenchange } = $props();
 
   const PROVIDERS = [
     { id: 'claude', name: 'Claude', secret: null, note: 'Uses the Claude Code CLI login if present, or the built-in browser sign-in below.' },
@@ -86,6 +95,7 @@
     thresholds: false,
     alerts: false,
     general: false,
+    history: false,
     backup: false,
     transfer: false,
     pairing: false,
@@ -1423,6 +1433,18 @@
           restores it.
         </p>
       {/if}
+    </Disclosure>
+
+    <!-- Usage history retention (shared HistoryRetention, also on Android):
+         how much recorded history is kept. Applying a tighter bound previews
+         exactly what would be deleted and deletes nothing until confirmed. -->
+    <Disclosure id="history" title="Usage history" bind:open={openSections.history}>
+      <HistoryRetention
+        policy={historyRetention}
+        {onpreview}
+        {onapply}
+        {onpreviewopenchange}
+      />
     </Disclosure>
 
     <Disclosure id="backup" title="Backup" bind:open={openSections.backup}>

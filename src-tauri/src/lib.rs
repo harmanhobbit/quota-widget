@@ -213,6 +213,94 @@ mod desktop_app {
         env!("CARGO_PKG_VERSION")
     }
 
+    /// One account's recorded [[usage history]] for the History tab. Points
+    /// only, keyed by the account's `String` identity: history deliberately
+    /// keeps quantities rather than display labels, so the tab names accounts
+    /// from the snapshots it already has (and falls back to the key for an
+    /// account that has since been removed).
+    ///
+    /// [[usage history]]: ../../../CONTEXT.md
+    #[derive(serde::Serialize)]
+    struct AccountHistory {
+        provider_id: String,
+        points: Vec<quota_core::history::HistoryPoint>,
+    }
+
+    /// The recorded usage history, as the History tab renders it. A plain
+    /// read: retention has already been applied at record time, and a corrupt
+    /// store renames itself aside per quota-core's policy rather than erroring
+    /// here. Safe without the store lock — saves publish by atomic rename.
+    #[tauri::command]
+    async fn get_usage_history(
+        state: tauri::State<'_, Arc<AppState>>,
+    ) -> Result<Vec<AccountHistory>, String> {
+        let history = quota_core::history::UsageHistory::load(&state.config_dir);
+        Ok(history
+            .accounts
+            .into_iter()
+            .map(|(provider_id, points)| AccountHistory {
+                provider_id,
+                points,
+            })
+            .collect())
+    }
+
+    /// The [[cleaning preview]] for a candidate [[retention policy]]: exactly
+    /// what applying it would remove, computed by quota-core's pure
+    /// `preview_prune` over the store as it is right now. This command deletes
+    /// nothing and persists nothing — only [`set_history_retention`] does,
+    /// and only once the user has confirmed the figures this returned.
+    ///
+    /// [[cleaning preview]]: ../../../CONTEXT.md
+    /// [[retention policy]]: ../../../CONTEXT.md
+    #[tauri::command]
+    async fn preview_history_retention(
+        state: tauri::State<'_, Arc<AppState>>,
+        policy: quota_core::history::HistoryRetention,
+    ) -> Result<quota_core::history::PrunePreview, String> {
+        let history = quota_core::history::UsageHistory::load(&state.config_dir);
+        Ok(history.preview_prune(&policy, chrono::Utc::now()))
+    }
+
+    /// The confirmed retention change: persist the policy through the ordinary
+    /// configuration save, then apply the cleaning it implies under the store
+    /// lock. The figures removed are the same partition the preview showed —
+    /// preview and apply are one contract in quota-core, which is precisely
+    /// why they cannot drift. `apply_config` then mirrors the new policy into
+    /// in-memory state and broadcasts it, and the next poll's capture prunes
+    /// under it too.
+    ///
+    /// Ordering and failure: the policy is persisted FIRST, so from that
+    /// moment memory must agree with disk whichever way the cleaning goes —
+    /// hence the config is mirrored and broadcast even when the cleaning
+    /// errors, and the error is reported on top. The cleaning itself is
+    /// convergent (the next record's steady-state prune applies the same
+    /// bound), so a failed clean never leaves a store the policy disagrees
+    /// with for long; what it must never do is leave in-memory policy stale
+    /// over a persisted one.
+    #[tauri::command]
+    async fn set_history_retention(
+        app: tauri::AppHandle,
+        state: tauri::State<'_, Arc<AppState>>,
+        policy: quota_core::history::HistoryRetention,
+    ) -> Result<quota_core::history::PrunePreview, String> {
+        let mut cfg = state.config.read().await.clone();
+        cfg.history_retention = policy;
+        cfg.save(&state.config_dir).map_err(|e| e.to_string())?;
+        let cleaned = quota_core::history::UsageHistory::apply_policy(
+            &state.config_dir,
+            &policy,
+            chrono::Utc::now(),
+        )
+        .map_err(|e| e.to_string());
+        let mirrored = apply_config(app, state, cfg).await;
+        match (cleaned, mirrored) {
+            (Ok(removed), Ok(())) => Ok(removed),
+            (Err(e), _) => Err(e),
+            (_, Err(e)) => Err(e),
+        }
+    }
+
     #[tauri::command]
     async fn set_config(
         app: tauri::AppHandle,
@@ -735,6 +823,9 @@ mod desktop_app {
             .invoke_handler(tauri::generate_handler![
                 get_snapshots,
                 app_version,
+                get_usage_history,
+                preview_history_retention,
+                set_history_retention,
                 set_config,
                 recover_config,
                 set_secret,

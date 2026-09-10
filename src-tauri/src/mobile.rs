@@ -429,6 +429,93 @@ async fn refresh_once(app: &tauri::AppHandle, state: &Arc<MobileState>) {
             }
         }
     }
+    // Usage history: record + prune + save through the shared capture seam —
+    // the parity point of the whole feature. The foreground path records
+    // exactly what the desktop poller and the background worker record from
+    // the same outcome. Best-effort by contract: the read model above has
+    // already been delivered, so a history fault never fails the refresh.
+    if let Err(e) = quota_core::history::UsageHistory::capture(
+        &state.config_dir,
+        &outcome,
+        &cfg.history_retention,
+        chrono::Utc::now(),
+    ) {
+        eprintln!("[mobile] recording usage history failed: {e}");
+    }
+}
+
+// ---- Usage history (issue #211, Slice 3) ------------------------------------
+//
+// The same three commands desktop registers, against this host's state — the
+// shared history components never assume a host, and retention is shared
+// configuration, so the phone's contract is byte-for-byte the desktop's:
+// preview deletes and persists nothing, and only the confirmed set persists
+// the policy and applies the cleaning it previewed.
+
+/// One account's recorded usage history for the History tab. Points only,
+/// keyed by the account's `String` identity; the tab names accounts from the
+/// snapshots it already holds.
+#[derive(serde::Serialize)]
+struct AccountHistory {
+    provider_id: String,
+    points: Vec<quota_core::history::HistoryPoint>,
+}
+
+#[tauri::command]
+async fn get_usage_history(
+    state: tauri::State<'_, Arc<MobileState>>,
+) -> Result<Vec<AccountHistory>, String> {
+    let history = quota_core::history::UsageHistory::load(&state.config_dir);
+    Ok(history
+        .accounts
+        .into_iter()
+        .map(|(provider_id, points)| AccountHistory {
+            provider_id,
+            points,
+        })
+        .collect())
+}
+
+/// The pure cleaning preview for a candidate retention policy: exactly what
+/// applying it would remove. Deletes nothing, persists nothing.
+#[tauri::command]
+async fn preview_history_retention(
+    state: tauri::State<'_, Arc<MobileState>>,
+    policy: quota_core::history::HistoryRetention,
+) -> Result<quota_core::history::PrunePreview, String> {
+    let history = quota_core::history::UsageHistory::load(&state.config_dir);
+    Ok(history.preview_prune(&policy, chrono::Utc::now()))
+}
+
+/// The confirmed retention change: persist the policy (the ordinary config
+/// save — `Config::save` coordinates through the store lock itself), then
+/// apply the cleaning it implies under the lock, then mirror and broadcast —
+/// the mobile tail of desktop's `apply_config`, minus the tray/autostart
+/// concerns that do not exist here.
+///
+/// Ordering and failure mirror desktop's command: the policy is persisted
+/// first, so memory is mirrored and the config broadcast even when the
+/// cleaning errors (it is convergent — the next record's prune applies the
+/// same bound), and the cleaning failure is reported on top rather than
+/// leaving in-memory policy stale over a persisted one.
+#[tauri::command]
+async fn set_history_retention(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<MobileState>>,
+    policy: quota_core::history::HistoryRetention,
+) -> Result<quota_core::history::PrunePreview, String> {
+    let mut cfg = state.config.read().await.clone();
+    cfg.history_retention = policy;
+    cfg.save(&state.config_dir).map_err(|e| e.to_string())?;
+    let cleaned = quota_core::history::UsageHistory::apply_policy(
+        &state.config_dir,
+        &policy,
+        chrono::Utc::now(),
+    )
+    .map_err(|e| e.to_string());
+    *state.config.write().await = cfg.clone();
+    let _ = app.emit("config", &cfg);
+    cleaned
 }
 
 // ---- Notification permission (issue #112) ----------------------------------
@@ -1027,6 +1114,9 @@ pub fn run() {
             refresh_now,
             refresh_manual,
             test_provider,
+            get_usage_history,
+            preview_history_retention,
+            set_history_retention,
             notification_permission_state,
             request_notification_permission,
             open_notification_settings,

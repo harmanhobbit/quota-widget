@@ -93,6 +93,14 @@ export const lanPairingSend = (code, address) => invoke('lan_pairing_send', { co
 export const lanPairingReceiveStart = (code) => invoke('lan_pairing_receive_start', { code });
 export const lanPairingCancel = () => invoke('lan_pairing_cancel');
 
+// Usage history (issue #211). The same command set both shells register, so
+// the shared history components (HistoryView, HistoryRetention) never assume
+// a host — the desktop tab and the Android tab call through these identical
+// wires, which is the parity point of the whole feature.
+export const getUsageHistory = () => invoke('get_usage_history');
+export const previewHistoryRetention = (policy) => invoke('preview_history_retention', { policy });
+export const setHistoryRetention = (policy) => invoke('set_history_retention', { policy });
+
 export const qrScan = async (options) =>
   (await import('@tauri-apps/plugin-barcode-scanner')).scan(options);
 export const qrCancelScan = async () => (await import('@tauri-apps/plugin-barcode-scanner')).cancel();
