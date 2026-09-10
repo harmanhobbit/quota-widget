@@ -800,7 +800,8 @@ const CASES = [
   // The tab mounts the shared HistoryView (Slice 2 replaced the plain list
   // with charts): one section per recorded account, window labels and credit
   // units looked up from the snapshots the app already holds, the failed
-  // reading reported rather than invented, and Back returning to the popup.
+  // reading left out of the line rather than invented, and Back returning to
+  // the popup.
   {
     file: 'src/App.svelte',
     props: () => ({}),
@@ -833,13 +834,18 @@ const CASES = [
         throw new Error(`account sections rendered as ${names.join('|')}`);
       }
       const text = history.textContent;
-      for (const expected of ['5h', 'USD', 'unavailable']) {
+      for (const expected of ['5h', 'USD']) {
         if (!text.includes(expected)) {
           throw new Error(`the charts are missing ${JSON.stringify(expected)}: ${text}`);
         }
       }
+      // A failed reading is a gap in the line, full stop: the red
+      // "unavailable reading(s) not plotted" note is gone from the component.
+      if (text.includes('unavailable')) {
+        throw new Error(`a removed unavailable-reading note is still rendered: ${text}`);
+      }
       // Two plotted readings for Claude's five-hour line; the failed reading
-      // is reported, never invented as a point.
+      // plots as a gap, never invented as a point.
       const line = history.querySelector('.history-chart polyline[data-metric="five_hour"]');
       if (!line) throw new Error('claude drew no five_hour line');
       const coords = line.getAttribute('points').trim().split(/\s+/).filter(Boolean);

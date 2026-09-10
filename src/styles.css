@@ -1117,12 +1117,6 @@ select option {
   color: var(--muted);
 }
 
-.history-note {
-  margin: 2px 0 0;
-  font-size: 11px;
-  color: var(--critical);
-}
-
 /* Retention control + cleaning preview. The preview is louder than the rest
    of the tab on purpose: it is the last word before history is deleted. */
 .history-retention {

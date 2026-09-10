@@ -11,9 +11,9 @@
   // What is plotted: the figures an account actually reported. A failed
   // reading is never plotted — the figures a failure may carry were preserved
   // from an earlier success ([[stale reading]]), so charting them at record
-  // time would invent a movement that never happened; the note under the
-  // chart reports them instead. The host's readings surface (or this note) is
-  // where failures live, not the line.
+  // time would invent a movement that never happened. A failure simply leaves
+  // a gap in the line; the host's readings surface is where failures live,
+  // not the chart.
   //
   // Scale and axes: a sparkline without scale reads as shape, not data, so
   // every chart carries gridlines and axis labels. The gridlines are SVG
@@ -167,7 +167,6 @@
           coords: creditCoords(creditPoints, axis, t0, t1),
         };
       }
-      const failedInRange = plotted.filter((p) => p.failed).length;
       const hasPlotted = windowLines.some((l) => l.coords) || credits !== null;
       return {
         id: account.provider_id,
@@ -177,7 +176,6 @@
         // The plotted span's time labels: start, middle, end — the X axis
         // every chart in this account shares.
         xLabels: [t0, (t0 + t1) / 2, t1].map((t) => rangeLabel(t, rangeKey)),
-        failedInRange,
         hasPlotted,
       };
     });
@@ -262,11 +260,6 @@
           </div>
           <p class="history-legend">
             <span class="legend-item">{account.credits.unit || 'Credits'}</span>
-          </p>
-        {/if}
-        {#if account.failedInRange > 0}
-          <p class="history-note">
-            {account.failedInRange} unavailable reading{account.failedInRange === 1 ? '' : 's'} not plotted.
           </p>
         {/if}
       {/if}
