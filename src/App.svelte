@@ -6,7 +6,6 @@
   import { LogicalSize } from '@tauri-apps/api/dpi';
   import ProviderCard from './lib/shared/UsageCard.svelte';
   import HistoryView from './lib/shared/HistoryView.svelte';
-  import HistoryRetention from './lib/shared/HistoryRetention.svelte';
   import Settings from './lib/Settings.svelte';
   import { resetOpacity, stepOpacity } from './lib/opacity.js';
 
@@ -34,12 +33,12 @@
   let history = $state(null);
   let historyLoading = $state(false);
 
-  // Raised by the History tab's retention control while a destructive
-  // cleaning-preview dialog is on screen (the parent/child Escape seam): the
-  // shell's own Escape meanings — hide to tray, leave Settings — yield until
-  // the dialog is gone, because Escape there is the dialog's cancel gesture.
-  // The startup-registered shell listener predates the tab's, so the yield
-  // must travel by state, not by listener ordering.
+  // Raised by the retention control (Settings → Usage history) while a
+  // destructive cleaning-preview dialog is on screen (the parent/child Escape
+  // seam): the shell's own Escape meanings — hide to tray, leave Settings —
+  // yield until the dialog is gone, because Escape there is the dialog's
+  // cancel gesture. The startup-registered shell listener predates the
+  // control's, so the yield must travel by state, not by listener ordering.
   let escSuspended = $state(false);
 
   async function openHistory() {
@@ -55,9 +54,11 @@
     historyLoading = false;
   }
 
-  // The retention control's two host calls (Slice 2). The preview is pure —
-  // it deletes nothing — and only the confirmed apply persists the policy and
-  // cleans; the component owns that gate, these are just the wires.
+  // The retention control's two host calls (Slice 2). The control itself
+  // lives in Settings (→ Usage history) on both platforms, and these wires
+  // are threaded down to it. The preview is pure — it deletes nothing — and
+  // only the confirmed apply persists the policy and cleans; the component
+  // owns that gate, these are just the wires.
   function previewRetention(policy) {
     return invoke('preview_history_retention', { policy });
   }
@@ -190,8 +191,9 @@
       if (e.key === 'Escape') {
         // A destructive cleaning-preview dialog owns Escape while it is open:
         // its own handler cancels it, and the shell must not also act on the
-        // same keypress (this handler registered before the tab's, so the
-        // yield is by flag, not by event mechanics). See `escSuspended`.
+        // same keypress (this handler registered before the retention
+        // control's, so the yield is by flag, not by event mechanics). See
+        // `escSuspended`.
         if (escSuspended) return;
         // Escape out of Settings discards the unsaved draft — the component is
         // unmounted with it — and takes the same exit as Save & close.
@@ -323,12 +325,6 @@
     </div>
   {:else if view === 'history'}
     <div class="history">
-      <HistoryRetention
-        policy={appConfig?.history_retention ?? 'forever'}
-        onpreview={previewRetention}
-        onapply={applyRetention}
-        onpreviewopenchange={(open) => (escSuspended = open)}
-      />
       {#if historyLoading || history === null}
         <p class="empty">Loading…</p>
       {:else if history.length === 0}
@@ -341,7 +337,15 @@
     </div>
   {:else}
     {#if appConfig}
-      <Settings initialConfig={appConfig} {snapshots} onclose={leaveSettings} />
+      <Settings
+        initialConfig={appConfig}
+        {snapshots}
+        onclose={leaveSettings}
+        historyRetention={appConfig?.history_retention ?? 'forever'}
+        onpreview={previewRetention}
+        onapply={applyRetention}
+        onpreviewopenchange={(open) => (escSuspended = open)}
+      />
     {:else}
       <p class="empty">Loading…</p>
     {/if}

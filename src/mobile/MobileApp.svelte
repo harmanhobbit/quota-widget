@@ -124,6 +124,7 @@
     thresholds: false,
     notifications: false,
     background: false,
+    history: false,
   });
   let openSections = $state(collapsedSections());
   let snapshots = $state([]);
@@ -512,11 +513,6 @@
     </div>
   {:else if view === 'history'}
     <div class="history mobile-history">
-      <HistoryRetention
-        policy={config?.history_retention ?? 'forever'}
-        onpreview={previewHistoryRetention}
-        onapply={setHistoryRetention}
-      />
       {#if historyLoading || history === null}
         <p class="empty">Loading…</p>
       {:else if history.length === 0}
@@ -646,6 +642,16 @@
           minutes — a best-effort target, not a guarantee: Android decides when
           background work actually runs, so figures can be older than that.
         </p>
+      </Disclosure>
+      <!-- Usage history retention (shared HistoryRetention, also on desktop):
+           lives here, not on the History tab — the tab is for reading the
+           record, this panel decides what governs it. -->
+      <Disclosure id="history" title="Usage history" bind:open={openSections.history}>
+        <HistoryRetention
+          policy={config?.history_retention ?? 'forever'}
+          onpreview={previewHistoryRetention}
+          onapply={setHistoryRetention}
+        />
       </Disclosure>
       <div class="settings-footer">
         <button class="primary" onclick={async () => { await persist(); view = 'list'; }}>Save</button>

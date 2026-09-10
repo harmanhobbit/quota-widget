@@ -15,6 +15,15 @@
   // chart reports them instead. The host's readings surface (or this note) is
   // where failures live, not the line.
   //
+  // Scale and axes: a sparkline without scale reads as shape, not data, so
+  // every chart carries gridlines and axis labels. The gridlines are SVG
+  // strokes — the viewBox stretches non-uniformly, and `non-scaling-stroke`
+  // keeps them 1px — but the tick labels are HTML around the plot, because
+  // text inside a stretched viewBox would distort. The percentage scale is
+  // fixed and labelled 0–100 (a usage window IS a percentage); credits
+  // auto-scale to the plotted balances with the bounds pushed out to round
+  // steps, so gridlines land on round numbers.
+  //
   // All computation below is pure — the template reads one `$derived`, and no
   // helper writes state, so none of it can trip Svelte 5's
   // state_unsafe_mutation.
@@ -38,6 +47,11 @@
   // usage window IS a percentage); credits auto-scale to the plotted values.
   const H = 40;
 
+  // The percentage scale, shared by every account's usage chart: gridlines
+  // and labels for 0 / 50 / 100 percent, top label first for the HTML column
+  // (which fills downward) and plot order preserved for the SVG lines.
+  const PCT_TICKS = [100, 50, 0].map((pct) => ({ pct, y: pctToY(pct), label: `${pct}%` }));
+
   function timeToX(at, t0, t1) {
     const t = new Date(at).getTime();
     if (t1 <= t0) return 0;
@@ -47,6 +61,45 @@
   function pctToY(pct) {
     const clamped = Math.min(100, Math.max(0, pct));
     return H - (clamped / 100) * H;
+  }
+
+  // X-axis labels for the plotted span: start, middle, end. Short dates,
+  // except the 24-hour range where every date would read the same and the
+  // times are the informative axis.
+  function rangeLabel(t, rangeKey) {
+    const d = new Date(t);
+    return rangeKey === '24h'
+      ? d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+      : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+  }
+
+  // A round-number axis for the credits chart: the data's bounds pushed out
+  // to a "nice" step (1/2/5 × 10^k) so gridlines land on round values. A
+  // flat history — one reading, or the same balance throughout — gets a
+  // padded axis centred on that balance instead of a divide-by-zero.
+  function niceAxis(lo, hi) {
+    if (!(hi > lo)) {
+      const pad = Math.max(Math.abs(hi) * 0.5, 1);
+      lo -= pad;
+      hi += pad;
+    }
+    const raw = (hi - lo) / 4;
+    const mag = 10 ** Math.floor(Math.log10(raw));
+    const norm = raw / mag;
+    const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10) * mag;
+    const axisLo = Math.floor(lo / step) * step;
+    const axisHi = Math.ceil(hi / step) * step;
+    const n = Math.round((axisHi - axisLo) / step);
+    const ticks = [];
+    for (let i = 0; i <= n; i += 1) {
+      const v = axisLo + i * step;
+      ticks.push({
+        y: H - ((v - axisLo) / (axisHi - axisLo)) * H,
+        // Round away float noise (4.000000000000001 → 4) for the label.
+        label: String(Math.round(v * 100) / 100),
+      });
+    }
+    return { lo: axisLo, hi: axisHi, ticks };
   }
 
   // The polyline for one window: every plotted, non-failed point that
@@ -64,19 +117,17 @@
       .join(' ');
   }
 
-  // The credits polyline, auto-scaled to the plotted balances with a small
-  // margin; a flat balance draws as a mid-height line rather than dividing
-  // by zero. Bounds come from a reduction, not spread over Math.min/max —
-  // an all-time history can outgrow the argument count an engine accepts.
-  function creditCoords(points, t0, t1) {
-    const values = points.map((p) => p.credits_balance);
-    const lo = values.reduce((a, b) => (b < a ? b : a));
-    const hi = values.reduce((a, b) => (b > a ? b : a));
-    const span = hi - lo;
+  // The credits polyline, mapped onto the nice axis computed for the same
+  // points — line and gridlines are one scale, so a gridline always means
+  // what it says. The map keeps the line inside the plot whatever rounding
+  // does; bounds come from a reduction, not spread over Math.min/max — an
+  // all-time history can outgrow the argument count an engine accepts.
+  function creditCoords(points, axis, t0, t1) {
+    const span = axis.hi - axis.lo;
     return points
       .map((p) => {
-        const y = span === 0 ? H / 2 : 2 + (1 - (p.credits_balance - lo) / span) * (H - 4);
-        return `${timeToX(p.at, t0, t1).toFixed(2)},${y.toFixed(2)}`;
+        const y = H - ((p.credits_balance - axis.lo) / span) * H;
+        return `${timeToX(p.at, t0, t1).toFixed(2)},${Math.min(H, Math.max(0, y)).toFixed(2)}`;
       })
       .join(' ');
   }
@@ -104,12 +155,18 @@
         coords: lineCoords(plotted, id, t0, t1),
       }));
       const creditPoints = plotted.filter((p) => !p.failed && p.credits_balance != null);
-      const credits = creditPoints.length
-        ? {
-            unit: snap?.credits?.unit ?? '',
-            coords: creditCoords(creditPoints, t0, t1),
-          }
-        : null;
+      let credits = null;
+      if (creditPoints.length) {
+        const values = creditPoints.map((p) => p.credits_balance);
+        const lo = values.reduce((a, b) => (b < a ? b : a));
+        const hi = values.reduce((a, b) => (b > a ? b : a));
+        const axis = niceAxis(lo, hi);
+        credits = {
+          unit: snap?.credits?.unit ?? '',
+          axis,
+          coords: creditCoords(creditPoints, axis, t0, t1),
+        };
+      }
       const failedInRange = plotted.filter((p) => p.failed).length;
       const hasPlotted = windowLines.some((l) => l.coords) || credits !== null;
       return {
@@ -117,6 +174,9 @@
         name: snap?.provider_name ?? account.provider_id,
         windowLines,
         credits,
+        // The plotted span's time labels: start, middle, end — the X axis
+        // every chart in this account shares.
+        xLabels: [t0, (t0 + t1) / 2, t1].map((t) => rangeLabel(t, rangeKey)),
         failedInRange,
         hasPlotted,
       };
@@ -142,11 +202,31 @@
       {:else}
         {#if account.windowLines.some((l) => l.coords)}
           <div class="history-chart">
-            <svg viewBox="0 0 100 {H}" preserveAspectRatio="none" role="img" aria-label="{account.name} usage">
-              {#each account.windowLines.filter((l) => l.coords) as line (line.id)}
-                <polyline class="usage-line" data-metric={line.id} points={line.coords} vector-effect="non-scaling-stroke" />
-              {/each}
-            </svg>
+            <div class="chart-plot">
+              <div class="chart-y" aria-hidden="true">
+                {#each PCT_TICKS as t (t.pct)}
+                  <span>{t.label}</span>
+                {/each}
+              </div>
+              <svg
+                viewBox="0 0 100 {H}"
+                preserveAspectRatio="none"
+                role="img"
+                aria-label="{account.name} usage, percentages 0 to 100, {account.xLabels[0]} to {account.xLabels[2]}"
+              >
+                {#each PCT_TICKS as t (t.pct)}
+                  <line class="chart-grid" x1="0" y1={t.y} x2="100" y2={t.y} vector-effect="non-scaling-stroke" />
+                {/each}
+                {#each account.windowLines.filter((l) => l.coords) as line (line.id)}
+                  <polyline class="usage-line" data-metric={line.id} points={line.coords} vector-effect="non-scaling-stroke" />
+                {/each}
+              </svg>
+            </div>
+            <div class="chart-x" aria-hidden="true">
+              <span>{account.xLabels[0]}</span>
+              <span>{account.xLabels[1]}</span>
+              <span>{account.xLabels[2]}</span>
+            </div>
           </div>
           <p class="history-legend">
             {#each account.windowLines.filter((l) => l.coords) as line (line.id)}
@@ -156,9 +236,29 @@
         {/if}
         {#if account.credits}
           <div class="credits-chart">
-            <svg viewBox="0 0 100 {H}" preserveAspectRatio="none" role="img" aria-label="{account.name} credits balance">
-              <polyline class="credits-line" points={account.credits.coords} vector-effect="non-scaling-stroke" />
-            </svg>
+            <div class="chart-plot">
+              <div class="chart-y" aria-hidden="true">
+                {#each [...account.credits.axis.ticks].reverse() as t (t.y)}
+                  <span>{t.label}</span>
+                {/each}
+              </div>
+              <svg
+                viewBox="0 0 100 {H}"
+                preserveAspectRatio="none"
+                role="img"
+                aria-label="{account.name} credits balance, {account.credits.axis.lo} to {account.credits.axis.hi}{account.credits.unit ? ` ${account.credits.unit}` : ''}, {account.xLabels[0]} to {account.xLabels[2]}"
+              >
+                {#each account.credits.axis.ticks as t (t.y)}
+                  <line class="chart-grid" x1="0" y1={t.y} x2="100" y2={t.y} vector-effect="non-scaling-stroke" />
+                {/each}
+                <polyline class="credits-line" points={account.credits.coords} vector-effect="non-scaling-stroke" />
+              </svg>
+            </div>
+            <div class="chart-x" aria-hidden="true">
+              <span>{account.xLabels[0]}</span>
+              <span>{account.xLabels[1]}</span>
+              <span>{account.xLabels[2]}</span>
+            </div>
           </div>
           <p class="history-legend">
             <span class="legend-item">{account.credits.unit || 'Credits'}</span>

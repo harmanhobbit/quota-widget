@@ -913,7 +913,7 @@ const CASES = [
   {
     file: 'src/lib/shared/HistoryView.svelte',
     props: ($) => ({ history: $.proxy(structuredClone(HISTORY)), snapshots: $.proxy(structuredClone(SNAPSHOTS)) }),
-    expect: ['Claude', 'OpenRouter', '5h', 'Weekly', 'USD'],
+    expect: ['Claude', 'OpenRouter', '5h', 'Weekly', 'USD', '100%', '0%'],
     verify: async ({ target, flushSync }) => {
       // The whole history first — the default view is the last 7 days.
       const select = target.querySelector('.history-range');
@@ -947,6 +947,38 @@ const CASES = [
       // The credits line plots every non-failed point (30 here).
       const creditCoords = openrouter.querySelector('.credits-line').getAttribute('points').trim().split(/\s+/);
       if (creditCoords.length !== 30) throw new Error(`credits line plotted ${creditCoords.length} points, expected 30`);
+      // ---- Axis treatment: the charts must communicate their scale --------
+      // The percentage chart carries a fixed, labelled 0–100 scale: three
+      // gridlines (100/50/0) with a matching HTML label column, top first.
+      const pctGrid = claude.querySelectorAll('.history-chart .chart-grid');
+      if (pctGrid.length !== 3) throw new Error(`the percentage chart drew ${pctGrid.length} gridlines, expected 3`);
+      const pctY = [...claude.querySelectorAll('.history-chart .chart-y span')].map((s) => s.textContent);
+      if (pctY.join('|') !== '100%|50%|0%') throw new Error(`percentage scale labelled ${pctY.join('|')}`);
+      // A time axis under the plot: start, middle, end, all populated.
+      const xLabels = [...claude.querySelectorAll('.history-chart .chart-x span')].map((s) => s.textContent.trim());
+      if (xLabels.length !== 3 || xLabels.some((t) => !t)) {
+        throw new Error(`the time axis rendered as ${xLabels.join('|')}`);
+      }
+      // The credits chart gets its own value scale — never percentages —
+      // with one gridline per labelled tick.
+      const creditY = [...openrouter.querySelectorAll('.credits-chart .chart-y span')].map((s) => s.textContent);
+      if (creditY.length < 2 || creditY.some((t) => t.includes('%'))) {
+        throw new Error(`the credits scale is not its own quantity: ${creditY.join('|')}`);
+      }
+      if (openrouter.querySelectorAll('.credits-chart .chart-grid').length !== creditY.length) {
+        throw new Error('credits gridlines and their labels disagree');
+      }
+      // Line and scale agree: the plotted balances peak exactly at the axis
+      // top, so the line's oldest point starts at the very top of the plot.
+      const first = creditCoords[0];
+      if (first !== '0.00,0.00') throw new Error(`the credits line starts at ${first}, off its labelled scale`);
+      // The accessible names survive the axis work: role="img" on both
+      // charts, named for the account.
+      for (const svg of [claude.querySelector('.history-chart svg'), openrouter.querySelector('.credits-chart svg')]) {
+        if (svg.getAttribute('role') !== 'img' || !svg.getAttribute('aria-label').trim()) {
+          throw new Error(`a chart lost its accessible name: ${svg.getAttribute('aria-label')}`);
+        }
+      }
     },
   },
   // Empty history mounts without throwing: the selector is there, no charts.
@@ -1131,8 +1163,10 @@ const CASES = [
     },
   },
   // End to end through the desktop shell: the History tab hosts the charts
-  // and the retention control, and its preview/apply go through the host
-  // commands (stubbed here) rather than any component-local shortcut.
+  // and the range selector ONLY — retention is a Settings decision — and the
+  // retention control in Settings (→ Usage history) sends its preview/apply
+  // through the host commands (stubbed here) rather than any component-local
+  // shortcut.
   {
     file: 'src/App.svelte',
     props: () => ({}),
@@ -1149,8 +1183,16 @@ const CASES = [
       await new Promise((resolve) => setTimeout(resolve, 0));
       flushSync();
       if (!target.querySelector('.history-account')) throw new Error('the tab rendered no charts');
-      // Tighten to age/30d through the shell: preview surfaces, confirm
+      if (target.querySelector('.retention-mode')) {
+        throw new Error('the History tab still hosts the retention control');
+      }
+      target.querySelector('button[title="Back"]').click();
+      flushSync();
+      // Tighten to age/30d through Settings: preview surfaces there, confirm
       // reaches set_history_retention with the serde shape Rust expects.
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+      openSection(target, 'history', flushSync);
       const mode = target.querySelector('.retention-mode');
       mode.value = 'age';
       mode.dispatchEvent(new window.Event('change', { bubbles: true }));
@@ -1162,6 +1204,9 @@ const CASES = [
       target.querySelector('.retention-apply').click();
       await new Promise((resolve) => setTimeout(resolve, 0));
       flushSync();
+      if (!target.querySelector('.cleaning-preview')) {
+        throw new Error('tightening in Settings showed no cleaning preview');
+      }
       target.querySelector('.cleaning-confirm').click();
       await new Promise((resolve) => setTimeout(resolve, 0));
       flushSync();
@@ -1176,25 +1221,25 @@ const CASES = [
     },
   },
   // Escape over an open cleaning preview belongs to the dialog's cancel: the
-  // shell's Escape meaning — hide to tray — must yield while the destructive
-  // decision is on screen (the shell's listener registered first at startup,
-  // so it yields by the parent/child flag, not by listener order), and must
-  // resume the moment the dialog is gone.
+  // shell's Escape meanings — leave Settings, hide to tray — must yield while
+  // the destructive decision is on screen (the shell's listener registered
+  // first at startup, so it yields by the parent/child flag, not by listener
+  // order), and must resume the moment the dialog is gone. The preview lives
+  // in Settings, so the shell meaning it defers is leaving Settings.
   {
     file: 'src/App.svelte',
     props: () => ({}),
-    history: HISTORY,
     historyPreview: {
       removed_count: 3,
       removed_bytes: null,
       oldest_kept: new Date(Date.now() - 1 * 24 * 3600_000).toISOString(),
       newest_removed: new Date(Date.now() - 20 * 24 * 3600_000).toISOString(),
     },
-    verify: async ({ target, flushSync, shellCalls }) => {
-      target.querySelector('button[title="History"]').click();
-      flushSync();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      flushSync();
+    verify: async ({ target, flushSync, emit, shellCalls }) => {
+      // A tray visit, so leaving Settings asks the shell for exit_settings —
+      // the meaning Escape must be shown to yield and then to resume.
+      emit('navigate', { view: 'settings', return_to: 'mini' });
+      openSection(target, 'history', flushSync);
       const mode = target.querySelector('.retention-mode');
       mode.value = 'age';
       mode.dispatchEvent(new window.Event('change', { bubbles: true }));
@@ -1215,14 +1260,15 @@ const CASES = [
       if (target.querySelector('.cleaning-preview')) {
         throw new Error('Escape did not cancel the preview');
       }
-      // ...and the shell must NOT have treated the same keypress as hide-to-tray.
-      if (shellCalls().includes('hide_window')) {
-        throw new Error(`Escape over the preview hid the window: ${shellCalls().join(',')}`);
+      // ...and the shell must NOT have treated the same keypress as
+      // leaving Settings.
+      if (shellCalls().length) {
+        throw new Error(`Escape over the preview drove the shell: ${shellCalls().join(',')}`);
       }
       // With the dialog gone, the shell's own Escape meaning resumes.
       window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       flushSync();
-      if (shellCalls().join(',') !== 'hide_window') {
+      if (shellCalls().join(',') !== 'exit_settings:mini') {
         throw new Error(`the shell Escape meaning did not resume: ${shellCalls().join(',')}`);
       }
     },
@@ -2795,7 +2841,7 @@ const CASES = [
     props: ($) => ({ initialConfig: $.proxy(structuredClone(CONFIG)), snapshots: structuredClone(SNAPSHOTS), onclose() {} }),
     desktop: { state: 'absent', appimage: '/home/u/Downloads/q.AppImage', desktop_file: '/home/u/.local/share/applications/quota-widget.desktop' },
     verify: async ({ target, flushSync }) => {
-      const ids = ['providers', 'thresholds', 'alerts', 'general', 'backup', 'transfer', 'pairing', 'desktop'];
+      const ids = ['providers', 'thresholds', 'alerts', 'general', 'history', 'backup', 'transfer', 'pairing', 'desktop'];
       // Nothing is open on arrival: every heading is a real button that points
       // at a panel not yet in the DOM.
       for (const id of ids) {
@@ -2891,7 +2937,7 @@ const CASES = [
     props: () => ({}),
     config: { ...CONFIG, providers: { openrouter: provider({ enabled: true }) } },
     verify: async ({ target, flushSync }) => {
-      const ids = ['providers', 'transfer', 'pairing', 'ordering', 'thresholds', 'notifications', 'background'];
+      const ids = ['providers', 'transfer', 'pairing', 'ordering', 'thresholds', 'notifications', 'background', 'history'];
       target.querySelector('button[title="Settings"]').click();
       flushSync();
       if (!target.querySelector('.mobile-settings')) throw new Error('the gear did not open mobile Settings');
@@ -2979,9 +3025,11 @@ const CASES = [
   // ---- Usage history on Android (issue #211, Slice 3) ----------------------
   //
   // The phone shell gets the same History tab as the desktop by reusing the
-  // same shared HistoryView and HistoryRetention components — outcome parity
-  // is the shared component, not a mobile re-render. The tab opens from the
-  // list header, renders the recorded charts, and Back returns to the list.
+  // same shared HistoryView component — outcome parity is the shared
+  // component, not a mobile re-render. The tab opens from the list header,
+  // renders the recorded charts, and Back returns to the list. Retention is
+  // NOT on the tab: it lives in mobile Settings (→ Usage history), same as
+  // desktop.
   {
     file: 'src/mobile/MobileApp.svelte',
     props: () => ({}),
@@ -3004,21 +3052,35 @@ const CASES = [
       if (!history.querySelector('.credits-chart polyline.credits-line')) {
         throw new Error('the mobile credits chart did not render');
       }
-      // The retention control rides the same tab, seeded from the config the
-      // shell already holds.
-      if (!target.querySelector('.retention-mode')) {
-        throw new Error('the mobile history tab offered no retention control');
+      // The tab is charts and range only — the retention control belongs to
+      // mobile Settings.
+      if (target.querySelector('.retention-mode')) {
+        throw new Error('the mobile history tab still hosts the retention control');
       }
+      // The charts carry their axis treatment here too: a labelled
+      // percentage scale and a time axis, same as desktop.
+      const pctY = [...history.querySelectorAll('.history-chart .chart-y span')].map((s) => s.textContent);
+      if (pctY.join('|') !== '100%|50%|0%') throw new Error(`mobile percentage scale labelled ${pctY.join('|')}`);
+      if (!history.querySelector('.history-chart .chart-x span')) throw new Error('mobile chart drew no time axis');
       // Back returns to the usage list.
       target.querySelector('.mobile-header button[title="Back"]').click();
       flushSync();
       if (target.querySelector('.history') || !target.querySelector('.cards')) {
         throw new Error('mobile Back did not return to the usage list');
       }
+      // The shared retention control surfaces in mobile Settings instead,
+      // seeded from the config the shell already holds.
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+      openSection(target, 'history', flushSync);
+      if (!target.querySelector('.retention-mode')) {
+        throw new Error('mobile Settings offered no retention control');
+      }
     },
   },
   // The retention flow on Android goes through the same commands with the
-  // same contract: preview first, confirm to apply, Cancel inert.
+  // same contract, now from mobile Settings (→ Usage history): preview first,
+  // confirm to apply, Cancel inert.
   {
     file: 'src/mobile/MobileApp.svelte',
     props: () => ({}),
@@ -3030,10 +3092,9 @@ const CASES = [
       newest_removed: new Date(Date.now() - 15 * 24 * 3600_000).toISOString(),
     },
     verify: async ({ target, flushSync }) => {
-      target.querySelector('button[title="History"]').click();
+      target.querySelector('button[title="Settings"]').click();
       flushSync();
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      flushSync();
+      openSection(target, 'history', flushSync);
       const mode = target.querySelector('.retention-mode');
       mode.value = 'age';
       mode.dispatchEvent(new window.Event('change', { bubbles: true }));

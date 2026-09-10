@@ -1,6 +1,7 @@
 <script>
-  // The [[retention policy]] control for [[usage history]], shared by the
-  // desktop History tab and the Android app. One flow, one contract:
+  // The [[retention policy]] control for [[usage history]], shared by desktop
+  // Settings (→ Usage history) and Android Settings — the History tab itself
+  // is charts and range only, on both surfaces. One flow, one contract:
   //
   // - Applying a tighter bound FIRST previews — the host's pure
   //   preview_prune answers, and only when it reports readings that would go

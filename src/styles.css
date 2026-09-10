@@ -1044,11 +1044,46 @@ select option {
   color: var(--muted);
 }
 
+/* Axis treatment, shared by both chart kinds. Gridlines are SVG so they
+   stretch with the pane and stay 1px via non-scaling strokes; the tick
+   labels are HTML around the plot, because text inside a non-uniformly
+   scaled viewBox would distort. The X row is offset by the Y gutter
+   (26px + the 4px gap) so its labels line up with the plot. */
+.chart-plot {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.chart-y {
+  display: flex;
+  flex: 0 0 26px;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--muted);
+  text-align: right;
+}
+
 .history-chart svg,
 .credits-chart svg {
   display: block;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: 56px;
+}
+
+.chart-grid {
+  stroke: var(--border);
+}
+
+.chart-x {
+  display: flex;
+  justify-content: space-between;
+  margin-left: 30px; /* the Y-label gutter plus its gap */
+  font-size: 9px;
+  color: var(--muted);
 }
 
 .usage-line {
