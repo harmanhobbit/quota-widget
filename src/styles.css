@@ -1074,10 +1074,53 @@ select option {
   flex: 1;
   min-width: 0;
   height: 56px;
+  /* The svg is the scrub surface: press-drag must scrub, not scroll the
+     pane under the finger. */
+  touch-action: none;
+}
+
+/* Focusable scrub surface (desktop keyboard route): a visible focus ring,
+   no ring for pointer users. */
+.history-chart svg:focus-visible,
+.credits-chart svg:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Wraps the svg so the scrub dots can be positioned over the plot alone —
+   the y-label gutter is outside it. The dots are HTML rather than SVG
+   circles because the stretched viewBox would pull circles into ellipses. */
+.chart-svg {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
 }
 
 .chart-grid {
   stroke: var(--border);
+}
+
+.chart-guide {
+  stroke: var(--text);
+  opacity: 0.4;
+}
+
+.chart-dots {
+  position: absolute;
+  inset: 0;
+  pointer-events: none; /* press-drag must reach the svg underneath */
+}
+
+.chart-dot {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  /* A bg-coloured ring lifts the dot off the line it sits on, in either
+     theme — the ring follows --bg automatically. */
+  box-shadow: 0 0 0 2px var(--bg);
 }
 
 .chart-x {
@@ -1094,6 +1137,45 @@ select option {
 .usage-line,
 .credits-line {
   fill: none;
+}
+
+/* The [[scrub readout]] box: always in the DOM so arming is a fade, not a
+   layout jump — the same one-box discipline as the card tooltip. Content
+   only exists while a selection does, so a cleared or re-ranged chart can
+   never show a stale figure. */
+.chart-readout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  min-height: 16px;
+  margin: 4px 0 0;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.chart-readout[data-armed] {
+  opacity: 1;
+}
+
+.readout-when {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.readout-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.readout-unavailable {
+  color: var(--muted);
+  font-style: italic;
 }
 
 /* Keyed legend: swatch (decorative, coloured by the component's own inline

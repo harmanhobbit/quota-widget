@@ -1033,7 +1033,7 @@ const CASES = [
       // never component internals.
       const strokeOf = (metric) => claude.querySelector(`.history-chart polyline[data-metric="${metric}"]`)?.getAttribute('stroke');
       const swatchStyle = (item) => item.querySelector('.legend-swatch')?.getAttribute('style');
-      const usageLegend = [...claude.querySelectorAll('.history-chart + .history-legend .legend-item')];
+      const usageLegend = [...claude.querySelectorAll('.history-chart + .chart-readout + .history-legend .legend-item')];
       if (usageLegend.length !== 2) throw new Error(`the usage legend rendered ${usageLegend.length} entries, expected 2`);
       for (const [metric, label, value] of [
         // five_hour's newest plotted point is day(1): 10 + 28 = 38. The newest
@@ -1057,7 +1057,7 @@ const CASES = [
       // The credits legend: swatch equal to the credits line's stroke, the
       // unit as its label, and the latest in-range balance with its unit.
       const creditsLine = openrouter.querySelector('.credits-chart polyline.credits-line');
-      const creditsLegend = openrouter.querySelector('.credits-chart + .history-legend .legend-item');
+      const creditsLegend = openrouter.querySelector('.credits-chart + .chart-readout + .history-legend .legend-item');
       if (!creditsLegend) throw new Error('the credits chart drew no legend entry');
       if (creditsLegend.querySelector('.legend-label')?.textContent.trim() !== 'USD') {
         throw new Error(`the credits legend label is ${creditsLegend.querySelector('.legend-label')?.textContent.trim()}, expected USD`);
@@ -1096,6 +1096,102 @@ const CASES = [
           }
         }
       }
+      // ---- The scrub readout (#223) --------------------------------------
+      // Keyboard is the deterministic path under jsdom (no layout, known
+      // columns): every content assertion is driven by real key events on
+      // the focused chart. The columns are the plotted points in time order:
+      // End lands on the newest (which reports weekly alone), the failed
+      // reading is column 24, and Home is the oldest.
+      const usageSvg = claude.querySelector('.history-chart svg');
+      if (usageSvg.getAttribute('tabindex') !== '0') throw new Error('the usage chart is not keyboard-focusable');
+      if (usageSvg.getAttribute('title')) throw new Error('the chart uses a native title instead of the styled readout');
+      const usageReadout = () => claude.querySelector('.history-chart + .chart-readout');
+      const readItems = (box) => Object.fromEntries([...box.querySelectorAll('.readout-item')].map((el) => [
+        el.querySelector('.legend-label')?.textContent.trim(),
+        el.querySelector('.legend-value')?.textContent.trim(),
+      ]));
+      const key = (el, k) => {
+        el.dispatchEvent(new window.KeyboardEvent('keydown', { key: k, bubbles: true }));
+        flushSync();
+      };
+      // End jumps to the newest point: five_hour is absent there and must
+      // read as a dash, never as 0 or as the account-wide figure.
+      key(usageSvg, 'End');
+      let readout = usageReadout();
+      if (readout.getAttribute('data-armed') == null) throw new Error('End did not arm the usage readout');
+      if (readout.getAttribute('aria-live') !== 'polite') throw new Error('the readout is not announced to assistive tech');
+      if (!readout.querySelector('.readout-when')?.textContent.trim()) throw new Error('the readout carries no timestamp');
+      const endItems = readItems(readout);
+      if (endItems['5h'] !== '—') throw new Error(`the absent 5h window reads ${JSON.stringify(endItems['5h'])}, expected a dash`);
+      if (endItems['Weekly'] !== '98%') throw new Error(`the weekly readout shows ${JSON.stringify(endItems['Weekly'])}, expected 98%`);
+      if (claude.querySelectorAll('.chart-dot').length !== 1) throw new Error(`the newest point drew ${claude.querySelectorAll('.chart-dot').length} dots, expected 1 (weekly only)`);
+      if (!claude.querySelector('.chart-guide')) throw new Error('the selected point drew no guide');
+      // One column back: both windows have figures at that point.
+      key(usageSvg, 'ArrowLeft');
+      readout = usageReadout();
+      const prevItems = readItems(readout);
+      if (prevItems['5h'] !== '38%' || prevItems['Weekly'] !== '96%') {
+        throw new Error(`one column back reads ${JSON.stringify(prevItems)}, expected 5h 38% and Weekly 96%`);
+      }
+      if (claude.querySelectorAll('.chart-dot').length !== 2) throw new Error(`a two-window point drew ${claude.querySelectorAll('.chart-dot').length} dots, expected 2`);
+      // The failed reading is selectable: it reads unavailable — timestamp
+      // kept, no figures, no invented value, no guide, no dots.
+      key(usageSvg, 'End');
+      for (let i = 0; i < 5; i += 1) key(usageSvg, 'ArrowLeft');
+      readout = usageReadout();
+      if (!/unavailable/.test(readout.textContent)) throw new Error(`a failed point reads ${JSON.stringify(readout.textContent)}, expected unavailable`);
+      if (readout.querySelectorAll('.readout-item').length) throw new Error('a failed point shows figures');
+      if (!readout.querySelector('.readout-when')?.textContent.trim()) throw new Error('the failed readout lost its timestamp');
+      if (claude.querySelectorAll('.chart-dot').length) throw new Error('a failed point drew guide dots');
+      if (claude.querySelector('.chart-guide')) throw new Error('a failed point drew a guide');
+      // Credits keyboard path: End reads the latest in-range balance + unit.
+      const creditsSvg = openrouter.querySelector('.credits-chart svg');
+      if (creditsSvg.getAttribute('tabindex') !== '0') throw new Error('the credits chart is not keyboard-focusable');
+      key(creditsSvg, 'End');
+      const creditsReadout = openrouter.querySelector('.credits-chart + .chart-readout');
+      if (creditsReadout.getAttribute('data-armed') == null) throw new Error('End did not arm the credits readout');
+      if (!/4\.2 USD/.test(creditsReadout.textContent)) throw new Error(`the credits readout shows ${JSON.stringify(creditsReadout.textContent)}, expected 4.2 USD`);
+      if (!creditsReadout.querySelector('.readout-when')?.textContent.trim()) throw new Error('the credits readout carries no timestamp');
+      if (openrouter.querySelectorAll('.chart-dot').length !== 1) throw new Error('the credits point drew no single guide dot');
+      // Changing the range clears every selection — no stale figure — and
+      // the next keypress re-clamps to the narrowed range.
+      select.value = '24h';
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      readout = usageReadout();
+      if (readout.getAttribute('data-armed') != null || readout.textContent.trim()) {
+        throw new Error(`the usage readout kept a stale figure across a range change: ${JSON.stringify(readout.textContent)}`);
+      }
+      if (openrouter.querySelector('.credits-chart + .chart-readout')?.textContent.trim()) {
+        throw new Error('the credits readout kept a stale figure across a range change');
+      }
+      key(usageSvg, 'ArrowLeft');
+      readout = usageReadout();
+      if (readout.getAttribute('data-armed') == null) throw new Error('a key after the range change armed nothing');
+      // The newest narrowed-range point reads Weekly 98% — and nothing else:
+      // five_hour is not plotted in 24h, so it appears neither as a figure
+      // nor as a dash (the readout reuses the legend's plotted-lines-only
+      // model; a dash here would describe a line the chart does not draw).
+      if (!/98%/.test(readout.textContent) || readout.textContent.includes('—') || /5h/.test(readout.textContent)) {
+        throw new Error(`keyboard did not re-clamp to the narrowed range: ${JSON.stringify(readout.textContent)}`);
+      }
+      // The pointer path drives the same readout. jsdom has no layout, so
+      // the zero-width plot is the guard case: the pointer clamps onto the
+      // plot and arms at a valid column instead of dividing by zero.
+      usageSvg.dispatchEvent(new window.PointerEvent('pointermove', { clientX: 12, bubbles: true }));
+      flushSync();
+      readout = usageReadout();
+      if (readout.getAttribute('data-armed') == null) throw new Error('pointermove did not arm the readout');
+      if (!readout.textContent.trim()) throw new Error('the armed readout is empty');
+      usageSvg.dispatchEvent(new window.PointerEvent('pointerleave', { bubbles: true }));
+      flushSync();
+      if (readout.getAttribute('data-armed') != null) throw new Error('pointerleave did not disarm the readout');
+      if (readout.textContent.trim()) throw new Error('the readout kept content after the pointer left');
+      // The expect list runs on the DOM as verify left it: restore the full
+      // span so five_hour's line — and its 5h label — are rendered again.
+      select.value = 'all';
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
     },
   },
   // Empty history mounts without throwing: the selector is there, no charts.
@@ -1145,7 +1241,7 @@ const CASES = [
         throw new Error(`narrowing to 24h plotted ${narrowed.join(',')}, expected 1,1 (weekly + credits)`);
       }
       if (strokeOf('five_hour')) throw new Error('the out-of-range five_hour line is still rendered');
-      if (target.querySelector('.history-chart + .history-legend .legend-item[data-metric="five_hour"]')) {
+      if (target.querySelector('.history-chart + .chart-readout + .history-legend .legend-item[data-metric="five_hour"]')) {
         throw new Error('the out-of-range five_hour legend entry is still rendered');
       }
       // The surviving weekly line keeps its colour — the regression here is
@@ -1155,7 +1251,7 @@ const CASES = [
         throw new Error(`weekly changed colour when five_hour dropped out: ${weeklyStroke} -> ${strokeOf('weekly')}`);
       }
       // Its legend entry survives too, still swatch-matched and current.
-      const weeklyItem = target.querySelector('.history-chart + .history-legend .legend-item[data-metric="weekly"]');
+      const weeklyItem = target.querySelector('.history-chart + .chart-readout + .history-legend .legend-item[data-metric="weekly"]');
       if (!weeklyItem) throw new Error('the weekly legend entry vanished with the range change');
       if (weeklyItem.querySelector('.legend-value')?.textContent.trim() !== '98%') {
         throw new Error(`the weekly legend shows ${weeklyItem.querySelector('.legend-value')?.textContent.trim()} after narrowing, expected 98%`);
@@ -3210,6 +3306,9 @@ const CASES = [
       const pctY = [...history.querySelectorAll('.history-chart .chart-y span')].map((s) => s.textContent);
       if (pctY.join('|') !== '100%|50%|0%') throw new Error(`mobile percentage scale labelled ${pctY.join('|')}`);
       if (!history.querySelector('.history-chart .chart-x span')) throw new Error('mobile chart drew no time axis');
+      // The scrub readout is part of the shared component, so the phone
+      // gets the same per-chart box without any mobile-specific code.
+      if (!history.querySelector('.chart-readout')) throw new Error('the mobile history charts have no scrub readout');
       // Back returns to the usage list.
       target.querySelector('.mobile-header button[title="Back"]').click();
       flushSync();

@@ -375,3 +375,16 @@ The keyed list beneath a history chart naming each plotted series by its
 metric label, its line colour, and its latest in-range value, so a line is
 identifiable without relying on colour alone.
 _Avoid_: Key, caption
+
+**Scrub readout**:
+The values a history chart reports at a selected time position: the
+timestamp and each series' figure at the nearest [[history point]], or
+*unavailable* at a failed reading. Reachable by pointer/press and by
+keyboard.
+_Avoid_: Tooltip, hover box, popup
+
+**Scrub**:
+Moving the selected time position across a history chart to read values at
+each [[history point]]; by pointer/press on any platform, by keyboard on
+desktop.
+_Avoid_: Hover, scan, seek

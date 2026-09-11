@@ -127,8 +127,12 @@ Platform differences are small but real:
   the account has credits — percentages and money never share an axis — with a
   time-range selector. A legend under each chart identifies every line by
   colour swatch, label and its latest value in range, so the lines never
-  rely on colour alone. Readings that failed are reported, never plotted as if
-  they were measurements.
+  rely on colour alone. Hovering or press-dragging a chart scrubs it: a
+  readout reports the exact timestamp and each series' figure at the nearest
+  recorded reading — *unavailable* at a failed one. On the desktop popup the
+  charts are also keyboard-scrubbable: focus one and use the arrow keys
+  (Home/End jump to the ends). Readings that failed are reported, never
+  plotted as if they were measurements.
 - **Retention** of that history is your choice, shared between desktop and
   Android: *Forever* (the default), by age (days, weeks, months or years), or
   by file size. Steady-state cleaning under the active policy happens
@@ -603,6 +607,10 @@ scripts/            icon generation, version-drift guard
   the standard tray tooltip and Linux Plasma renders the StatusNotifierItem
   tooltip. The Linux launcher uses XWayland so pinned mini-summary placement
   and always-on-top work.
+- History chart scrubbing is a pointer gesture everywhere — hover or press-drag
+  on the desktop popup, press-drag on Android — but the keyboard route
+  (focus the chart, arrow keys, Home/End) needs a keyboard, so it is desktop
+  only.
 - **Always-on-top does not work on native Wayland**, so the popup slips behind
   other windows when they take focus — regardless of the *Hide when clicking
   outside* setting, which is a separate mechanism. This is a protocol gap, not

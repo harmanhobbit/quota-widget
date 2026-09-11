@@ -26,7 +26,8 @@
   //
   // All computation below is pure — the template reads one `$derived`, and no
   // helper writes state, so none of it can trip Svelte 5's
-  // state_unsafe_mutation.
+  // state_unsafe_mutation. The only state writes are the event handlers at
+  // the bottom of the script, which is where they belong.
   //
   // Line colours: one source of truth per series, assigned in buildAccounts
   // and applied to BOTH the polyline stroke and its legend swatch, so the two
@@ -40,9 +41,19 @@
   // lines, headroom for the 8px swatches); the credits line keeps its own
   // distinct colour, never shared with a window.
   //
+  // Scrub: every chart is a scrub surface ([[scrub]]) feeding one [[scrub
+  // readout]] box. A pointer position or a keyboard move selects the nearest
+  // in-range history-point column — failed points included on the percentage
+  // chart, so a failure reads as *unavailable* rather than being skipped —
+  // and the readout reports the timestamp plus each series' figure there.
+  // Pointer and keyboard write the same per-chart state, so both inputs
+  // drive one identical readout.
+  //
   // [[usage history]]: ../../CONTEXT.md
   // [[usage window]]: ../../CONTEXT.md
   // [[chart legend]]: ../../CONTEXT.md
+  // [[scrub]]: ../../CONTEXT.md
+  // [[scrub readout]]: ../../CONTEXT.md
   // [[outcome parity]]: ../../CONTEXT.md
   // [[stale reading]]: ../../CONTEXT.md
   let { history = [], snapshots = [] } = $props();
@@ -58,6 +69,11 @@
     { key: 'all', label: 'All time', ms: null },
   ];
   let range = $state('7d');
+
+  // One [[scrub]] position per chart, as an index into that chart's columns:
+  // keyed by `${chart}:${account id}` so the usage and credits charts scrub
+  // independently and the keyboard and pointer paths drive the same state.
+  let reads = $state({});
 
   // Chart geometry in viewBox units. The percentage axis is fixed 0–100 (a
   // usage window IS a percentage); credits auto-scale to the plotted values.
@@ -147,6 +163,56 @@
     return null;
   }
 
+  // ---- [[scrub readout]] helpers. All pure: they read the selection state,
+  // never write it, so the template can call them freely. ----
+
+  // The column a chart's selection points at, or null when there is no
+  // selection or the index has gone stale (an out-of-range index reads as no
+  // selection rather than a wrong figure or a throw).
+  function readColumn(account, kind, reads) {
+    const columns = kind === 'credits' ? account.credits?.columns : account.usage?.columns;
+    const i = reads[`${kind}:${account.id}`];
+    if (i == null || !columns) return null;
+    return columns[i] ?? null;
+  }
+
+  // The readout names the moment as a date AND a time: scrubbing answers
+  // "what was this here", and a bare date cannot separate two readings hours
+  // apart.
+  function readoutWhen(at) {
+    const d = new Date(at);
+    return `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}, ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+  }
+
+  // Per-series figures at the selected percentage point: every plotted line
+  // with its value there, null marking a window absent at that point (the
+  // template renders the dash). A failed point carries no figures at all —
+  // the readout says so rather than inventing one.
+  function usageReadLines(account, column) {
+    if (!column || column.failed) return [];
+    return account.windowLines
+      .filter((l) => l.coords)
+      .map((l) => ({
+        color: l.color,
+        label: l.label,
+        value: column.windows.find(([id]) => id === l.id)?.[1] ?? null,
+      }));
+  }
+
+  // Guide dots at the selected percentage point: one per plotted line that
+  // has a figure at that exact point, none on a failed point — a failure
+  // carries no figure to mark. The dot reuses the line's colour (the same
+  // one-source value as the stroke and legend swatch).
+  function usageDots(account, column) {
+    if (!column || column.failed) return [];
+    return account.windowLines
+      .filter((l) => l.coords)
+      .flatMap((l) => {
+        const w = column.windows.find(([id]) => id === l.id);
+        return w ? [{ color: l.color, x: column.tx, y: pctToY(w[1]) }] : [];
+      });
+  }
+
   // The credits polyline, mapped onto the nice axis computed for the same
   // points — line and gridlines are one scale, so a gridline always means
   // what it says. The map keeps the line inside the plot whatever rounding
@@ -196,6 +262,20 @@
         };
       });
       const creditPoints = plotted.filter((p) => !p.failed && p.credits_balance != null);
+      // The [[scrub]] columns. The percentage chart's columns are ALL points
+      // in range — a failed reading is a real recorded moment, and selecting
+      // it is how its *unavailable* gets explained. The credits chart's
+      // columns are its plotted set only (non-failed balances). Positions are
+      // precomputed in the same viewBox units the lines use, so pointer
+      // nearest-column matching and the guide/dots share one mapping.
+      const usage = {
+        columns: plotted.map((p) => ({
+          at: p.at,
+          tx: timeToX(p.at, t0, t1),
+          failed: !!p.failed,
+          windows: p.windows ?? [],
+        })),
+      };
       let credits = null;
       if (creditPoints.length) {
         const values = creditPoints.map((p) => p.credits_balance);
@@ -204,11 +284,18 @@
         const axis = niceAxis(lo, hi);
         const unit = snap?.credits?.unit ?? '';
         const latest = creditPoints[creditPoints.length - 1].credits_balance;
+        const span = axis.hi - axis.lo;
         credits = {
           unit,
           color: CREDITS_COLOR,
           axis,
           coords: creditCoords(creditPoints, axis, t0, t1),
+          columns: creditPoints.map((p) => ({
+            at: p.at,
+            tx: timeToX(p.at, t0, t1),
+            balance: p.credits_balance,
+            y: Math.min(H, Math.max(0, H - ((p.credits_balance - axis.lo) / span) * H)),
+          })),
           // The latest in-range balance, rounded against float noise the
           // same way the axis labels are, with its unit when one is known.
           value: `${Math.round(latest * 100) / 100}${unit ? ` ${unit}` : ''}`,
@@ -219,6 +306,7 @@
         id: account.provider_id,
         name: snap?.provider_name ?? account.provider_id,
         windowLines,
+        usage,
         credits,
         // The plotted span's time labels: start, middle, end — the X axis
         // every chart in this account shares.
@@ -229,11 +317,69 @@
   }
 
   let accounts = $derived(buildAccounts(history, snapshots, range));
+
+  // ---- [[scrub]] event handlers. The only state writers in the file, and
+  // the keyboard and pointer paths converge on the same `reads` state, so
+  // both inputs drive one identical readout per chart. ----
+
+  function scrubPointer(event, account, kind) {
+    const columns = kind === 'credits' ? account.credits?.columns : account.usage?.columns;
+    if (!columns?.length) return;
+    // Zero-width geometry (a hidden pane, or jsdom's no-layout mounts) has no
+    // width to divide by: the pointer is clamped into the box first — the
+    // same read-it-as-on-the-target trick the card tooltip uses — and a
+    // zero-width plot reads every position as its left edge, a valid column.
+    const box = event.currentTarget.getBoundingClientRect();
+    const width = box.right - box.left;
+    const x = Math.min(Math.max(event.clientX, box.left), box.right);
+    const frac = width > 0 ? (x - box.left) / width : 0;
+    // Nearest column by normalised time: positions are precomputed in the
+    // same 0–100 space the lines draw in, so what the pointer picks is what
+    // the guide later marks.
+    let best = 0;
+    let bestDist = Infinity;
+    columns.forEach((column, i) => {
+      const dist = Math.abs(column.tx / 100 - frac);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = i;
+      }
+    });
+    reads[`${kind}:${account.id}`] = best;
+  }
+
+  // Leaving the plot disarms the readout; the box itself stays so the fade
+  // has something to animate, exactly like the card tooltip's armed box.
+  function clearRead(accountId, kind) {
+    reads[`${kind}:${accountId}`] = null;
+  }
+
+  // Keyboard scrub (desktop route): no selection yet and the arrows pick the
+  // sensible end — Right from nothing starts at the oldest point, Left at the
+  // newest — then move one column, clamped. Home/End jump. Every handled key
+  // preventDefaults so the pane under the focused chart does not scroll.
+  function scrubKey(event, account, kind) {
+    const columns = kind === 'credits' ? account.credits?.columns : account.usage?.columns;
+    if (!columns?.length) return;
+    const key = `${kind}:${account.id}`;
+    const current = reads[key];
+    const last = columns.length - 1;
+    let next = null;
+    if (event.key === 'ArrowRight') next = current == null ? 0 : Math.min(last, current + 1);
+    else if (event.key === 'ArrowLeft') next = current == null ? last : Math.max(0, current - 1);
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = last;
+    else return;
+    event.preventDefault();
+    reads[key] = next;
+  }
 </script>
 
 <div class="history-view">
   <label class="history-range-label">Range
-    <select class="history-range" bind:value={range}>
+    <!-- A range change invalidates every selection: the columns it indexed
+         into no longer exist, and a stale figure is worse than no figure. -->
+    <select class="history-range" bind:value={range} onchange={() => { reads = {}; }}>
       {#each RANGES as r (r.key)}
         <option value={r.key}>{r.label}</option>
       {/each}
@@ -253,19 +399,53 @@
                   <span>{t.label}</span>
                 {/each}
               </div>
-              <svg
-                viewBox="0 0 100 {H}"
-                preserveAspectRatio="none"
-                role="img"
-                aria-label="{account.name} usage, percentages 0 to 100, {account.xLabels[0]} to {account.xLabels[2]}"
-              >
-                {#each PCT_TICKS as t (t.pct)}
-                  <line class="chart-grid" x1="0" y1={t.y} x2="100" y2={t.y} vector-effect="non-scaling-stroke" />
-                {/each}
-                {#each account.windowLines.filter((l) => l.coords) as line (line.id)}
-                  <polyline class="usage-line" data-metric={line.id} points={line.coords} stroke={line.color} vector-effect="non-scaling-stroke" />
-                {/each}
-              </svg>
+              <!-- The [[scrub]] surface: pointer/press on every platform,
+                   keyboard on desktop. Focusable so arrow keys reach it; the
+                   dots overlay is pointer-transparent so press-drag always
+                   hits the svg. -->
+              <div class="chart-svg">
+                <!-- A focusable graphic: role="img" keeps the chart's
+                     description for screen readers while tabindex makes it
+                     the desktop keyboard scrub surface, and the values reach
+                     assistive tech through the readout's aria-live. The a11y
+                     lint has no shape for an interactive image, so this one
+                     suppression is deliberate. -->
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+                <svg
+                  viewBox="0 0 100 {H}"
+                  preserveAspectRatio="none"
+                  role="img"
+                  aria-label="{account.name} usage, percentages 0 to 100, {account.xLabels[0]} to {account.xLabels[2]}"
+                  tabindex="0"
+                  onpointerdown={(e) => scrubPointer(e, account, 'usage')}
+                  onpointermove={(e) => scrubPointer(e, account, 'usage')}
+                  onpointerleave={() => clearRead(account.id, 'usage')}
+                  onkeydown={(e) => scrubKey(e, account, 'usage')}
+                >
+                  {#each PCT_TICKS as t (t.pct)}
+                    <line class="chart-grid" x1="0" y1={t.y} x2="100" y2={t.y} vector-effect="non-scaling-stroke" />
+                  {/each}
+                  {#each account.windowLines.filter((l) => l.coords) as line (line.id)}
+                    <polyline class="usage-line" data-metric={line.id} points={line.coords} stroke={line.color} vector-effect="non-scaling-stroke" />
+                  {/each}
+                  {#if readColumn(account, 'usage', reads)}
+                    {@const column = readColumn(account, 'usage', reads)}
+                    <!-- The guide marks the selected moment — except on a
+                         failed point, where there is no figure to point at. -->
+                    {#if !column.failed}
+                      <line class="chart-guide" x1={column.tx} y1="0" x2={column.tx} y2={H} vector-effect="non-scaling-stroke" />
+                    {/if}
+                  {/if}
+                </svg>
+                <!-- Dots are HTML, not SVG circles: the viewBox stretches
+                     non-uniformly, which would pull every circle into an
+                     ellipse. Same reasoning as the HTML tick labels. -->
+                <div class="chart-dots" aria-hidden="true">
+                  {#each usageDots(account, readColumn(account, 'usage', reads)) as dot, i (i)}
+                    <span class="chart-dot" style="left:{dot.x}%; top:{(dot.y / H) * 100}%; background:{dot.color}"></span>
+                  {/each}
+                </div>
+              </div>
             </div>
             <div class="chart-x" aria-hidden="true">
               <span>{account.xLabels[0]}</span>
@@ -273,6 +453,26 @@
               <span>{account.xLabels[2]}</span>
             </div>
           </div>
+          <!-- The [[scrub readout]]: one always-present box per chart, armed
+               by either input path, emptied when the selection clears so no
+               stale figure survives a range change. -->
+          <p class="chart-readout" data-armed={readColumn(account, 'usage', reads) ? '' : null} aria-live="polite">
+            {#if readColumn(account, 'usage', reads)}
+              {@const column = readColumn(account, 'usage', reads)}
+              <span class="readout-when">{readoutWhen(column.at)}</span>
+              {#if column.failed}
+                <span class="readout-unavailable">unavailable</span>
+              {:else}
+                {#each usageReadLines(account, column) as line (line.label)}
+                  <span class="readout-item">
+                    <span class="legend-swatch" style="background:{line.color}" aria-hidden="true"></span>
+                    <span class="legend-label">{line.label}</span>
+                    <span class="legend-value">{line.value == null ? '—' : `${Math.round(line.value)}%`}</span>
+                  </span>
+                {/each}
+              {/if}
+            {/if}
+          </p>
           <!-- The keyed [[chart legend]]: swatch + label + latest value per
                plotted line, so colour is never the sole identifier. Keyed by
                metric id like the lines above. -->
@@ -294,17 +494,33 @@
                   <span>{t.label}</span>
                 {/each}
               </div>
-              <svg
-                viewBox="0 0 100 {H}"
-                preserveAspectRatio="none"
-                role="img"
-                aria-label="{account.name} credits balance, {account.credits.axis.lo} to {account.credits.axis.hi}{account.credits.unit ? ` ${account.credits.unit}` : ''}, {account.xLabels[0]} to {account.xLabels[2]}"
-              >
-                {#each account.credits.axis.ticks as t (t.y)}
-                  <line class="chart-grid" x1="0" y1={t.y} x2="100" y2={t.y} vector-effect="non-scaling-stroke" />
-                {/each}
-                <polyline class="credits-line" points={account.credits.coords} stroke={account.credits.color} vector-effect="non-scaling-stroke" />
-              </svg>
+              <div class="chart-svg">
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+                <svg
+                  viewBox="0 0 100 {H}"
+                  preserveAspectRatio="none"
+                  role="img"
+                  aria-label="{account.name} credits balance, {account.credits.axis.lo} to {account.credits.axis.hi}{account.credits.unit ? ` ${account.credits.unit}` : ''}, {account.xLabels[0]} to {account.xLabels[2]}"
+                  tabindex="0"
+                  onpointerdown={(e) => scrubPointer(e, account, 'credits')}
+                  onpointermove={(e) => scrubPointer(e, account, 'credits')}
+                  onpointerleave={() => clearRead(account.id, 'credits')}
+                  onkeydown={(e) => scrubKey(e, account, 'credits')}
+                >
+                  {#each account.credits.axis.ticks as t (t.y)}
+                    <line class="chart-grid" x1="0" y1={t.y} x2="100" y2={t.y} vector-effect="non-scaling-stroke" />
+                  {/each}
+                  <polyline class="credits-line" points={account.credits.coords} stroke={account.credits.color} vector-effect="non-scaling-stroke" />
+                  {#if readColumn(account, 'credits', reads)}
+                    <line class="chart-guide" x1={readColumn(account, 'credits', reads).tx} y1="0" x2={readColumn(account, 'credits', reads).tx} y2={H} vector-effect="non-scaling-stroke" />
+                  {/if}
+                </svg>
+                <div class="chart-dots" aria-hidden="true">
+                  {#if readColumn(account, 'credits', reads)}
+                    <span class="chart-dot" style="left:{readColumn(account, 'credits', reads).tx}%; top:{(readColumn(account, 'credits', reads).y / H) * 100}%; background:{account.credits.color}"></span>
+                  {/if}
+                </div>
+              </div>
             </div>
             <div class="chart-x" aria-hidden="true">
               <span>{account.xLabels[0]}</span>
@@ -312,6 +528,16 @@
               <span>{account.xLabels[2]}</span>
             </div>
           </div>
+          <p class="chart-readout" data-armed={readColumn(account, 'credits', reads) ? '' : null} aria-live="polite">
+            {#if readColumn(account, 'credits', reads)}
+              {@const column = readColumn(account, 'credits', reads)}
+              <span class="readout-when">{readoutWhen(column.at)}</span>
+              <span class="readout-item">
+                <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
+                <span class="legend-value">{Math.round(column.balance * 100) / 100}{account.credits.unit ? ` ${account.credits.unit}` : ''}</span>
+              </span>
+            {/if}
+          </p>
           <p class="history-legend">
             <span class="legend-item">
               <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
