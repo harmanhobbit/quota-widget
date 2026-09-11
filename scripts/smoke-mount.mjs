@@ -205,6 +205,26 @@ function parseColor(s) {
   return null;
 }
 
+// WCAG 2.x contrast ratio between two #rrggbb colours (hash optional), so
+// the chart palette's legibility floor is asserted, not just documented:
+// every line and swatch must hold at least 3:1 against BOTH theme
+// backgrounds (#f5f5f7 light, #1e1e22 dark), whatever the OS preference at
+// test time.
+function contrastRatio(a, b) {
+  const lum = (hex) => {
+    const c = hex.replace('#', '');
+    const lin = (at) => {
+      const v = parseInt(c.slice(at, at + 2), 16) / 255;
+      return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * lin(0) + 0.7152 * lin(2) + 0.0722 * lin(4);
+  };
+  const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+const THEME_BGS = ['#f5f5f7', '#1e1e22'];
+
 // Reveal a top-level Settings disclosure (issue #184) so a case can drive the
 // controls that now start collapsed behind it. Idempotent — a section already
 // open is left open. Scoped to the section headers (`.disclosure > h2`) so it
@@ -1056,6 +1076,24 @@ const CASES = [
         }
         if (!item.querySelector('.legend-label')?.textContent.trim()) {
           throw new Error('a legend entry has a swatch but no text label');
+        }
+      }
+      // The palette is measured, not guessed: every rendered line stroke and
+      // its swatch (the same value twice) must hold at least 3:1 contrast
+      // against BOTH theme backgrounds, so the chart reads whatever the OS
+      // colour scheme at test time (#222).
+      const chartColors = [
+        ...claude.querySelectorAll('.history-chart polyline'),
+        ...openrouter.querySelectorAll('.credits-chart polyline'),
+      ].map((l) => parseColor(l.getAttribute('stroke')));
+      chartColors.push(parseColor(swatchStyle(usageLegend[0])), parseColor(swatchStyle(usageLegend[1])));
+      chartColors.push(parseColor(swatchStyle(creditsLegend)));
+      for (const color of chartColors) {
+        for (const bg of THEME_BGS) {
+          const ratio = contrastRatio(color, bg);
+          if (ratio < 3) {
+            throw new Error(`chart colour ${color} on ${bg} has contrast ${ratio.toFixed(2)}, below 3`);
+          }
         }
       }
     },

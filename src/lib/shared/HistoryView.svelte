@@ -35,9 +35,10 @@
   // recoloured its neighbours.) Assignment is by index in the account's
   // metric-id list, which is computed over ALL recorded points and is therefore
   // range-independent: a line keeps its colour as the range selector moves.
-  // The palette holds mid-lightness hues so every entry reads on both the
-  // light and dark themes; the credits line keeps its own distinct colour,
-  // never shared with a window.
+  // The palette holds hues measured to at least 3:1 contrast against BOTH
+  // theme backgrounds (#f5f5f7 light, #1e1e22 dark — WCAG 1.4.11 for the
+  // lines, headroom for the 8px swatches); the credits line keeps its own
+  // distinct colour, never shared with a window.
   //
   // [[usage history]]: ../../CONTEXT.md
   // [[usage window]]: ../../CONTEXT.md
@@ -46,8 +47,8 @@
   // [[stale reading]]: ../../CONTEXT.md
   let { history = [], snapshots = [] } = $props();
 
-  const SERIES_PALETTE = ['#4c9be8', '#e6a817', '#9a6dd7', '#d16ba5', '#5bbcbf', '#c86d5a'];
-  const CREDITS_COLOR = '#2fa46a';
+  const SERIES_PALETTE = ['#277fc5', '#b77900', '#9a6dd7', '#b34d80', '#007f7f', '#238b57'];
+  const CREDITS_COLOR = '#147d64';
 
   // The selectable time ranges. `null` means unbounded ("all time").
   const RANGES = [
