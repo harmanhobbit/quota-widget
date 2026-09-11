@@ -125,7 +125,9 @@ Platform differences are small but real:
   adds nothing. The **History** tab (desktop popup and Android app) charts each
   account's record: one line per usage window, a separate credits line where
   the account has credits — percentages and money never share an axis — with a
-  time-range selector. Readings that failed are reported, never plotted as if
+  time-range selector. A legend under each chart identifies every line by
+  colour swatch, label and its latest value in range, so the lines never
+  rely on colour alone. Readings that failed are reported, never plotted as if
   they were measurements.
 - **Retention** of that history is your choice, shared between desktop and
   Android: *Forever* (the default), by age (days, weeks, months or years), or

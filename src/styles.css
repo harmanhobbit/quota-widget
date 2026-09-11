@@ -1028,8 +1028,10 @@ select option {
 
 /* History charts (shared HistoryView). Sparkline-style SVGs on a fixed
    viewBox, stretched to the pane; non-scaling strokes keep the lines 1px
-   whatever the stretch. Colours are presentation only — the legend text
-   carries the meaning. */
+   whatever the stretch. Line colours are assigned per series in the
+   component and carried on both the polyline and its legend swatch, so the
+   two are one value by construction — the CSS deliberately sets no stroke,
+   because a CSS stroke would override the component's attribute. */
 .history-view {
   display: flex;
   flex-direction: column;
@@ -1086,26 +1088,34 @@ select option {
   color: var(--muted);
 }
 
-.usage-line {
-  fill: none;
-  stroke: var(--muted);
-}
-
-.usage-line:nth-of-type(1) {
-  stroke: #4c9be8;
-}
-
-.usage-line:nth-of-type(2) {
-  stroke: #e6a817;
-}
-
-.usage-line:nth-of-type(3) {
-  stroke: #9a6dd7;
-}
-
+/* No stroke here on purpose: each polyline carries its series colour as a
+   stroke attribute from the component (#222), and any CSS stroke would
+   override it. */
+.usage-line,
 .credits-line {
   fill: none;
-  stroke: #2fa46a;
+}
+
+/* Keyed legend: swatch (decorative, coloured by the component's own inline
+   style) + text label + the series' latest in-range value. The label, not
+   the colour, is the identifier — WCAG 1.4.1. */
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend-swatch {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.legend-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 .history-legend {

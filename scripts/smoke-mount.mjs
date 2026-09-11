@@ -159,8 +159,10 @@ const SNAPSHOTS = [
 
 // Recorded usage history spanning ~30 days, for the chart cases: two windows
 // on Claude (one day-5 reading is a failure, which must plot as a gap, not a
-// made-up point), and a credits-only OpenRouter. Anchored to now so range
-// arithmetic is stable whenever the suite runs.
+// made-up point; the newest reading reports only the weekly window, so the
+// five-hour line ends a day earlier — a window can be absent from a
+// successful reading), and a credits-only OpenRouter. Anchored to now so
+// range arithmetic is stable whenever the suite runs.
 const HISTORY = (() => {
   const day = (n) => new Date(Date.now() - n * 24 * 3600_000).toISOString();
   return [
@@ -168,7 +170,11 @@ const HISTORY = (() => {
       provider_id: 'claude',
       points: Array.from({ length: 30 }, (_, i) => ({
         at: day(29 - i),
-        windows: i === 24 ? [] : [['five_hour', 10 + i], ['weekly', 40 + i * 2]],
+        windows: i === 24
+          ? []
+          : i === 29
+            ? [['weekly', 40 + i * 2]]
+            : [['five_hour', 10 + i], ['weekly', 40 + i * 2]],
         credits_balance: null,
         failed: i === 24,
       })),
@@ -184,6 +190,20 @@ const HISTORY = (() => {
     },
   ];
 })();
+
+// Any CSS colour to a comparable #rrggbb form, so a line's stroke attribute
+// and its legend swatch's inline style can be asserted equal from outside the
+// component (#222's one-source rule) however jsdom serialises them — a hex
+// colour may come back as `rgb(r, g, b)`.
+function parseColor(s) {
+  const hex = s?.match(/#[0-9a-fA-F]{6}\b/);
+  if (hex) return hex[0].toLowerCase().slice(1);
+  const rgb = s?.match(/rgba?\(([^)]+)\)/);
+  if (rgb) {
+    return rgb[1].split(',').map((n) => parseInt(n, 10).toString(16).padStart(2, '0')).join('');
+  }
+  return null;
+}
 
 // Reveal a top-level Settings disclosure (issue #184) so a case can drive the
 // controls that now start collapsed behind it. Idempotent — a section already
@@ -935,10 +955,10 @@ const CASES = [
       if (metrics.join(',') !== 'five_hour,weekly') {
         throw new Error(`window lines rendered as ${metrics.join(',')}`);
       }
-      // 30 points, one failed with no figures: the line plots 29 real
-      // observations, never inventing a point for the gap.
+      // 30 points, one failed and the newest lacking the window: the line
+      // plots 28 real observations, never inventing a point for either gap.
       const coords = lines[0].getAttribute('points').trim().split(/\s+/);
-      if (coords.length !== 29) throw new Error(`five_hour line plotted ${coords.length} points, expected 29 (gap for the failed reading)`);
+      if (coords.length !== 28) throw new Error(`five_hour line plotted ${coords.length} points, expected 28 (gaps for the failed and window-less readings)`);
       // Percentages and money do not share a chart: Claude (no credits) has
       // no credits chart, OpenRouter (credits only, no windows) has no
       // percentage lines at all.
@@ -985,6 +1005,59 @@ const CASES = [
           throw new Error(`a chart lost its accessible name: ${svg.getAttribute('aria-label')}`);
         }
       }
+      // ---- The keyed legend (#222) ------------------------------------------
+      // One entry per plotted line: a colour swatch equal to the line's own
+      // stroke (one shared source in the component), the metric label, and the
+      // latest in-range value — the window's own newest plotted point, not the
+      // account's newest reading. Everything here is read off the rendered DOM,
+      // never component internals.
+      const strokeOf = (metric) => claude.querySelector(`.history-chart polyline[data-metric="${metric}"]`)?.getAttribute('stroke');
+      const swatchStyle = (item) => item.querySelector('.legend-swatch')?.getAttribute('style');
+      const usageLegend = [...claude.querySelectorAll('.history-chart + .history-legend .legend-item')];
+      if (usageLegend.length !== 2) throw new Error(`the usage legend rendered ${usageLegend.length} entries, expected 2`);
+      for (const [metric, label, value] of [
+        // five_hour's newest plotted point is day(1): 10 + 28 = 38. The newest
+        // reading lacks it, and the legend must not read that as 0 or as the
+        // account-wide newest figure.
+        ['five_hour', '5h', '38%'],
+        ['weekly', 'Weekly', '98%'],
+      ]) {
+        const item = usageLegend.find((el) => el.dataset.metric === metric);
+        if (!item) throw new Error(`the usage legend has no entry for ${metric}`);
+        if (!item.querySelector('.legend-label')?.textContent.includes(label)) {
+          throw new Error(`the ${metric} legend entry is missing its ${JSON.stringify(label)} label: ${item.textContent}`);
+        }
+        if (item.querySelector('.legend-value')?.textContent.trim() !== value) {
+          throw new Error(`the ${metric} legend shows ${item.querySelector('.legend-value')?.textContent.trim()}, expected ${value}`);
+        }
+        if (parseColor(swatchStyle(item)) !== parseColor(strokeOf(metric))) {
+          throw new Error(`the ${metric} swatch (${swatchStyle(item)}) does not match its line stroke (${strokeOf(metric)})`);
+        }
+      }
+      // The credits legend: swatch equal to the credits line's stroke, the
+      // unit as its label, and the latest in-range balance with its unit.
+      const creditsLine = openrouter.querySelector('.credits-chart polyline.credits-line');
+      const creditsLegend = openrouter.querySelector('.credits-chart + .history-legend .legend-item');
+      if (!creditsLegend) throw new Error('the credits chart drew no legend entry');
+      if (creditsLegend.querySelector('.legend-label')?.textContent.trim() !== 'USD') {
+        throw new Error(`the credits legend label is ${creditsLegend.querySelector('.legend-label')?.textContent.trim()}, expected USD`);
+      }
+      if (creditsLegend.querySelector('.legend-value')?.textContent.trim() !== '4.2 USD') {
+        throw new Error(`the credits legend shows ${creditsLegend.querySelector('.legend-value')?.textContent.trim()}, expected 4.2 USD`);
+      }
+      if (parseColor(swatchStyle(creditsLegend)) !== parseColor(creditsLine.getAttribute('stroke'))) {
+        throw new Error(`the credits swatch (${swatchStyle(creditsLegend)}) does not match its line stroke (${creditsLine.getAttribute('stroke')})`);
+      }
+      // Colour is not the only identifier: each swatch is decorative and every
+      // entry carries its label as text (WCAG 1.4.1).
+      for (const item of [...usageLegend, creditsLegend]) {
+        if (item.querySelector('.legend-swatch')?.getAttribute('aria-hidden') !== 'true') {
+          throw new Error('a legend swatch is not marked decorative');
+        }
+        if (!item.querySelector('.legend-label')?.textContent.trim()) {
+          throw new Error('a legend entry has a swatch but no text label');
+        }
+      }
     },
   },
   // Empty history mounts without throwing: the selector is there, no charts.
@@ -997,29 +1070,60 @@ const CASES = [
     },
   },
   // The range selector changes the plotted span: narrowing to 24 hours from a
-  // 30-day history shrinks every line to its last-day readings.
+  // 30-day history shrinks every line to its last-day readings — and a line
+  // dropping out of the range must not recolour the survivors (#222): colour
+  // belongs to the series, not to its rendered position.
   {
     file: 'src/lib/shared/HistoryView.svelte',
     props: ($) => ({ history: $.proxy(structuredClone(HISTORY)), snapshots: $.proxy(structuredClone(SNAPSHOTS)) }),
     verify: ({ target, flushSync }) => {
       const coordCount = () => [...target.querySelectorAll('polyline')]
         .map((l) => l.getAttribute('points').trim().split(/\s+/).filter(Boolean).length);
+      const strokeOf = (metric) => target.querySelector(`.history-chart polyline[data-metric="${metric}"]`)?.getAttribute('stroke');
       const select = target.querySelector('.history-range');
       // The full history first — the default view is the last 7 days, and
-      // this case is about the selector changing the span.
+      // this case is about the selector changing the span. Exact counts:
+      // five_hour plots every reading except the failed one and the newest
+      // (which lacks it) = 28; weekly plots all but the failed = 29; the
+      // credits line plots all 30.
       select.value = 'all';
       select.dispatchEvent(new window.Event('change', { bubbles: true }));
       flushSync();
       const all = coordCount();
-      if (!all.length || all.some((n) => n < 29)) {
-        throw new Error(`the full range did not plot the history: ${all.join(',')}`);
+      if (all.join(',') !== '28,29,30') {
+        throw new Error(`the full range plotted ${all.join(',')}, expected 28,29,30`);
       }
+      const weeklyStroke = strokeOf('weekly');
+      const fiveHourStroke = strokeOf('five_hour');
+      if (!weeklyStroke || !fiveHourStroke) throw new Error('a usage line rendered without an explicit stroke colour');
+      if (weeklyStroke === fiveHourStroke) throw new Error('two window lines share one colour');
       select.value = '24h';
       select.dispatchEvent(new window.Event('change', { bubbles: true }));
       flushSync();
+      // Only the newest reading is in range, and it reports weekly alone:
+      // the five_hour line and its legend entry drop out entirely.
       const narrowed = coordCount();
-      if (!narrowed.length || !narrowed.every((n) => n < all[0])) {
-        throw new Error(`narrowing to 24h did not shrink the span: ${all.join(',')} -> ${narrowed.join(',')}`);
+      if (narrowed.join(',') !== '1,1') {
+        throw new Error(`narrowing to 24h plotted ${narrowed.join(',')}, expected 1,1 (weekly + credits)`);
+      }
+      if (strokeOf('five_hour')) throw new Error('the out-of-range five_hour line is still rendered');
+      if (target.querySelector('.history-chart + .history-legend .legend-item[data-metric="five_hour"]')) {
+        throw new Error('the out-of-range five_hour legend entry is still rendered');
+      }
+      // The surviving weekly line keeps its colour — the regression here is
+      // positional colouring, under which the first rendered line would have
+      // taken over five_hour's colour.
+      if (strokeOf('weekly') !== weeklyStroke) {
+        throw new Error(`weekly changed colour when five_hour dropped out: ${weeklyStroke} -> ${strokeOf('weekly')}`);
+      }
+      // Its legend entry survives too, still swatch-matched and current.
+      const weeklyItem = target.querySelector('.history-chart + .history-legend .legend-item[data-metric="weekly"]');
+      if (!weeklyItem) throw new Error('the weekly legend entry vanished with the range change');
+      if (weeklyItem.querySelector('.legend-value')?.textContent.trim() !== '98%') {
+        throw new Error(`the weekly legend shows ${weeklyItem.querySelector('.legend-value')?.textContent.trim()} after narrowing, expected 98%`);
+      }
+      if (parseColor(weeklyItem.querySelector('.legend-swatch')?.getAttribute('style')) !== parseColor(strokeOf('weekly'))) {
+        throw new Error(`the weekly swatch (${weeklyItem.querySelector('.legend-swatch')?.getAttribute('style')}) no longer matches its stroke (${strokeOf('weekly')})`);
       }
     },
   },

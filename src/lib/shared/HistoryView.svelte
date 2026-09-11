@@ -28,11 +28,26 @@
   // helper writes state, so none of it can trip Svelte 5's
   // state_unsafe_mutation.
   //
+  // Line colours: one source of truth per series, assigned in buildAccounts
+  // and applied to BOTH the polyline stroke and its legend swatch, so the two
+  // cannot disagree. (Colouring used to live in CSS as .usage-line:nth-of-type(n)
+  // — keyed on rendered position, so a line dropping out of the range silently
+  // recoloured its neighbours.) Assignment is by index in the account's
+  // metric-id list, which is computed over ALL recorded points and is therefore
+  // range-independent: a line keeps its colour as the range selector moves.
+  // The palette holds mid-lightness hues so every entry reads on both the
+  // light and dark themes; the credits line keeps its own distinct colour,
+  // never shared with a window.
+  //
   // [[usage history]]: ../../CONTEXT.md
   // [[usage window]]: ../../CONTEXT.md
+  // [[chart legend]]: ../../CONTEXT.md
   // [[outcome parity]]: ../../CONTEXT.md
   // [[stale reading]]: ../../CONTEXT.md
   let { history = [], snapshots = [] } = $props();
+
+  const SERIES_PALETTE = ['#4c9be8', '#e6a817', '#9a6dd7', '#d16ba5', '#5bbcbf', '#c86d5a'];
+  const CREDITS_COLOR = '#2fa46a';
 
   // The selectable time ranges. `null` means unbounded ("all time").
   const RANGES = [
@@ -117,6 +132,20 @@
       .join(' ');
   }
 
+  // A window's latest plotted figure: the newest in-range, non-failed point
+  // carrying THIS metric — not the account's newest reading, which may lack
+  // the window entirely. The legend shows the line's own end, and null when
+  // the line has nothing plotted.
+  function latestValue(points, metricId) {
+    for (let i = points.length - 1; i >= 0; i -= 1) {
+      const p = points[i];
+      if (p.failed) continue;
+      const window = (p.windows ?? []).find(([id]) => id === metricId);
+      if (window) return window[1];
+    }
+    return null;
+  }
+
   // The credits polyline, mapped onto the nice axis computed for the same
   // points — line and gridlines are one scale, so a gridline always means
   // what it says. The map keeps the line inside the plot whatever rounding
@@ -149,11 +178,22 @@
       // plotted range — so a line keeps its identity and colour as the range
       // moves, even where a window is temporarily absent from the readings.
       const metricIds = [...new Set(all.flatMap((p) => (p.windows ?? []).map(([id]) => id)))];
-      const windowLines = metricIds.map((id) => ({
-        id,
-        label: snap?.windows?.find((w) => w.metric_id === id)?.label ?? id,
-        coords: lineCoords(plotted, id, t0, t1),
-      }));
+      const windowLines = metricIds.map((id, i) => {
+        const latest = latestValue(plotted, id);
+        return {
+          id,
+          label: snap?.windows?.find((w) => w.metric_id === id)?.label ?? id,
+          // One colour per series, from the window's position in the
+          // account's metric list — the same value the legend swatch shows,
+          // so line and swatch cannot disagree. The palette repeats only
+          // past six windows on one account.
+          color: SERIES_PALETTE[i % SERIES_PALETTE.length],
+          // The line's own newest in-range figure, rounded to a whole
+          // percentage for the legend.
+          value: latest == null ? null : `${Math.round(latest)}%`,
+          coords: lineCoords(plotted, id, t0, t1),
+        };
+      });
       const creditPoints = plotted.filter((p) => !p.failed && p.credits_balance != null);
       let credits = null;
       if (creditPoints.length) {
@@ -161,10 +201,16 @@
         const lo = values.reduce((a, b) => (b < a ? b : a));
         const hi = values.reduce((a, b) => (b > a ? b : a));
         const axis = niceAxis(lo, hi);
+        const unit = snap?.credits?.unit ?? '';
+        const latest = creditPoints[creditPoints.length - 1].credits_balance;
         credits = {
-          unit: snap?.credits?.unit ?? '',
+          unit,
+          color: CREDITS_COLOR,
           axis,
           coords: creditCoords(creditPoints, axis, t0, t1),
+          // The latest in-range balance, rounded against float noise the
+          // same way the axis labels are, with its unit when one is known.
+          value: `${Math.round(latest * 100) / 100}${unit ? ` ${unit}` : ''}`,
         };
       }
       const hasPlotted = windowLines.some((l) => l.coords) || credits !== null;
@@ -216,7 +262,7 @@
                   <line class="chart-grid" x1="0" y1={t.y} x2="100" y2={t.y} vector-effect="non-scaling-stroke" />
                 {/each}
                 {#each account.windowLines.filter((l) => l.coords) as line (line.id)}
-                  <polyline class="usage-line" data-metric={line.id} points={line.coords} vector-effect="non-scaling-stroke" />
+                  <polyline class="usage-line" data-metric={line.id} points={line.coords} stroke={line.color} vector-effect="non-scaling-stroke" />
                 {/each}
               </svg>
             </div>
@@ -226,9 +272,16 @@
               <span>{account.xLabels[2]}</span>
             </div>
           </div>
+          <!-- The keyed [[chart legend]]: swatch + label + latest value per
+               plotted line, so colour is never the sole identifier. Keyed by
+               metric id like the lines above. -->
           <p class="history-legend">
             {#each account.windowLines.filter((l) => l.coords) as line (line.id)}
-              <span class="legend-item">{line.label}</span>
+              <span class="legend-item" data-metric={line.id}>
+                <span class="legend-swatch" style="background:{line.color}" aria-hidden="true"></span>
+                <span class="legend-label">{line.label}</span>
+                <span class="legend-value">{line.value}</span>
+              </span>
             {/each}
           </p>
         {/if}
@@ -249,7 +302,7 @@
                 {#each account.credits.axis.ticks as t (t.y)}
                   <line class="chart-grid" x1="0" y1={t.y} x2="100" y2={t.y} vector-effect="non-scaling-stroke" />
                 {/each}
-                <polyline class="credits-line" points={account.credits.coords} vector-effect="non-scaling-stroke" />
+                <polyline class="credits-line" points={account.credits.coords} stroke={account.credits.color} vector-effect="non-scaling-stroke" />
               </svg>
             </div>
             <div class="chart-x" aria-hidden="true">
@@ -259,7 +312,11 @@
             </div>
           </div>
           <p class="history-legend">
-            <span class="legend-item">{account.credits.unit || 'Credits'}</span>
+            <span class="legend-item">
+              <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
+              <span class="legend-label">{account.credits.unit || 'Credits'}</span>
+              <span class="legend-value">{account.credits.value}</span>
+            </span>
           </p>
         {/if}
       {/if}

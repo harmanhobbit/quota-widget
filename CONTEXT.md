@@ -369,3 +369,9 @@ bound) how many bytes would be removed. Confirming applies the change and the
 cleaning together; cancelling changes nothing and deletes nothing. A change to
 *forever* or to a looser bound previews nothing because it cleans nothing.
 _Avoid_: Deletion warning, confirm dialog, prune preview
+
+**Chart legend**:
+The keyed list beneath a history chart naming each plotted series by its
+metric label, its line colour, and its latest in-range value, so a line is
+identifiable without relying on colour alone.
+_Avoid_: Key, caption
