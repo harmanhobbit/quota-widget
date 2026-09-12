@@ -125,14 +125,19 @@ Platform differences are small but real:
   adds nothing. The **History** tab (desktop popup and Android app) charts each
   account's record: one line per usage window, a separate credits line where
   the account has credits — percentages and money never share an axis — with a
-  time-range selector. A legend under each chart identifies every line by
-  colour swatch, label and its latest value in range, so the lines never
-  rely on colour alone. Hovering or press-dragging a chart scrubs it: a
-  readout reports the exact timestamp and each series' figure at the nearest
-  recorded reading — *unavailable* at a failed one. On the desktop popup the
-  charts are also keyboard-scrubbable: focus one and use the arrow keys
-  (Home/End jump to the ends). Readings that failed are reported, never
-  plotted as if they were measurements.
+  time-range selector. Lines are drawn step-after: each reading is held as a
+  flat stretch and the line steps only at the next reading's time, never
+  sloping through values no reading reported. A legend under each chart
+  identifies every line by colour swatch, label and its latest value in range,
+  so the lines never rely on colour alone. Hovering or press-dragging a chart
+  scrubs it: the readout reports the moment under the pointer together with
+  each series' figure at the governing reading — the most recent reading at or
+  before that moment, which is the value the line holds there — *unavailable*
+  at a failed one. On the desktop popup the charts are also keyboard-scrubbable:
+  focus one and use the arrow keys (Home/End jump to the ends); keyboard
+  scrubbing lands on recorded readings and reports their recorded timestamps.
+  Readings that failed are reported, never plotted as if they were
+  measurements.
 - **Retention** of that history is your choice, shared between desktop and
   Android: *Forever* (the default), by age (days, weeks, months or years), or
   by file size. Steady-state cleaning under the active policy happens

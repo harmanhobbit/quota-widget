@@ -163,8 +163,15 @@ const SNAPSHOTS = [
 // five-hour line ends a day earlier — a window can be absent from a
 // successful reading), and a credits-only OpenRouter. Anchored to now so
 // range arithmetic is stable whenever the suite runs.
+//
+// Claude's five-hour percentage holds a true plateau (#226): the readings on
+// days 4 and 3 before now (indices 25 and 26) are both 35%, so the line holds
+// flat across that interval and the pointer-scrub case can prove the selected
+// time moves continuously while the held figure stays. Every other value in
+// the fixture is unique, so nothing else can masquerade as a plateau.
 const HISTORY = (() => {
   const day = (n) => new Date(Date.now() - n * 24 * 3600_000).toISOString();
+  const fiveHourAt = (i) => (i === 25 || i === 26 ? 35 : 10 + i);
   return [
     {
       provider_id: 'claude',
@@ -174,7 +181,7 @@ const HISTORY = (() => {
           ? []
           : i === 29
             ? [['weekly', 40 + i * 2]]
-            : [['five_hour', 10 + i], ['weekly', 40 + i * 2]],
+            : [['five_hour', fiveHourAt(i)], ['weekly', 40 + i * 2]],
         credits_balance: null,
         failed: i === 24,
       })),
@@ -224,6 +231,28 @@ function contrastRatio(a, b) {
 }
 
 const THEME_BGS = ['#f5f5f7', '#1e1e22'];
+
+// Step-after geometry (#226): a line over N plotted observations expands to
+// 2N−1 coordinates — the first point, then per later point the corner at the
+// previous value before the point itself — and no drawn segment is diagonal:
+// every consecutive coordinate pair shares its x (a vertical step) or its y
+// (a horizontal hold), because the account never reported an in-between
+// value. Returns the coordinate count so a case can pin it where the
+// observation count is known (55 = 2×28−1 for the five_hour line, 59 for the
+// 30-point credits line).
+function assertStepAfter(polyline, label) {
+  const coords = polyline.getAttribute('points').trim().split(/\s+/).filter(Boolean)
+    .map((pair) => pair.split(',').map(Number));
+  if (!coords.length) throw new Error(`${label} plotted no coordinates`);
+  for (let i = 1; i < coords.length; i += 1) {
+    const [x0, y0] = coords[i - 1];
+    const [x1, y1] = coords[i];
+    if (x0 !== x1 && y0 !== y1) {
+      throw new Error(`${label} drew a diagonal segment (${x0},${y0})->(${x1},${y1}) — step-after lines hold or step, never slope`);
+    }
+  }
+  return coords.length;
+}
 
 // Reveal a top-level Settings disclosure (issue #184) so a case can drive the
 // controls that now start collapsed behind it. Idempotent — a section already
@@ -888,8 +917,12 @@ const CASES = [
       // plots as a gap, never invented as a point.
       const line = history.querySelector('.history-chart polyline[data-metric="five_hour"]');
       if (!line) throw new Error('claude drew no five_hour line');
-      const coords = line.getAttribute('points').trim().split(/\s+/).filter(Boolean);
-      if (coords.length !== 2) throw new Error(`five_hour plotted ${coords.length} points, expected 2`);
+      // Two plotted readings for Claude's five-hour line; the failed reading
+      // plots as a gap, never invented as a point. Step-after (#226) draws
+      // the two observations as hold then step: 3 coordinates, none diagonal.
+      if (assertStepAfter(line, 'five_hour line') !== 3) {
+        throw new Error(`five_hour plotted points other than 3 step coordinates (2 observations)`);
+      }
       // Back returns to the usage popup — the tab is one window, one view.
       target.querySelector('button[title="Back"]').click();
       flushSync();
@@ -976,9 +1009,12 @@ const CASES = [
         throw new Error(`window lines rendered as ${metrics.join(',')}`);
       }
       // 30 points, one failed and the newest lacking the window: the line
-      // plots 28 real observations, never inventing a point for either gap.
-      const coords = lines[0].getAttribute('points').trim().split(/\s+/);
-      if (coords.length !== 28) throw new Error(`five_hour line plotted ${coords.length} points, expected 28 (gaps for the failed and window-less readings)`);
+      // plots 28 real observations, never inventing a point for either gap,
+      // drawn step-after (#226): 55 coordinates (2×28−1), none diagonal.
+      const fiveHourCoordCount = assertStepAfter(lines[0], 'five_hour line');
+      if (fiveHourCoordCount !== 55) {
+        throw new Error(`five_hour line plotted ${fiveHourCoordCount} step coordinates, expected 55 (2×28−1 observations)`);
+      }
       // Percentages and money do not share a chart: Claude (no credits) has
       // no credits chart, OpenRouter (credits only, no windows) has no
       // percentage lines at all.
@@ -990,9 +1026,13 @@ const CASES = [
       if (!openrouter.querySelector('.credits-chart polyline.credits-line')) {
         throw new Error('the credits balance drew no line');
       }
-      // The credits line plots every non-failed point (30 here).
-      const creditCoords = openrouter.querySelector('.credits-line').getAttribute('points').trim().split(/\s+/);
-      if (creditCoords.length !== 30) throw new Error(`credits line plotted ${creditCoords.length} points, expected 30`);
+      // The credits line plots every non-failed point (30 here), step-after
+      // like the percentage lines (#226): 59 coordinates (2×30−1).
+      const creditLine = openrouter.querySelector('.credits-line');
+      const creditCoords = creditLine.getAttribute('points').trim().split(/\s+/);
+      if (assertStepAfter(creditLine, 'credits line') !== 59) {
+        throw new Error(`credits line plotted ${creditCoords.length} step coordinates, expected 59 (2×30−1 observations)`);
+      }
       // ---- Axis treatment: the charts must communicate their scale --------
       // The percentage chart carries a fixed, labelled 0–100 scale: three
       // gridlines (100/50/0) with a matching HTML label column, top first.
@@ -1212,20 +1252,22 @@ const CASES = [
     props: ($) => ({ history: $.proxy(structuredClone(HISTORY)), snapshots: $.proxy(structuredClone(SNAPSHOTS)) }),
     verify: ({ target, flushSync }) => {
       const coordCount = () => [...target.querySelectorAll('polyline')]
-        .map((l) => l.getAttribute('points').trim().split(/\s+/).filter(Boolean).length);
+        .map((l) => assertStepAfter(l, l.getAttribute('data-metric') ?? 'credits'));
       const strokeOf = (metric) => target.querySelector(`.history-chart polyline[data-metric="${metric}"]`)?.getAttribute('stroke');
       const select = target.querySelector('.history-range');
       // The full history first — the default view is the last 7 days, and
-      // this case is about the selector changing the span. Exact counts:
-      // five_hour plots every reading except the failed one and the newest
-      // (which lacks it) = 28; weekly plots all but the failed = 29; the
-      // credits line plots all 30.
+      // this case is about the selector changing the span. Step-after (#226)
+      // expands every line to 2N−1 coordinates: five_hour plots every reading
+      // except the failed one and the newest (which lacks it) = 28 → 55;
+      // weekly plots all but the failed = 29 → 57; the credits line plots all
+      // 30 → 59. The diagonal-free property is asserted per pair inside
+      // assertStepAfter.
       select.value = 'all';
       select.dispatchEvent(new window.Event('change', { bubbles: true }));
       flushSync();
       const all = coordCount();
-      if (all.join(',') !== '28,29,30') {
-        throw new Error(`the full range plotted ${all.join(',')}, expected 28,29,30`);
+      if (all.join(',') !== '55,57,59') {
+        throw new Error(`the full range plotted ${all.join(',')}, expected 55,57,59 step coordinates`);
       }
       const weeklyStroke = strokeOf('weekly');
       const fiveHourStroke = strokeOf('five_hour');
@@ -1258,6 +1300,126 @@ const CASES = [
       }
       if (parseColor(weeklyItem.querySelector('.legend-swatch')?.getAttribute('style')) !== parseColor(strokeOf('weekly'))) {
         throw new Error(`the weekly swatch (${weeklyItem.querySelector('.legend-swatch')?.getAttribute('style')}) no longer matches its stroke (${strokeOf('weekly')})`);
+      }
+    },
+  },
+  // ---- Continuous-time pointer scrub over a held reading (#226) -----------
+  //
+  // The pointer path maps pointer x to a continuous selected time across the
+  // plotted range and reports the governing (floor) observation's held value,
+  // so across a plateau the timestamp advances while the figure stays put.
+  // jsdom has no layout, so the plot gets a stubbed non-zero
+  // getBoundingClientRect (1000px wide) and every clientX maps to viewBox
+  // x = clientX/10. Over the 'all' range the 30 readings span the plot at
+  // tx ≈ i·100/29: the plateau readings (i=25, 26) sit at ≈86.2 and ≈89.7,
+  // the failed reading (i=24) at ≈82.8, the 37%/38% readings at ≈93.1/≈96.6.
+  {
+    file: 'src/lib/shared/HistoryView.svelte',
+    props: ($) => ({ history: $.proxy(structuredClone(HISTORY)), snapshots: $.proxy(structuredClone(SNAPSHOTS)) }),
+    verify: ({ target, flushSync }) => {
+      const select = target.querySelector('.history-range');
+      select.value = 'all';
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+      flushSync();
+      const claude = target.querySelector('.history-account');
+      const usageSvg = claude.querySelector('.history-chart svg');
+      const readout = () => claude.querySelector('.history-chart + .chart-readout');
+      const figures = () => Object.fromEntries([...readout().querySelectorAll('.readout-item')].map((el) => [
+        el.querySelector('.legend-label')?.textContent.trim(),
+        el.querySelector('.legend-value')?.textContent.trim(),
+      ]));
+      const when = () => readout().querySelector('.readout-when')?.textContent.trim();
+      const guideX = () => claude.querySelector('.history-chart .chart-guide')?.getAttribute('x1');
+      const dotXs = () => [...claude.querySelectorAll('.history-chart .chart-dot')].map((d) => d.style.left);
+      const move = (clientX) => {
+        usageSvg.dispatchEvent(new window.PointerEvent('pointermove', { clientX, bubbles: true }));
+        flushSync();
+      };
+      // The layout stub everything below depends on: a known non-zero plot.
+      usageSvg.getBoundingClientRect = () => ({ left: 0, right: 1000, top: 0, bottom: 40, width: 1000, height: 40, x: 0, y: 0 });
+
+      // Plateau: both positions govern at the 35% reading (i=25), so the
+      // figures are identical while the mapped timestamp and the guide/dots
+      // move with the pointer — continuous time, held value. A snap-to-
+      // column readout could not produce this pair (same column would freeze
+      // the timestamp too; different columns would change the figure).
+      move(870);
+      const plateauA = { figures: figures(), when: when(), guide: guideX(), dots: dotXs().join('|') };
+      move(890);
+      const plateauB = { figures: figures(), when: when(), guide: guideX(), dots: dotXs().join('|') };
+      if (plateauA.figures['5h'] !== '35%' || plateauB.figures['5h'] !== '35%') {
+        throw new Error(`on the plateau the held 5h figure read ${plateauA.figures['5h']} then ${plateauB.figures['5h']}, expected 35% at both`);
+      }
+      if (plateauA.when === plateauB.when) {
+        throw new Error(`the readout timestamp did not move across the plateau: ${plateauA.when}`);
+      }
+      if (plateauA.guide === plateauB.guide || plateauA.dots === plateauB.dots) {
+        throw new Error(`the guide/dots did not follow the pointer across the plateau: ${plateauA.guide}[${plateauA.dots}] vs ${plateauB.guide}[${plateauB.dots}]`);
+      }
+
+      // Floor/as-of: between the 37% reading (i=27) and the later 38% one
+      // (i=28) the value stays A's until the pointer reaches B's x, then B's.
+      move(950);
+      if (figures()['5h'] !== '37%') throw new Error(`a pointer between the 37% and 38% readings read ${figures()['5h']}, expected the held 37%`);
+      move(960);
+      if (figures()['5h'] !== '37%') throw new Error(`a pointer just before the 38% reading read ${figures()['5h']}, expected the held 37%`);
+      move(970);
+      if (figures()['5h'] !== '38%') throw new Error(`a pointer at/past the 38% reading read ${figures()['5h']}, expected 38%`);
+
+      // A failed governing column: the mapped timestamp + unavailable, with
+      // no figures, no dots, no guide — on the pointer path too.
+      move(828);
+      const failedReadout = readout();
+      if (!/unavailable/.test(failedReadout.textContent)) {
+        throw new Error(`a failed governing column read ${JSON.stringify(failedReadout.textContent)}`);
+      }
+      if (!when()) throw new Error('the failed governing column lost its timestamp');
+      if (failedReadout.querySelectorAll('.readout-item').length) throw new Error('a failed governing column showed figures');
+      if (claude.querySelectorAll('.chart-dot').length) throw new Error('a failed governing column drew dots');
+      if (claude.querySelector('.chart-guide')) throw new Error('a failed governing column drew a guide');
+
+      // Far right: the newest reading governs, whose five_hour window is
+      // absent — a dash, never 0 or an account-wide figure.
+      move(1000);
+      const lastFigures = figures();
+      if (lastFigures['5h'] !== '—' || lastFigures['Weekly'] !== '98%') {
+        throw new Error(`the far-right pointer read ${JSON.stringify(lastFigures)}, expected 5h — and Weekly 98%`);
+      }
+
+      // Far-left boundary: the pointer clamps to the first in-range reading —
+      // armed, valued, guided, at that reading's recorded time (identical to
+      // what the keyboard path reports for Home) — never a moment before it,
+      // and never armed-but-empty.
+      usageSvg.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+      flushSync();
+      const homeWhen = when();
+      if (!homeWhen) throw new Error('keyboard Home reported no timestamp to compare the far-left clamp against');
+      move(0);
+      if (readout().getAttribute('data-armed') == null) throw new Error('the far-left pointer armed nothing');
+      const farLeft = figures();
+      if (farLeft['5h'] !== '10%' || farLeft['Weekly'] !== '40%') {
+        throw new Error(`the far-left pointer read ${JSON.stringify(farLeft)}, expected the first reading (5h 10%, Weekly 40%)`);
+      }
+      if (when() !== homeWhen) {
+        throw new Error(`the far-left pointer reported ${when()}, not the first reading's recorded time (${homeWhen})`);
+      }
+      if (!guideX() || dotXs().length !== 2) throw new Error('the far-left selection drew no guide/dots');
+
+      // Zero-width geometry (the stub removed, back to jsdom's no-layout
+      // zeros): the pointer still arms a valid first column, never a
+      // divide-by-zero or a throw.
+      delete usageSvg.getBoundingClientRect;
+      move(12);
+      if (readout().getAttribute('data-armed') == null || !readout().textContent.trim()) {
+        throw new Error('the zero-width plot armed nothing without throwing');
+      }
+      if (figures()['5h'] !== '10%') throw new Error(`the zero-width plot armed ${JSON.stringify(figures())}, expected the first column`);
+
+      // Leaving the plot disarms, as before.
+      usageSvg.dispatchEvent(new window.PointerEvent('pointerleave', { bubbles: true }));
+      flushSync();
+      if (readout().getAttribute('data-armed') != null || readout().textContent.trim()) {
+        throw new Error('pointerleave did not disarm and empty the readout');
       }
     },
   },

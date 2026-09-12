@@ -350,6 +350,14 @@ reading was a failure. Written only when it differs from the account's last
 point (see Coalescing).
 _Avoid_: Sample, datapoint, snapshot
 
+**Held reading**:
+The value a [[history point]] carries continues to describe the account until
+the next [[history point]]: a history chart draws it as a flat step that drops
+or rises only at the next reading's own time (step-after), and the [[scrub
+readout]] reports it across that interval — because the account did not pass
+through unrecorded intermediate values between observations.
+_Avoid_: Interpolation, tween, smoothing
+
 **Retention policy**:
 The rule bounding how much [[usage history]] is kept: *forever*, an *age* bound
 (a count of days / weeks / months / years), or a *file-size* bound. Part of
@@ -377,10 +385,14 @@ identifiable without relying on colour alone.
 _Avoid_: Key, caption
 
 **Scrub readout**:
-The values a history chart reports at a selected time position: the
-timestamp and each series' figure at the nearest [[history point]], or
-*unavailable* at a failed reading. Reachable by pointer/press and by
-keyboard.
+The values a history chart reports at a selected time position: the timestamp
+and each series' figure at the governing [[history point]] — the most recent
+observation at or before the selected time, whose [[held reading]] stands
+until the next one — or *unavailable* at a failed reading. The pointer/press
+path selects the time continuously across the plotted range, so between
+readings the timestamp moves while the figure is held; the keyboard path
+selects recorded columns and reports their recorded times. Reachable by
+pointer/press and by keyboard.
 _Avoid_: Tooltip, hover box, popup
 
 **Scrub**:

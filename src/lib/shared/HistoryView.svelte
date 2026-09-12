@@ -42,16 +42,21 @@
   // distinct colour, never shared with a window.
   //
   // Scrub: every chart is a scrub surface ([[scrub]]) feeding one [[scrub
-  // readout]] box. A pointer position or a keyboard move selects the nearest
-  // in-range history-point column — failed points included on the percentage
-  // chart, so a failure reads as *unavailable* rather than being skipped —
-  // and the readout reports the timestamp plus each series' figure there.
-  // Pointer and keyboard write the same per-chart state, so both inputs
-  // drive one identical readout.
+  // readout]] box. The two input paths select differently ([[held reading]]):
+  // keyboard lands on a recorded in-range history-point column — failed
+  // points included on the percentage chart, so a failure reads as
+  // *unavailable* rather than being skipped — and reports that column's
+  // recorded timestamp with guide/dots at its x; pointer/press selects a
+  // continuous time, mapped linearly across the plotted range and clamped so
+  // it is never before the first reading (where no held value exists yet),
+  // and the figure is the governing observation — the most recent column at
+  // or before the selected time. Both paths write the same per-chart state,
+  // so both inputs drive one identical readout.
   //
   // [[usage history]]: ../../CONTEXT.md
   // [[usage window]]: ../../CONTEXT.md
   // [[chart legend]]: ../../CONTEXT.md
+  // [[held reading]]: ../../CONTEXT.md
   // [[scrub]]: ../../CONTEXT.md
   // [[scrub readout]]: ../../CONTEXT.md
   // [[outcome parity]]: ../../CONTEXT.md
@@ -135,18 +140,32 @@
   }
 
   // The polyline for one window: every plotted, non-failed point that
-  // carries this metric, in time order.
+  // carries this metric, in time order, drawn step-after ([[held reading]]):
+  // the line holds each reading's value and steps vertically AT the next
+  // reading's x — first point, then per later point the corner (x_i, y_{i-1})
+  // before (x_i, y_i) — because the account never reported the in-between
+  // values a slope would draw. A single plotted point stays one coordinate.
+  // A failed point is excluded, so the held value bridges the gap.
   function lineCoords(points, metricId, t0, t1) {
-    return points
+    const pts = points
       .filter((p) => !p.failed)
       .map((p) => {
         const window = (p.windows ?? []).find(([id]) => id === metricId);
-        return window
-          ? `${timeToX(p.at, t0, t1).toFixed(2)},${pctToY(window[1]).toFixed(2)}`
-          : null;
+        return window ? { x: timeToX(p.at, t0, t1), y: pctToY(window[1]) } : null;
       })
-      .filter(Boolean)
-      .join(' ');
+      .filter(Boolean);
+    const out = [];
+    pts.forEach((pt, i) => {
+      if (i === 0) {
+        out.push(`${pt.x.toFixed(2)},${pt.y.toFixed(2)}`);
+        return;
+      }
+      out.push(
+        `${pt.x.toFixed(2)},${pts[i - 1].y.toFixed(2)}`,
+        `${pt.x.toFixed(2)},${pt.y.toFixed(2)}`,
+      );
+    });
+    return out.join(' ');
   }
 
   // A window's latest plotted figure: the newest in-range, non-failed point
@@ -166,14 +185,21 @@
   // ---- [[scrub readout]] helpers. All pure: they read the selection state,
   // never write it, so the template can call them freely. ----
 
-  // The column a chart's selection points at, or null when there is no
-  // selection or the index has gone stale (an out-of-range index reads as no
-  // selection rather than a wrong figure or a throw).
-  function readColumn(account, kind, reads) {
+  // The selection a chart's read state points at, or null when there is none
+  // or it has gone stale (an out-of-range column index reads as no selection
+  // rather than a wrong figure or a throw). A selection carries the governing
+  // `column` plus where the guide/dots and the readout timestamp sit, which
+  // is input-dependent ([[held reading]]): the keyboard path marks and reports
+  // the recorded column itself; the pointer path marks the selected pointer x
+  // and reports the continuously mapped time, with the column supplying only
+  // the held figure.
+  function readSel(account, kind, reads) {
     const columns = kind === 'credits' ? account.credits?.columns : account.usage?.columns;
-    const i = reads[`${kind}:${account.id}`];
-    if (i == null || !columns) return null;
-    return columns[i] ?? null;
+    const sel = reads[`${kind}:${account.id}`];
+    if (sel == null || !columns) return null;
+    const column = columns[sel.i];
+    if (!column) return null;
+    return { x: sel.x, at: sel.at, column };
   }
 
   // The readout names the moment as a date AND a time: scrubbing answers
@@ -200,32 +226,46 @@
   }
 
   // Guide dots at the selected percentage point: one per plotted line that
-  // has a figure at that exact point, none on a failed point — a failure
-  // carries no figure to mark. The dot reuses the line's colour (the same
-  // one-source value as the stroke and legend swatch).
-  function usageDots(account, column) {
-    if (!column || column.failed) return [];
+  // has a figure at the governing point, none on a failed point — a failure
+  // carries no figure to mark. The dots sit at the selection's x, which
+  // tracks the pointer on the pointer path and the column on the keyboard
+  // path, so the marker and the readout agree. The dot reuses the line's
+  // colour (the same one-source value as the stroke and legend swatch).
+  function usageDots(account, sel) {
+    if (!sel || sel.column.failed) return [];
     return account.windowLines
       .filter((l) => l.coords)
       .flatMap((l) => {
-        const w = column.windows.find(([id]) => id === l.id);
-        return w ? [{ color: l.color, x: column.tx, y: pctToY(w[1]) }] : [];
+        const w = sel.column.windows.find(([id]) => id === l.id);
+        return w ? [{ color: l.color, x: sel.x, y: pctToY(w[1]) }] : [];
       });
   }
 
   // The credits polyline, mapped onto the nice axis computed for the same
   // points — line and gridlines are one scale, so a gridline always means
-  // what it says. The map keeps the line inside the plot whatever rounding
-  // does; bounds come from a reduction, not spread over Math.min/max — an
-  // all-time history can outgrow the argument count an engine accepts.
+  // what it says. Step-after like the percentage lines ([[held reading]]):
+  // a balance is held until the next reading and steps at the reading's x.
+  // The map keeps the line inside the plot whatever rounding does; bounds
+  // come from a reduction, not spread over Math.min/max — an all-time
+  // history can outgrow the argument count an engine accepts.
   function creditCoords(points, axis, t0, t1) {
     const span = axis.hi - axis.lo;
-    return points
-      .map((p) => {
-        const y = H - ((p.credits_balance - axis.lo) / span) * H;
-        return `${timeToX(p.at, t0, t1).toFixed(2)},${Math.min(H, Math.max(0, y)).toFixed(2)}`;
-      })
-      .join(' ');
+    const pts = points.map((p) => ({
+      x: timeToX(p.at, t0, t1),
+      y: Math.min(H, Math.max(0, H - ((p.credits_balance - axis.lo) / span) * H)),
+    }));
+    const out = [];
+    pts.forEach((pt, i) => {
+      if (i === 0) {
+        out.push(`${pt.x.toFixed(2)},${pt.y.toFixed(2)}`);
+        return;
+      }
+      out.push(
+        `${pt.x.toFixed(2)},${pts[i - 1].y.toFixed(2)}`,
+        `${pt.x.toFixed(2)},${pt.y.toFixed(2)}`,
+      );
+    });
+    return out.join(' ');
   }
 
   function buildAccounts(history, snapshots, rangeKey) {
@@ -266,8 +306,8 @@
       // in range — a failed reading is a real recorded moment, and selecting
       // it is how its *unavailable* gets explained. The credits chart's
       // columns are its plotted set only (non-failed balances). Positions are
-      // precomputed in the same viewBox units the lines use, so pointer
-      // nearest-column matching and the guide/dots share one mapping.
+      // precomputed in the same viewBox units the lines use, so the pointer's
+      // governing-column (floor) lookup and the guide/dots share one mapping.
       const usage = {
         columns: plotted.map((p) => ({
           at: p.at,
@@ -308,6 +348,11 @@
         windowLines,
         usage,
         credits,
+        // The plotted span's bounds, exposed so the pointer path can map its
+        // x back to a continuous selected time (the keyboard path never
+        // needs them — it reports recorded times). Both charts share them.
+        t0,
+        t1,
         // The plotted span's time labels: start, middle, end — the X axis
         // every chart in this account shares.
         xLabels: [t0, (t0 + t1) / 2, t1].map((t) => rangeLabel(t, rangeKey)),
@@ -328,24 +373,34 @@
     // Zero-width geometry (a hidden pane, or jsdom's no-layout mounts) has no
     // width to divide by: the pointer is clamped into the box first — the
     // same read-it-as-on-the-target trick the card tooltip uses — and a
-    // zero-width plot reads every position as its left edge, a valid column.
+    // zero-width plot reads every position as its left edge, which the clamp
+    // below arms at the first column. A valid selection, never a throw.
     const box = event.currentTarget.getBoundingClientRect();
     const width = box.right - box.left;
     const x = Math.min(Math.max(event.clientX, box.left), box.right);
-    const frac = width > 0 ? (x - box.left) / width : 0;
-    // Nearest column by normalised time: positions are precomputed in the
-    // same 0–100 space the lines draw in, so what the pointer picks is what
-    // the guide later marks.
-    let best = 0;
-    let bestDist = Infinity;
-    columns.forEach((column, i) => {
-      const dist = Math.abs(column.tx / 100 - frac);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = i;
-      }
-    });
-    reads[`${kind}:${account.id}`] = best;
+    const px = (width > 0 ? (x - box.left) / width : 0) * 100;
+    // Selectable bounds ([[held reading]]): a held value exists only from the
+    // first in-range reading onward — the line is not seeded from a pre-range
+    // observation — so the leftmost selectable moment is that reading, never
+    // a moment before it; the rightmost is the plot's right edge, where the
+    // last reading is still held.
+    const selX = Math.max(px, columns[0].tx);
+    // The governing observation: the most recent column at or before the
+    // selected moment. Columns are in time order, so the floor is the last
+    // one whose position the pointer has reached — across a plateau every
+    // position maps to the same held reading, and at the next reading's own
+    // x that reading takes over.
+    let i = 0;
+    for (let c = 1; c < columns.length; c += 1) {
+      if (columns[c].tx <= selX) i = c;
+      else break;
+    }
+    // Continuous selected time: the pointer x mapped linearly across the
+    // plotted range, so the readout's timestamp advances between readings
+    // while the held figure stays. The keyboard path reports recorded times
+    // instead (scrubKey).
+    const at = account.t0 + (selX / 100) * (account.t1 - account.t0);
+    reads[`${kind}:${account.id}`] = { i, x: selX, at };
   }
 
   // Leaving the plot disarms the readout; the box itself stays so the fade
@@ -356,7 +411,9 @@
 
   // Keyboard scrub (desktop route): no selection yet and the arrows pick the
   // sensible end — Right from nothing starts at the oldest point, Left at the
-  // newest — then move one column, clamped. Home/End jump. Every handled key
+  // newest — then move one column, clamped. Home/End jump. Unlike the pointer
+  // path, the selection IS the recorded column: guide/dots sit at its x and
+  // the readout reports its recorded timestamp. Every handled key
   // preventDefaults so the pane under the focused chart does not scroll.
   function scrubKey(event, account, kind) {
     const columns = kind === 'credits' ? account.credits?.columns : account.usage?.columns;
@@ -365,13 +422,13 @@
     const current = reads[key];
     const last = columns.length - 1;
     let next = null;
-    if (event.key === 'ArrowRight') next = current == null ? 0 : Math.min(last, current + 1);
-    else if (event.key === 'ArrowLeft') next = current == null ? last : Math.max(0, current - 1);
+    if (event.key === 'ArrowRight') next = current == null ? 0 : Math.min(last, current.i + 1);
+    else if (event.key === 'ArrowLeft') next = current == null ? last : Math.max(0, current.i - 1);
     else if (event.key === 'Home') next = 0;
     else if (event.key === 'End') next = last;
     else return;
     event.preventDefault();
-    reads[key] = next;
+    reads[key] = { i: next, x: columns[next].tx, at: columns[next].at };
   }
 </script>
 
@@ -428,12 +485,14 @@
                   {#each account.windowLines.filter((l) => l.coords) as line (line.id)}
                     <polyline class="usage-line" data-metric={line.id} points={line.coords} stroke={line.color} vector-effect="non-scaling-stroke" />
                   {/each}
-                  {#if readColumn(account, 'usage', reads)}
-                    {@const column = readColumn(account, 'usage', reads)}
-                    <!-- The guide marks the selected moment — except on a
-                         failed point, where there is no figure to point at. -->
-                    {#if !column.failed}
-                      <line class="chart-guide" x1={column.tx} y1="0" x2={column.tx} y2={H} vector-effect="non-scaling-stroke" />
+                  {#if readSel(account, 'usage', reads)}
+                    {@const sel = readSel(account, 'usage', reads)}
+                    <!-- The guide marks the selected moment — which on the
+                         pointer path is the pointer's own x, not the column's
+                         — except on a failed point, where there is no figure
+                         to point at. -->
+                    {#if !sel.column.failed}
+                      <line class="chart-guide" x1={sel.x} y1="0" x2={sel.x} y2={H} vector-effect="non-scaling-stroke" />
                     {/if}
                   {/if}
                 </svg>
@@ -441,7 +500,7 @@
                      non-uniformly, which would pull every circle into an
                      ellipse. Same reasoning as the HTML tick labels. -->
                 <div class="chart-dots" aria-hidden="true">
-                  {#each usageDots(account, readColumn(account, 'usage', reads)) as dot, i (i)}
+                  {#each usageDots(account, readSel(account, 'usage', reads)) as dot, i (i)}
                     <span class="chart-dot" style="left:{dot.x}%; top:{(dot.y / H) * 100}%; background:{dot.color}"></span>
                   {/each}
                 </div>
@@ -456,14 +515,17 @@
           <!-- The [[scrub readout]]: one always-present box per chart, armed
                by either input path, emptied when the selection clears so no
                stale figure survives a range change. -->
-          <p class="chart-readout" data-armed={readColumn(account, 'usage', reads) ? '' : null} aria-live="polite">
-            {#if readColumn(account, 'usage', reads)}
-              {@const column = readColumn(account, 'usage', reads)}
-              <span class="readout-when">{readoutWhen(column.at)}</span>
-              {#if column.failed}
+          <p class="chart-readout" data-armed={readSel(account, 'usage', reads) ? '' : null} aria-live="polite">
+            {#if readSel(account, 'usage', reads)}
+              {@const sel = readSel(account, 'usage', reads)}
+              <!-- The timestamp is the recorded column's on the keyboard
+                   path and the continuously selected time on the pointer
+                   path; the figures are the governing column's either way. -->
+              <span class="readout-when">{readoutWhen(sel.at)}</span>
+              {#if sel.column.failed}
                 <span class="readout-unavailable">unavailable</span>
               {:else}
-                {#each usageReadLines(account, column) as line (line.label)}
+                {#each usageReadLines(account, sel.column) as line (line.label)}
                   <span class="readout-item">
                     <span class="legend-swatch" style="background:{line.color}" aria-hidden="true"></span>
                     <span class="legend-label">{line.label}</span>
@@ -511,13 +573,14 @@
                     <line class="chart-grid" x1="0" y1={t.y} x2="100" y2={t.y} vector-effect="non-scaling-stroke" />
                   {/each}
                   <polyline class="credits-line" points={account.credits.coords} stroke={account.credits.color} vector-effect="non-scaling-stroke" />
-                  {#if readColumn(account, 'credits', reads)}
-                    <line class="chart-guide" x1={readColumn(account, 'credits', reads).tx} y1="0" x2={readColumn(account, 'credits', reads).tx} y2={H} vector-effect="non-scaling-stroke" />
+                  {#if readSel(account, 'credits', reads)}
+                    <line class="chart-guide" x1={readSel(account, 'credits', reads).x} y1="0" x2={readSel(account, 'credits', reads).x} y2={H} vector-effect="non-scaling-stroke" />
                   {/if}
                 </svg>
                 <div class="chart-dots" aria-hidden="true">
-                  {#if readColumn(account, 'credits', reads)}
-                    <span class="chart-dot" style="left:{readColumn(account, 'credits', reads).tx}%; top:{(readColumn(account, 'credits', reads).y / H) * 100}%; background:{account.credits.color}"></span>
+                  {#if readSel(account, 'credits', reads)}
+                    {@const sel = readSel(account, 'credits', reads)}
+                    <span class="chart-dot" style="left:{sel.x}%; top:{(sel.column.y / H) * 100}%; background:{account.credits.color}"></span>
                   {/if}
                 </div>
               </div>
@@ -528,13 +591,13 @@
               <span>{account.xLabels[2]}</span>
             </div>
           </div>
-          <p class="chart-readout" data-armed={readColumn(account, 'credits', reads) ? '' : null} aria-live="polite">
-            {#if readColumn(account, 'credits', reads)}
-              {@const column = readColumn(account, 'credits', reads)}
-              <span class="readout-when">{readoutWhen(column.at)}</span>
+          <p class="chart-readout" data-armed={readSel(account, 'credits', reads) ? '' : null} aria-live="polite">
+            {#if readSel(account, 'credits', reads)}
+              {@const sel = readSel(account, 'credits', reads)}
+              <span class="readout-when">{readoutWhen(sel.at)}</span>
               <span class="readout-item">
                 <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
-                <span class="legend-value">{Math.round(column.balance * 100) / 100}{account.credits.unit ? ` ${account.credits.unit}` : ''}</span>
+                <span class="legend-value">{Math.round(sel.column.balance * 100) / 100}{account.credits.unit ? ` ${account.credits.unit}` : ''}</span>
               </span>
             {/if}
           </p>
