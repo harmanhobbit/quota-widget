@@ -334,6 +334,20 @@
         const unit = snap?.credits?.unit ?? '';
         const latest = creditPoints[creditPoints.length - 1].credits_balance;
         const span = axis.hi - axis.lo;
+        // The credits value's stable slot, in ch (digit advances — the value
+        // renders tabular-nums). The entry deliberately keeps natural width —
+        // no data-metric, so the fixed 3em percentage slot must not apply —
+        // but the box is content-fit, so nothing else holds its line count:
+        // a selected balance formatting wider than the idle one could wrap
+        // the entry to a second line and move the box. The slot is derived
+        // from the widest balance representation the current plotted range
+        // can render (the idle key shows the latest, a selection any column)
+        // with +2ch headroom for the space and unit letters, which can each
+        // run slightly past one digit wide. The same slot renders in BOTH
+        // states, so the entry occupies one line either way; narrower
+        // balances keep their natural look inside it.
+        const fmtBalance = (v) => `${Math.round(v * 100) / 100}${unit ? ` ${unit}` : ''}`;
+        const valueSlot = creditPoints.reduce((a, p) => Math.max(a, fmtBalance(p.credits_balance).length), 0) + 2;
         credits = {
           unit,
           color: CREDITS_COLOR,
@@ -347,7 +361,8 @@
           })),
           // The latest in-range balance, rounded against float noise the
           // same way the axis labels are, with its unit when one is known.
-          value: `${Math.round(latest * 100) / 100}${unit ? ` ${unit}` : ''}`,
+          value: fmtBalance(latest),
+          valueSlot,
         };
       }
       const hasPlotted = windowLines.some((l) => l.coords) || credits !== null;
@@ -634,7 +649,12 @@
                left region, the same fields carrying the selected balance
                while scrubbing, timestamp in the reserved right region. The
                credits entry carries no data-metric — the usage value slot
-               must not force percentage width onto a balance-with-unit. -->
+               must not force percentage width onto a balance-with-unit —
+               but it still holds one stable width: the component derives a
+               min-width from the widest balance the plotted range can
+               render, and BOTH branches render the same slot, so a selected
+               balance wider than the idle one cannot wrap the entry to a
+               second line and move the content-fit box. -->
           <p class="chart-readout" aria-live="polite">
             {#if readSel(account, 'credits', reads)}
               {@const sel = readSel(account, 'credits', reads)}
@@ -642,7 +662,7 @@
                 <span class="readout-item">
                   <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
                   <span class="legend-label">{account.credits.unit || 'Credits'}</span>
-                  <span class="legend-value">{Math.round(sel.column.balance * 100) / 100}{account.credits.unit ? ` ${account.credits.unit}` : ''}</span>
+                  <span class="legend-value" style="min-width:{account.credits.valueSlot}ch">{Math.round(sel.column.balance * 100) / 100}{account.credits.unit ? ` ${account.credits.unit}` : ''}</span>
                 </span>
               </span>
               <span class="readout-when">{readoutWhen(sel.at)}</span>
@@ -651,7 +671,7 @@
                 <span class="readout-item">
                   <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
                   <span class="legend-label">{account.credits.unit || 'Credits'}</span>
-                  <span class="legend-value">{account.credits.value}</span>
+                  <span class="legend-value" style="min-width:{account.credits.valueSlot}ch">{account.credits.value}</span>
                 </span>
               </span>
             {/if}

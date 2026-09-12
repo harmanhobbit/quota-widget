@@ -1279,6 +1279,21 @@ const CASES = [
       // the same field set the idle key shows and the timestamp last.
       const creditsSvg = openrouter.querySelector('.credits-chart svg');
       if (creditsSvg.getAttribute('tabindex') !== '0') throw new Error('the credits chart is not keyboard-focusable');
+      // The credits value's slot, read off the idle key before selecting:
+      // the credits entry keeps natural width (no data-metric, so no fixed
+      // percentage slot), so the component derives a stable min-width from
+      // the widest balance the plotted range can render and renders the
+      // SAME slot in both states — otherwise a selected balance formatting
+      // wider than the idle one could wrap the entry to a second line and
+      // move the content-fit box.
+      const slotOf = (box) => {
+        const m = box.querySelector('.readout-item .legend-value')
+          ?.getAttribute('style')
+          ?.match(/min-width:\s*([\d.]+)ch/);
+        if (!m) throw new Error('the credits value carries no data-derived min-width slot');
+        return parseFloat(m[1]);
+      };
+      const idleCreditsSlot = slotOf(openrouter.querySelector('.credits-chart + .chart-readout'));
       key(creditsSvg, 'End');
       const creditsReadout = openrouter.querySelector('.credits-chart + .chart-readout');
       if (!whenOf(creditsReadout)) throw new Error('End did not select a moment in the credits readout');
@@ -1288,6 +1303,19 @@ const CASES = [
       if (!/4\.2 USD/.test(creditsReadout.textContent)) throw new Error(`the credits readout shows ${JSON.stringify(creditsReadout.textContent)}, expected 4.2 USD`);
       if (!creditsReadout.lastElementChild?.classList.contains('readout-when')) {
         throw new Error('the credits timestamp is not the readout\'s last field');
+      }
+      // The slot survives the selection unchanged and covers every balance
+      // the fixture can render — the widest formatted balance included — so
+      // no selectable state of this chart can produce a wider value element
+      // than idle's. jsdom cannot measure the wrap itself (no layout); the
+      // hook plus the fixture's widest representation is what it can prove.
+      if (slotOf(creditsReadout) !== idleCreditsSlot) {
+        throw new Error(`the credits value slot changed on selection: ${slotOf(creditsReadout)}ch vs idle ${idleCreditsSlot}ch`);
+      }
+      const widestFixtureBalance = Math.max(...HISTORY[1].points.map((p) =>
+        `${Math.round(p.credits_balance * 100) / 100} USD`.length));
+      if (idleCreditsSlot < widestFixtureBalance) {
+        throw new Error(`the credits value slot (${idleCreditsSlot}ch) does not cover the widest balance the fixture can render (${widestFixtureBalance} chars)`);
       }
       // #232: the credits box freezes the same way — the selection added only
       // its trailing timestamp to an otherwise identical structure.

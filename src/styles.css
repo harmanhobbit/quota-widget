@@ -1257,8 +1257,11 @@ select option {
    drifts as a percentage grows. min-width can only fix widths BELOW it, so
    the slot is sized with headroom over 100%'s width in any shipped UI font
    rather than to one font's exact measure. Scoped by data-metric — the
-   credits entry carries none, so a longer balance-with-unit (8.75 USD)
-   keeps its natural width and is never forced into the percentage slot. */
+   credits entry carries none, so it is never forced into the percentage
+   slot; it instead carries the component's own data-derived min-width
+   (its widest plotted balance, see HistoryView), so a selected balance
+   wider than the idle one cannot wrap the entry and move the content-fit
+   box, while the balance keeps its natural left-aligned character. */
 .readout-item[data-metric] .legend-value {
   min-width: 3em;
   text-align: right;
