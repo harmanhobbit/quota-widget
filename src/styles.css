@@ -987,6 +987,17 @@ select option {
    figures are the content, so the chrome stays out of the way the way the
    usage cards do. */
 .history {
+  /* The same flex scrolling sizing the .cards/.settings-form panes get:
+     .history is a flex child of main too, and a flex child's height
+     defaults to its content. Without this, the pane can grow instead of
+     becoming the actual scroll container — and the scrollbar-gutter
+     reservation below only applies to the pane's own scrollbar, never to
+     whatever scrolls in its place. flex: 1 + min-height: 0 pin the pane to
+     the window's remaining height, so a long history makes THIS element
+     the scroll container and the gutter reservation applies to the active
+     desktop scrollbar, with the graphs laid out clear of it. */
+  flex: 1;
+  min-height: 0;
   padding: 8px 12px 16px;
   overflow-y: auto;
   /* Reserve the vertical scrollbar's gutter whether or not the scrollbar is
@@ -1165,34 +1176,26 @@ select option {
    so a series field can never spill into the reserved right region: the
    wrap and gap that make the fields wrap live on .readout-series, which
    wraps within its own half; the box no longer wraps as a whole.
-   Vertical freeze (#232): the box's block size and track alignment are
-   state-independent, so a selection changes only the words inside the box,
-   never the box. `baseline` alignment let the grid re-decide the row's
-   height whenever the left region wrapped to a different line count (idle
-   latest values vs. selected governing values) or the timestamp's line
-   entered the baseline math, and with no block-size constraint the box
-   followed — a small vertical jump on every enter/leave. `start` pins both
-   regions to the box's top and the font-relative min-height reserves the
-   worst-case wrapped height, so idle and selected occupy the same box. */
+   Vertical freeze (#232): the box's track alignment is state-independent —
+   `start`, not the baseline that let the grid re-decide the row's height
+   whenever the left region wrapped differently — with a deterministic 1.4
+   line-height making one text line the same height in every state. The box
+   is content-fit: #232 originally reserved a four-line worst-case
+   min-height here, but that floor blanked every legend shorter than the
+   worst case — a two-entry legend sat on ~40px of empty box, the
+   user-reported defect. The floor is not what holds the freeze: idle and a
+   non-failed selection render the same entries and labels in the same
+   fixed-width value slots, so .readout-series wraps to the same line count
+   in both states and the content-sized box keeps one height; wider data
+   grows both states together. A failed selection (*unavailable* + no
+   entries) is the one deliberate shape change outside that guarantee. */
 .chart-readout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   align-items: start;
   /* A deterministic line-height: one text line is exactly 1.4em whatever a
-     platform's `normal` works out to, which is what makes the floor below
-     hold as em arithmetic rather than a per-font guess. */
+     platform's `normal` works out to, so idle and selected rows line up. */
   line-height: 1.4;
-  /* The worst case the two-track design must hold: the shipped maximum of
-     three series entries (Claude's 5-hour / Weekly / Weekly (Opus)) at the
-     narrowest supported width — a 340px desktop popup or a narrow Android
-     surface — lays the left region out one entry per line, and one long
-     label ("Web/tool this month") wraps inside its entry: four 1.4em text
-     lines plus the three 4px row gaps, the 3px padding and the 1px border.
-     min-height rather than a fixed height so data wider than the guarantee
-     grows the box instead of clipping it — and because both states render
-     the same entries and labels, a grown box still moves idle↔selected
-     together, keeping the freeze. */
-  min-height: calc(4 * 1.4em + 3 * 4px + 2 * 3px + 2 * 1px);
   margin: 4px 0 0;
   padding: 3px 8px;
   border: 1px solid var(--border);

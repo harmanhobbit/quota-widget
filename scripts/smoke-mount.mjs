@@ -1297,6 +1297,39 @@ const CASES = [
       if (directShape(seriesOf(creditsReadout)) !== idleCreditsSeriesShape) {
         throw new Error(`a selection changed the credits series region's structure: ${directShape(seriesOf(creditsReadout))} vs idle ${idleCreditsSeriesShape}`);
       }
+      // The freeze and the pane's scrolling are pure CSS, which jsdom cannot
+      // lay out, so the stylesheet itself is the last hook here. The readout
+      // box must carry no min-height — the #232 worst-case floor is what
+      // blanked every legend shorter than three entries (the user-reported
+      // defect) — while keeping the stable alignment and line-height the
+      // freeze keys on. And .history must carry the .cards flex scrolling
+      // sizing: that is what pins the pane to the window's remaining height
+      // as the actual scroll container, so its scrollbar-gutter reservation
+      // applies to the active scrollbar instead of whatever would scroll in
+      // the pane's place.
+      const ruleBody = (css, selector) => {
+        const at = css.indexOf(`${selector} {`);
+        if (at < 0) throw new Error(`styles.css has no ${selector} rule`);
+        const open = css.indexOf('{', at);
+        const close = css.indexOf('}', open);
+        return css.slice(open + 1, close).replace(/\s+/g, ' ');
+      };
+      const stylesheet = readFileSync(join(ROOT, 'src/styles.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, ' ');
+      const readoutCss = ruleBody(stylesheet, '.chart-readout');
+      if (/min-height:/.test(readoutCss)) {
+        throw new Error('.chart-readout reserves a min-height again — the box must stay content-fit, the worst-case floor blanked shorter legends');
+      }
+      for (const decl of ['align-items: start', 'line-height: 1.4']) {
+        if (!readoutCss.includes(decl)) {
+          throw new Error(`.chart-readout lost ${JSON.stringify(decl)} — the idle↔selected vertical freeze keys on it`);
+        }
+      }
+      const historyCss = ruleBody(stylesheet, '.history');
+      for (const decl of ['flex: 1', 'min-height: 0', 'overflow-y: auto', 'scrollbar-gutter: stable']) {
+        if (!historyCss.includes(decl)) {
+          throw new Error(`.history lost ${JSON.stringify(decl)} — the flex scrolling sizing makes it the pane's actual scroll container`);
+        }
+      }
       if (openrouter.querySelectorAll('.chart-dot').length !== 1) throw new Error('the credits point drew no single guide dot');
       // Changing the range clears every selection to the idle key — never an
       // empty box, never a stale figure — and the next keypress re-clamps to

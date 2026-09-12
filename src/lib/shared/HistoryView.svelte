@@ -531,12 +531,15 @@
                timestamp reports from the right region: the right track is
                grid-reserved in BOTH states, so the timestamp's appearing can
                never share a line with — or rewrap — the series fields. The
-               box's vertical geometry is frozen too (#232): its block size
-               and track alignment live in the .chart-readout rule (a
-               font-relative min-height sized to the worst-case wrapped left
-               region, align-items: start), so a selection changes only the
-               words inside the box — never the box's height, the y-position
-               of any line in it, or anything below it. -->
+               box's vertical geometry is frozen too (#232): its track
+               alignment lives in the .chart-readout rule (align-items:
+               start plus a deterministic 1.4 line-height), and the box is
+               content-fit — idle and a non-failed selection render the same
+               entries and labels in the same fixed-width value slots, so
+               both states wrap identically and occupy the same box, and a
+               selection changes only the words inside it — never its
+               height, the y-position of any line in it, or anything below.
+               (A failed selection is the one deliberate shape change.) -->
           <p class="chart-readout" aria-live="polite">
             {#if readSel(account, 'usage', reads)}
               {@const sel = readSel(account, 'usage', reads)}
