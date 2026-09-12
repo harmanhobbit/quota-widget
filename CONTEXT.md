@@ -350,6 +350,14 @@ reading was a failure. Written only when it differs from the account's last
 point (see Coalescing).
 _Avoid_: Sample, datapoint, snapshot
 
+**Held reading**:
+The value a [[history point]] carries continues to describe the account until
+the next [[history point]]: a history chart draws it as a flat step that drops
+or rises only at the next reading's own time (step-after), and the [[scrub
+readout]] reports it across that interval — because the account did not pass
+through unrecorded intermediate values between observations.
+_Avoid_: Interpolation, tween, smoothing
+
 **Retention policy**:
 The rule bounding how much [[usage history]] is kept: *forever*, an *age* bound
 (a count of days / weeks / months / years), or a *file-size* bound. Part of
@@ -369,3 +377,32 @@ bound) how many bytes would be removed. Confirming applies the change and the
 cleaning together; cancelling changes nothing and deletes nothing. A change to
 *forever* or to a looser bound previews nothing because it cleans nothing.
 _Avoid_: Deletion warning, confirm dialog, prune preview
+
+**Chart legend**:
+The idle presentation of a history chart's [[scrub readout]] box: each plotted
+series named by its metric label, its line colour swatch, and its latest
+in-range value, so a line is identifiable without relying on colour alone.
+Not a separate list beneath the chart — the same always-present box that
+reports selected values while scrubbing, its series fields keeping their
+places throughout.
+_Avoid_: Key, caption
+
+**Scrub readout**:
+The always-present box beneath a history chart. With no selection it is the
+[[chart legend]]: each series' swatch, label and latest in-range value. While
+[[scrub|scrubbing]] it reports each series' figure at the governing [[history
+point]] — the most recent observation at or before the selected time, whose
+[[held reading]] stands until the next one — or *unavailable* at a failed
+reading, with the selected moment's timestamp after the series fields: the
+only element that appears on selection and disappears on clear. The
+pointer/press path selects the time continuously across the plotted range,
+so between readings the timestamp moves while the figure is held; the
+keyboard path selects recorded columns and reports their recorded times.
+Reachable by pointer/press and by keyboard.
+_Avoid_: Tooltip, hover box, popup
+
+**Scrub**:
+Moving the selected time position across a history chart to read values at
+each [[history point]]; by pointer/press on any platform, by keyboard on
+desktop.
+_Avoid_: Hover, scan, seek

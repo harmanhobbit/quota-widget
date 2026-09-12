@@ -125,8 +125,20 @@ Platform differences are small but real:
   adds nothing. The **History** tab (desktop popup and Android app) charts each
   account's record: one line per usage window, a separate credits line where
   the account has credits — percentages and money never share an axis — with a
-  time-range selector. Readings that failed are reported, never plotted as if
-  they were measurements.
+  time-range selector. Lines are drawn step-after: each reading is held as a
+  flat stretch and the line steps only at the next reading's time, never
+  sloping through values no reading reported. Each chart carries one
+  always-present readout box, which doubles as the chart's key: with nothing
+  selected it identifies every line by colour swatch, label and its latest
+  value in range, so the lines never rely on colour alone. Hovering or
+  press-dragging a chart scrubs it: the same fields then report each series'
+  figure at the governing reading — the most recent reading at or before
+  that moment, which is the value the line holds there — *unavailable* at a
+  failed one, with the selected moment's timestamp after them. On the
+  desktop popup the charts are also keyboard-scrubbable: focus one and use
+  the arrow keys (Home/End jump to the ends); keyboard scrubbing lands on
+  recorded readings and reports their recorded timestamps. Readings that
+  failed are reported, never plotted as if they were measurements.
 - **Retention** of that history is your choice, shared between desktop and
   Android: *Forever* (the default), by age (days, weeks, months or years), or
   by file size. Steady-state cleaning under the active policy happens
@@ -601,6 +613,10 @@ scripts/            icon generation, version-drift guard
   the standard tray tooltip and Linux Plasma renders the StatusNotifierItem
   tooltip. The Linux launcher uses XWayland so pinned mini-summary placement
   and always-on-top work.
+- History chart scrubbing is a pointer gesture everywhere — hover or press-drag
+  on the desktop popup, press-drag on Android — but the keyboard route
+  (focus the chart, arrow keys, Home/End) needs a keyboard, so it is desktop
+  only.
 - **Always-on-top does not work on native Wayland**, so the popup slips behind
   other windows when they take focus — regardless of the *Hide when clicking
   outside* setting, which is a separate mechanism. This is a protocol gap, not
