@@ -30,8 +30,8 @@
   // the bottom of the script, which is where they belong.
   //
   // Line colours: one source of truth per series, assigned in buildAccounts
-  // and applied to BOTH the polyline stroke and its legend swatch, so the two
-  // cannot disagree. (Colouring used to live in CSS as .usage-line:nth-of-type(n)
+  // and applied to BOTH the polyline stroke and its swatch in the readout
+  // box, so the two cannot disagree. (Colouring used to live in CSS as .usage-line:nth-of-type(n)
   // — keyed on rendered position, so a line dropping out of the range silently
   // recoloured its neighbours.) Assignment is by index in the account's
   // metric-id list, which is computed over ALL recorded points and is therefore
@@ -42,7 +42,12 @@
   // distinct colour, never shared with a window.
   //
   // Scrub: every chart is a scrub surface ([[scrub]]) feeding one [[scrub
-  // readout]] box. The two input paths select differently ([[held reading]]):
+  // readout]] box that is ALWAYS present and populated: with no selection it
+  // is the chart's key ([[chart legend]] — each series' swatch, label and
+  // latest in-range value), and while a selection is active the same
+  // per-series fields keep their places and only their values change, with
+  // the selected moment's timestamp trailing so it never displaces them.
+  // The two input paths select differently ([[held reading]]):
   // keyboard lands on a recorded in-range history-point column — failed
   // points included on the percentage chart, so a failure reads as
   // *unavailable* rather than being skipped — and reports that column's
@@ -170,8 +175,8 @@
 
   // A window's latest plotted figure: the newest in-range, non-failed point
   // carrying THIS metric — not the account's newest reading, which may lack
-  // the window entirely. The legend shows the line's own end, and null when
-  // the line has nothing plotted.
+  // the window entirely. The readout box's idle key shows the line's own
+  // end, and null when the line has nothing plotted.
   function latestValue(points, metricId) {
     for (let i = points.length - 1; i >= 0; i -= 1) {
       const p = points[i];
@@ -212,13 +217,15 @@
 
   // Per-series figures at the selected percentage point: every plotted line
   // with its value there, null marking a window absent at that point (the
-  // template renders the dash). A failed point carries no figures at all —
-  // the readout says so rather than inventing one.
+  // template renders the dash). Same lines, in the same order, as the box's
+  // idle key — only the values differ. A failed point carries no figures at
+  // all — the readout says so rather than inventing one.
   function usageReadLines(account, column) {
     if (!column || column.failed) return [];
     return account.windowLines
       .filter((l) => l.coords)
       .map((l) => ({
+        id: l.id,
         color: l.color,
         label: l.label,
         value: column.windows.find(([id]) => id === l.id)?.[1] ?? null,
@@ -291,12 +298,12 @@
           id,
           label: snap?.windows?.find((w) => w.metric_id === id)?.label ?? id,
           // One colour per series, from the window's position in the
-          // account's metric list — the same value the legend swatch shows,
-          // so line and swatch cannot disagree. The palette repeats only
-          // past six windows on one account.
+          // account's metric list — the same value the readout box's swatch
+          // shows, so line and swatch cannot disagree. The palette repeats
+          // only past six windows on one account.
           color: SERIES_PALETTE[i % SERIES_PALETTE.length],
           // The line's own newest in-range figure, rounded to a whole
-          // percentage for the legend.
+          // percentage for the readout box's idle key.
           value: latest == null ? null : `${Math.round(latest)}%`,
           coords: lineCoords(plotted, id, t0, t1),
         };
@@ -403,8 +410,9 @@
     reads[`${kind}:${account.id}`] = { i, x: selX, at };
   }
 
-  // Leaving the plot disarms the readout; the box itself stays so the fade
-  // has something to animate, exactly like the card tooltip's armed box.
+  // Leaving the plot clears the selection; the box itself stays on screen
+  // and falls back to its idle key, so leaving can never collapse it — that
+  // is the layout jump this one-box design removed.
   function clearRead(accountId, kind) {
     reads[`${kind}:${accountId}`] = null;
   }
@@ -512,40 +520,49 @@
               <span>{account.xLabels[2]}</span>
             </div>
           </div>
-          <!-- The [[scrub readout]]: one always-present box per chart, armed
-               by either input path, emptied when the selection clears so no
-               stale figure survives a range change. -->
-          <p class="chart-readout" data-armed={readSel(account, 'usage', reads) ? '' : null} aria-live="polite">
+          <!-- The [[scrub readout]]: one always-present, always-populated box
+               per chart. Idle it IS the chart key — each plotted line's
+               swatch, label and latest in-range value. Selected, the same
+               fields keep their places and only their values change, with
+               the selected moment's timestamp trailing (the only element
+               that appears/disappears, so it never displaces the series
+               fields and the box's height never jumps). -->
+          <p class="chart-readout" aria-live="polite">
             {#if readSel(account, 'usage', reads)}
               {@const sel = readSel(account, 'usage', reads)}
-              <!-- The timestamp is the recorded column's on the keyboard
-                   path and the continuously selected time on the pointer
-                   path; the figures are the governing column's either way. -->
-              <span class="readout-when">{readoutWhen(sel.at)}</span>
               {#if sel.column.failed}
+                <!-- A failure carries no figures: the box says so instead of
+                     inventing one, and — a deliberate shape change outside
+                     the idle↔selected stability guarantee — shows no series
+                     fields at all. -->
                 <span class="readout-unavailable">unavailable</span>
               {:else}
-                {#each usageReadLines(account, sel.column) as line (line.label)}
-                  <span class="readout-item">
+                <!-- The figures are the governing column's ([[held
+                     reading]]); a dash marks a window absent there. -->
+                {#each usageReadLines(account, sel.column) as line (line.id)}
+                  <span class="readout-item" data-metric={line.id}>
                     <span class="legend-swatch" style="background:{line.color}" aria-hidden="true"></span>
                     <span class="legend-label">{line.label}</span>
                     <span class="legend-value">{line.value == null ? '—' : `${Math.round(line.value)}%`}</span>
                   </span>
                 {/each}
               {/if}
+              <!-- The timestamp is the recorded column's on the keyboard
+                   path and the continuously selected time on the pointer
+                   path. Last in the row, per the comment above. -->
+              <span class="readout-when">{readoutWhen(sel.at)}</span>
+            {:else}
+              <!-- The idle key: swatch + label + the line's own newest
+                   in-range value, keyed by metric id like the lines above.
+                   Same entries, same order as a non-failed selection. -->
+              {#each account.windowLines.filter((l) => l.coords) as line (line.id)}
+                <span class="readout-item" data-metric={line.id}>
+                  <span class="legend-swatch" style="background:{line.color}" aria-hidden="true"></span>
+                  <span class="legend-label">{line.label}</span>
+                  <span class="legend-value">{line.value}</span>
+                </span>
+              {/each}
             {/if}
-          </p>
-          <!-- The keyed [[chart legend]]: swatch + label + latest value per
-               plotted line, so colour is never the sole identifier. Keyed by
-               metric id like the lines above. -->
-          <p class="history-legend">
-            {#each account.windowLines.filter((l) => l.coords) as line (line.id)}
-              <span class="legend-item" data-metric={line.id}>
-                <span class="legend-swatch" style="background:{line.color}" aria-hidden="true"></span>
-                <span class="legend-label">{line.label}</span>
-                <span class="legend-value">{line.value}</span>
-              </span>
-            {/each}
           </p>
         {/if}
         {#if account.credits}
@@ -591,22 +608,25 @@
               <span>{account.xLabels[2]}</span>
             </div>
           </div>
-          <p class="chart-readout" data-armed={readSel(account, 'credits', reads) ? '' : null} aria-live="polite">
+          <!-- The credits box, same one-box shape as the usage readout: idle
+               key (swatch, unit label, latest balance) first, the same fields
+               carrying the selected balance while scrubbing, timestamp last. -->
+          <p class="chart-readout" aria-live="polite">
             {#if readSel(account, 'credits', reads)}
               {@const sel = readSel(account, 'credits', reads)}
-              <span class="readout-when">{readoutWhen(sel.at)}</span>
               <span class="readout-item">
                 <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
+                <span class="legend-label">{account.credits.unit || 'Credits'}</span>
                 <span class="legend-value">{Math.round(sel.column.balance * 100) / 100}{account.credits.unit ? ` ${account.credits.unit}` : ''}</span>
               </span>
+              <span class="readout-when">{readoutWhen(sel.at)}</span>
+            {:else}
+              <span class="readout-item">
+                <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
+                <span class="legend-label">{account.credits.unit || 'Credits'}</span>
+                <span class="legend-value">{account.credits.value}</span>
+              </span>
             {/if}
-          </p>
-          <p class="history-legend">
-            <span class="legend-item">
-              <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
-              <span class="legend-label">{account.credits.unit || 'Credits'}</span>
-              <span class="legend-value">{account.credits.value}</span>
-            </span>
           </p>
         {/if}
       {/if}

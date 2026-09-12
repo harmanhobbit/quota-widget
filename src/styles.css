@@ -1029,9 +1029,10 @@ select option {
 /* History charts (shared HistoryView). Sparkline-style SVGs on a fixed
    viewBox, stretched to the pane; non-scaling strokes keep the lines 1px
    whatever the stretch. Line colours are assigned per series in the
-   component and carried on both the polyline and its legend swatch, so the
-   two are one value by construction — the CSS deliberately sets no stroke,
-   because a CSS stroke would override the component's attribute. */
+   component and carried on both the polyline and its swatch in the readout
+   box, so the two are one value by construction — the CSS deliberately sets
+   no stroke, because a CSS stroke would override the component's
+   attribute. */
 .history-view {
   display: flex;
   flex-direction: column;
@@ -1139,27 +1140,22 @@ select option {
   fill: none;
 }
 
-/* The [[scrub readout]] box: always in the DOM so arming is a fade, not a
-   layout jump — the same one-box discipline as the card tooltip. Content
-   only exists while a selection does, so a cleared or re-ranged chart can
-   never show a stale figure. */
+/* The [[scrub readout]] box: one always-present, always-populated box per
+   chart — the chart key while nothing is selected (each series' swatch,
+   label and latest in-range value), the values at the selected moment while
+   scrubbing, with the timestamp trailing as the only field that appears and
+   disappears. Fully opaque in both states: no fade, no height change, so
+   entering or leaving a chart with the pointer cannot move the page. */
 .chart-readout {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 4px 12px;
-  min-height: 16px;
   margin: 4px 0 0;
   padding: 3px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 11px;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-
-.chart-readout[data-armed] {
-  opacity: 1;
 }
 
 .readout-when {
@@ -1178,15 +1174,9 @@ select option {
   font-style: italic;
 }
 
-/* Keyed legend: swatch (decorative, coloured by the component's own inline
-   style) + text label + the series' latest in-range value. The label, not
-   the colour, is the identifier — WCAG 1.4.1. */
-.legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
+/* One per-series entry inside the readout box: swatch (decorative, coloured
+   by the component's own inline style) + text label + the series' value.
+   The label, not the colour, is the identifier — WCAG 1.4.1. */
 .legend-swatch {
   display: inline-block;
   flex: none;
@@ -1198,15 +1188,6 @@ select option {
 .legend-value {
   color: var(--text);
   font-variant-numeric: tabular-nums;
-}
-
-.history-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  margin: 2px 0 0;
-  font-size: 11px;
-  color: var(--muted);
 }
 
 /* Retention control + cleaning preview. The preview is louder than the rest

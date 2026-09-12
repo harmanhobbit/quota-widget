@@ -379,20 +379,26 @@ cleaning together; cancelling changes nothing and deletes nothing. A change to
 _Avoid_: Deletion warning, confirm dialog, prune preview
 
 **Chart legend**:
-The keyed list beneath a history chart naming each plotted series by its
-metric label, its line colour, and its latest in-range value, so a line is
-identifiable without relying on colour alone.
+The idle presentation of a history chart's [[scrub readout]] box: each plotted
+series named by its metric label, its line colour swatch, and its latest
+in-range value, so a line is identifiable without relying on colour alone.
+Not a separate list beneath the chart — the same always-present box that
+reports selected values while scrubbing, its series fields keeping their
+places throughout.
 _Avoid_: Key, caption
 
 **Scrub readout**:
-The values a history chart reports at a selected time position: the timestamp
-and each series' figure at the governing [[history point]] — the most recent
-observation at or before the selected time, whose [[held reading]] stands
-until the next one — or *unavailable* at a failed reading. The pointer/press
-path selects the time continuously across the plotted range, so between
-readings the timestamp moves while the figure is held; the keyboard path
-selects recorded columns and reports their recorded times. Reachable by
-pointer/press and by keyboard.
+The always-present box beneath a history chart. With no selection it is the
+[[chart legend]]: each series' swatch, label and latest in-range value. While
+[[scrub|scrubbing]] it reports each series' figure at the governing [[history
+point]] — the most recent observation at or before the selected time, whose
+[[held reading]] stands until the next one — or *unavailable* at a failed
+reading, with the selected moment's timestamp after the series fields: the
+only element that appears on selection and disappears on clear. The
+pointer/press path selects the time continuously across the plotted range,
+so between readings the timestamp moves while the figure is held; the
+keyboard path selects recorded columns and reports their recorded times.
+Reachable by pointer/press and by keyboard.
 _Avoid_: Tooltip, hover box, popup
 
 **Scrub**:
