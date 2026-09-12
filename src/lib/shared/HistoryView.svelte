@@ -45,8 +45,10 @@
   // readout]] box that is ALWAYS present and populated: with no selection it
   // is the chart's key ([[chart legend]] — each series' swatch, label and
   // latest in-range value), and while a selection is active the same
-  // per-series fields keep their places and only their values change, with
-  // the selected moment's timestamp trailing so it never displaces them.
+  // per-series fields keep their places and only their values change, while
+  // the selected moment's timestamp reports from the box's reserved right
+  // half — a two-track layout that reserves the right region even when
+  // idle, so the timestamp's appearing can never rewrap the series fields.
   // The two input paths select differently ([[held reading]]):
   // keyboard lands on a recorded in-range history-point column — failed
   // points included on the percentage chart, so a failure reads as
@@ -521,47 +523,58 @@
             </div>
           </div>
           <!-- The [[scrub readout]]: one always-present, always-populated box
-               per chart. Idle it IS the chart key — each plotted line's
-               swatch, label and latest in-range value. Selected, the same
-               fields keep their places and only their values change, with
-               the selected moment's timestamp trailing (the only element
-               that appears/disappears, so it never displaces the series
-               fields and the box's height never jumps). -->
+               per chart, laid out as two reserved regions (#230). Idle, the
+               left region IS the chart key — each plotted line's swatch,
+               label and latest in-range value — and the right region is
+               reserved empty. Selected, the same fields keep their places
+               and only their values change, while the selected moment's
+               timestamp reports from the right region: the right track is
+               grid-reserved in BOTH states, so the timestamp's appearing can
+               never share a line with — or rewrap — the series fields, and
+               the box's height never jumps. -->
           <p class="chart-readout" aria-live="polite">
             {#if readSel(account, 'usage', reads)}
               {@const sel = readSel(account, 'usage', reads)}
-              {#if sel.column.failed}
-                <!-- A failure carries no figures: the box says so instead of
-                     inventing one, and — a deliberate shape change outside
-                     the idle↔selected stability guarantee — shows no series
-                     fields at all. -->
-                <span class="readout-unavailable">unavailable</span>
-              {:else}
-                <!-- The figures are the governing column's ([[held
-                     reading]]); a dash marks a window absent there. -->
-                {#each usageReadLines(account, sel.column) as line (line.id)}
-                  <span class="readout-item" data-metric={line.id}>
-                    <span class="legend-swatch" style="background:{line.color}" aria-hidden="true"></span>
-                    <span class="legend-label">{line.label}</span>
-                    <span class="legend-value">{line.value == null ? '—' : `${Math.round(line.value)}%`}</span>
-                  </span>
-                {/each}
-              {/if}
+              <!-- The series region: everything that wraps as a group inside
+                   the box's left half. -->
+              <span class="readout-series">
+                {#if sel.column.failed}
+                  <!-- A failure carries no figures: the box says so instead of
+                       inventing one, and — a deliberate shape change outside
+                       the idle↔selected stability guarantee — shows no series
+                       fields at all. *unavailable* stays in the left region. -->
+                  <span class="readout-unavailable">unavailable</span>
+                {:else}
+                  <!-- The figures are the governing column's ([[held
+                       reading]]); a dash marks a window absent there. -->
+                  {#each usageReadLines(account, sel.column) as line (line.id)}
+                    <span class="readout-item" data-metric={line.id}>
+                      <span class="legend-swatch" style="background:{line.color}" aria-hidden="true"></span>
+                      <span class="legend-label">{line.label}</span>
+                      <span class="legend-value">{line.value == null ? '—' : `${Math.round(line.value)}%`}</span>
+                    </span>
+                  {/each}
+                {/if}
+              </span>
               <!-- The timestamp is the recorded column's on the keyboard
                    path and the continuously selected time on the pointer
-                   path. Last in the row, per the comment above. -->
+                   path. Last direct child of the box, in the reserved right
+                   region — per the comment above. -->
               <span class="readout-when">{readoutWhen(sel.at)}</span>
             {:else}
               <!-- The idle key: swatch + label + the line's own newest
                    in-range value, keyed by metric id like the lines above.
-                   Same entries, same order as a non-failed selection. -->
-              {#each account.windowLines.filter((l) => l.coords) as line (line.id)}
-                <span class="readout-item" data-metric={line.id}>
-                  <span class="legend-swatch" style="background:{line.color}" aria-hidden="true"></span>
-                  <span class="legend-label">{line.label}</span>
-                  <span class="legend-value">{line.value}</span>
-                </span>
-              {/each}
+                   Same entries, same order as a non-failed selection — and
+                   the same left region, so the wrapping is identical too. -->
+              <span class="readout-series">
+                {#each account.windowLines.filter((l) => l.coords) as line (line.id)}
+                  <span class="readout-item" data-metric={line.id}>
+                    <span class="legend-swatch" style="background:{line.color}" aria-hidden="true"></span>
+                    <span class="legend-label">{line.label}</span>
+                    <span class="legend-value">{line.value}</span>
+                  </span>
+                {/each}
+              </span>
             {/if}
           </p>
         {/if}
@@ -608,23 +621,30 @@
               <span>{account.xLabels[2]}</span>
             </div>
           </div>
-          <!-- The credits box, same one-box shape as the usage readout: idle
-               key (swatch, unit label, latest balance) first, the same fields
-               carrying the selected balance while scrubbing, timestamp last. -->
+          <!-- The credits box, same two-region shape as the usage readout:
+               idle key (swatch, unit label, latest balance) first in the
+               left region, the same fields carrying the selected balance
+               while scrubbing, timestamp in the reserved right region. The
+               credits entry carries no data-metric — the usage value slot
+               must not force percentage width onto a balance-with-unit. -->
           <p class="chart-readout" aria-live="polite">
             {#if readSel(account, 'credits', reads)}
               {@const sel = readSel(account, 'credits', reads)}
-              <span class="readout-item">
-                <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
-                <span class="legend-label">{account.credits.unit || 'Credits'}</span>
-                <span class="legend-value">{Math.round(sel.column.balance * 100) / 100}{account.credits.unit ? ` ${account.credits.unit}` : ''}</span>
+              <span class="readout-series">
+                <span class="readout-item">
+                  <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
+                  <span class="legend-label">{account.credits.unit || 'Credits'}</span>
+                  <span class="legend-value">{Math.round(sel.column.balance * 100) / 100}{account.credits.unit ? ` ${account.credits.unit}` : ''}</span>
+                </span>
               </span>
               <span class="readout-when">{readoutWhen(sel.at)}</span>
             {:else}
-              <span class="readout-item">
-                <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
-                <span class="legend-label">{account.credits.unit || 'Credits'}</span>
-                <span class="legend-value">{account.credits.value}</span>
+              <span class="readout-series">
+                <span class="readout-item">
+                  <span class="legend-swatch" style="background:{account.credits.color}" aria-hidden="true"></span>
+                  <span class="legend-label">{account.credits.unit || 'Credits'}</span>
+                  <span class="legend-value">{account.credits.value}</span>
+                </span>
               </span>
             {/if}
           </p>

@@ -1081,6 +1081,25 @@ const CASES = [
       // The per-series field set idle, captured here so the scrub section can
       // prove a selection changes only the values (#228 stability rule).
       const idleOrder = usageLegend.map((el) => el.dataset.metric).join(',');
+      // ---- Two-region readout geometry (#230) ------------------------------
+      // jsdom does no layout, so the half-split itself and the 100% value
+      // slot are manual checks; what is assertable is the DOM shape the CSS
+      // keys on: the series fields live in one .readout-series region and
+      // never as direct children of the box, every usage entry carries the
+      // data-metric hook the fixed value slot is scoped to, and each entry
+      // has a value element for that slot to size.
+      const seriesOf = (box) => box.querySelector(':scope > .readout-series');
+      const usageSeries = seriesOf(usageReadout());
+      if (!usageSeries) throw new Error('the usage readout has no series region');
+      if (usageReadout().querySelector(':scope > .readout-item')) {
+        throw new Error('a usage series field sits outside the series region');
+      }
+      if (usageLegend.some((el) => el.parentElement !== usageSeries)) {
+        throw new Error('a usage key entry lives outside the single series region');
+      }
+      if (usageLegend.some((el) => !el.querySelector('.legend-value'))) {
+        throw new Error('a usage key entry has no value for the fixed slot to size');
+      }
       for (const [metric, label, value] of [
         // five_hour's newest plotted point is day(1): 10 + 28 = 38. The newest
         // reading lacks it, and the key must not read that as 0 or as the
@@ -1113,6 +1132,20 @@ const CASES = [
       }
       if (parseColor(swatchStyle(creditsLegend)) !== parseColor(creditsLine.getAttribute('stroke'))) {
         throw new Error(`the credits swatch (${swatchStyle(creditsLegend)}) does not match its line stroke (${creditsLine.getAttribute('stroke')})`);
+      }
+      // #230 on the credits side: the same single series region, but no
+      // data-metric — the fixed value slot must scope to usage windows only,
+      // so the balance-with-unit keeps its natural width.
+      const creditsBox = openrouter.querySelector('.credits-chart + .chart-readout');
+      const creditsSeries = seriesOf(creditsBox);
+      if (!creditsSeries || creditsLegend.parentElement !== creditsSeries) {
+        throw new Error('the credits key entry lives outside a single series region');
+      }
+      if (creditsBox.querySelector(':scope > .readout-item')) {
+        throw new Error('the credits series field sits outside the series region');
+      }
+      if (creditsLegend.hasAttribute('data-metric')) {
+        throw new Error('the credits entry carries data-metric — the fixed value slot would force percentage width onto a balance-with-unit');
       }
       // Colour is not the only identifier: each swatch is decorative and every
       // entry carries its label as text (WCAG 1.4.1).
@@ -1174,6 +1207,14 @@ const CASES = [
       if (!readout.lastElementChild?.classList.contains('readout-when')) {
         throw new Error('the timestamp is not the readout\'s last field');
       }
+      // #230: the timestamp reports from its own reserved region — a direct
+      // child of the box sitting beside the series region, never inside it.
+      if (!readout.querySelector(':scope > .readout-when')) {
+        throw new Error('the timestamp is not a direct child of the readout box');
+      }
+      if (seriesOf(readout)?.querySelector('.readout-when')) {
+        throw new Error('the timestamp moved inside the series region');
+      }
       // Idle↔selected stability (#228): the same per-series fields, in the
       // same order, as the idle key — only their values changed.
       if ([...readout.querySelectorAll('.readout-item')].map((el) => el.dataset.metric).join(',') !== idleOrder) {
@@ -1204,6 +1245,12 @@ const CASES = [
       if (!whenOf(readout)?.textContent.trim()) throw new Error('the failed readout lost its timestamp');
       if (claude.querySelectorAll('.chart-dot').length) throw new Error('a failed point drew guide dots');
       if (claude.querySelector('.chart-guide')) throw new Error('a failed point drew a guide');
+      // #230: *unavailable* is the failed state's series content — it lives
+      // in the series region like the fields it replaces, not beside the
+      // timestamp.
+      if (!readout.querySelector(':scope > .readout-series .readout-unavailable')) {
+        throw new Error('the failed note is not inside the series region');
+      }
       // Credits keyboard path: End reads the governing balance + unit, with
       // the same field set the idle key shows and the timestamp last.
       const creditsSvg = openrouter.querySelector('.credits-chart svg');

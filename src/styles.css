@@ -1143,14 +1143,22 @@ select option {
 /* The [[scrub readout]] box: one always-present, always-populated box per
    chart — the chart key while nothing is selected (each series' swatch,
    label and latest in-range value), the values at the selected moment while
-   scrubbing, with the timestamp trailing as the only field that appears and
-   disappears. Fully opaque in both states: no fade, no height change, so
-   entering or leaving a chart with the pointer cannot move the page. */
+   scrubbing, with the timestamp the only field that appears and disappears.
+   Fully opaque in both states: no fade, no height change, so entering or
+   leaving a chart with the pointer cannot move the page.
+   Two reserved regions (#230): the box is a two-track grid — the series
+   region in the left track, the timestamp in the right — and BOTH tracks
+   exist whether or not a timestamp is present, so the right half stays
+   reserved while idle and the left region's width, hence its wrapping, is
+   identical idle vs selected. minmax(0, 1fr) rather than a bare 1fr keeps
+   each track exactly half even where content would otherwise claim more,
+   so a series field can never spill into the reserved right region: the
+   wrap and gap that make the fields wrap live on .readout-series, which
+   wraps within its own half; the box no longer wraps as a whole. */
 .chart-readout {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   align-items: baseline;
-  gap: 4px 12px;
   margin: 4px 0 0;
   padding: 3px 8px;
   border: 1px solid var(--border);
@@ -1158,7 +1166,22 @@ select option {
   font-size: 11px;
 }
 
+/* The box's left region: the series fields (or the failed-state
+   *unavailable*) wrap as one group here and can never reach the right
+   track. Baseline-aligned with the timestamp's first line, as the old
+   single-row box aligned them. */
+.readout-series {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  min-width: 0;
+}
+
+/* The reserved right region's occupant: pinned to the box's right edge,
+   wrapping within its half rather than overrunning it. */
 .readout-when {
+  justify-self: end;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
@@ -1188,6 +1211,19 @@ select option {
 .legend-value {
   color: var(--text);
   font-variant-numeric: tabular-nums;
+}
+
+/* The fixed value slot (#230), usage windows only: every quota figure sits
+   right-aligned in a slot with a min-width sufficient for "100%", so 0%,
+   42% and an absent-window dash all occupy the same width and nothing
+   drifts as a percentage grows. min-width can only fix widths BELOW it, so
+   the slot is sized with headroom over 100%'s width in any shipped UI font
+   rather than to one font's exact measure. Scoped by data-metric — the
+   credits entry carries none, so a longer balance-with-unit (8.75 USD)
+   keeps its natural width and is never forced into the percentage slot. */
+.readout-item[data-metric] .legend-value {
+  min-width: 3em;
+  text-align: right;
 }
 
 /* Retention control + cleaning preview. The preview is louder than the rest
