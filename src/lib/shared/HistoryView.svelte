@@ -530,8 +530,13 @@
                and only their values change, while the selected moment's
                timestamp reports from the right region: the right track is
                grid-reserved in BOTH states, so the timestamp's appearing can
-               never share a line with — or rewrap — the series fields, and
-               the box's height never jumps. -->
+               never share a line with — or rewrap — the series fields. The
+               box's vertical geometry is frozen too (#232): its block size
+               and track alignment live in the .chart-readout rule (a
+               font-relative min-height sized to the worst-case wrapped left
+               region, align-items: start), so a selection changes only the
+               words inside the box — never the box's height, the y-position
+               of any line in it, or anything below it. -->
           <p class="chart-readout" aria-live="polite">
             {#if readSel(account, 'usage', reads)}
               {@const sel = readSel(account, 'usage', reads)}

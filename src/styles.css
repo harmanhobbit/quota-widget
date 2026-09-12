@@ -989,6 +989,16 @@ select option {
 .history {
   padding: 8px 12px 16px;
   overflow-y: auto;
+  /* Reserve the vertical scrollbar's gutter whether or not the scrollbar is
+     currently visible (#232). The charts lay out to this pane's content box,
+     so a classic scrollbar (the Windows 11 / Linux default) drew its track
+     and thumb OVER the right edge of the plots and the .chart-x labels once
+     the pane scrolled; `stable` lays the content clear of the gutter from
+     the start, so nothing is ever covered and the charts do not shift
+     sideways when scrolling begins. The Android surface reuses this element
+     (.mobile-history) and needs no override: WebView scrollbars are overlay
+     — they take no layout space and `stable` reserves nothing for them. */
+  scrollbar-gutter: stable;
 }
 
 .history-account h3 {
@@ -1154,11 +1164,35 @@ select option {
    each track exactly half even where content would otherwise claim more,
    so a series field can never spill into the reserved right region: the
    wrap and gap that make the fields wrap live on .readout-series, which
-   wraps within its own half; the box no longer wraps as a whole. */
+   wraps within its own half; the box no longer wraps as a whole.
+   Vertical freeze (#232): the box's block size and track alignment are
+   state-independent, so a selection changes only the words inside the box,
+   never the box. `baseline` alignment let the grid re-decide the row's
+   height whenever the left region wrapped to a different line count (idle
+   latest values vs. selected governing values) or the timestamp's line
+   entered the baseline math, and with no block-size constraint the box
+   followed — a small vertical jump on every enter/leave. `start` pins both
+   regions to the box's top and the font-relative min-height reserves the
+   worst-case wrapped height, so idle and selected occupy the same box. */
 .chart-readout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  align-items: baseline;
+  align-items: start;
+  /* A deterministic line-height: one text line is exactly 1.4em whatever a
+     platform's `normal` works out to, which is what makes the floor below
+     hold as em arithmetic rather than a per-font guess. */
+  line-height: 1.4;
+  /* The worst case the two-track design must hold: the shipped maximum of
+     three series entries (Claude's 5-hour / Weekly / Weekly (Opus)) at the
+     narrowest supported width — a 340px desktop popup or a narrow Android
+     surface — lays the left region out one entry per line, and one long
+     label ("Web/tool this month") wraps inside its entry: four 1.4em text
+     lines plus the three 4px row gaps, the 3px padding and the 1px border.
+     min-height rather than a fixed height so data wider than the guarantee
+     grows the box instead of clipping it — and because both states render
+     the same entries and labels, a grown box still moves idle↔selected
+     together, keeping the freeze. */
+  min-height: calc(4 * 1.4em + 3 * 4px + 2 * 3px + 2 * 1px);
   margin: 4px 0 0;
   padding: 3px 8px;
   border: 1px solid var(--border);
@@ -1168,8 +1202,9 @@ select option {
 
 /* The box's left region: the series fields (or the failed-state
    *unavailable*) wrap as one group here and can never reach the right
-   track. Baseline-aligned with the timestamp's first line, as the old
-   single-row box aligned them. */
+   track. Top-aligned with the timestamp (#232) — the box's track alignment
+   is `start`, not the old baseline, so neither region's position depends on
+   how many lines the other wraps to. */
 .readout-series {
   display: flex;
   flex-wrap: wrap;

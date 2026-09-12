@@ -1119,6 +1119,18 @@ const CASES = [
           throw new Error(`the ${metric} swatch (${swatchStyle(item)}) does not match its line stroke (${strokeOf(metric)})`);
         }
       }
+      // #232: the box and its series region are structurally identical idle
+      // vs. selected — a selection may add only .readout-when and change only
+      // text. The vertical freeze itself is pure CSS on .chart-readout (a
+      // font-relative block size plus a stable track alignment), so this DOM
+      // identity is the hook jsdom can prove; pixel heights, wrapping and
+      // scrollbar geometry are the manual KDE Plasma / Windows 11 criteria.
+      const directShape = (el) =>
+        [...el.children]
+          .map((c) => `${c.tagName.toLowerCase()}.${Array.from(c.classList).join('.')}`)
+          .join('|');
+      const idleBoxShape = directShape(usageReadout());
+      const idleSeriesShape = directShape(usageSeries);
       // The credits idle key: swatch equal to the credits line's stroke, the
       // unit as its label, and the latest in-range balance with its unit.
       const creditsLine = openrouter.querySelector('.credits-chart polyline.credits-line');
@@ -1147,6 +1159,8 @@ const CASES = [
       if (creditsLegend.hasAttribute('data-metric')) {
         throw new Error('the credits entry carries data-metric — the fixed value slot would force percentage width onto a balance-with-unit');
       }
+      const idleCreditsBoxShape = directShape(creditsBox);
+      const idleCreditsSeriesShape = directShape(creditsSeries);
       // Colour is not the only identifier: each swatch is decorative and every
       // entry carries its label as text (WCAG 1.4.1).
       for (const item of [...usageLegend, creditsLegend]) {
@@ -1215,6 +1229,16 @@ const CASES = [
       if (seriesOf(readout)?.querySelector('.readout-when')) {
         throw new Error('the timestamp moved inside the series region');
       }
+      // #232: a selection changed only text — the box gained exactly the
+      // trailing .readout-when and the series region's structure is
+      // untouched, so the frozen block size covers both states by
+      // construction.
+      if (directShape(readout) !== `${idleBoxShape}|span.readout-when`) {
+        throw new Error(`a selection changed the readout's structure: ${directShape(readout)} vs idle ${idleBoxShape}`);
+      }
+      if (directShape(seriesOf(readout)) !== idleSeriesShape) {
+        throw new Error(`a selection changed the series region's structure: ${directShape(seriesOf(readout))} vs idle ${idleSeriesShape}`);
+      }
       // Idle↔selected stability (#228): the same per-series fields, in the
       // same order, as the idle key — only their values changed.
       if ([...readout.querySelectorAll('.readout-item')].map((el) => el.dataset.metric).join(',') !== idleOrder) {
@@ -1264,6 +1288,14 @@ const CASES = [
       if (!/4\.2 USD/.test(creditsReadout.textContent)) throw new Error(`the credits readout shows ${JSON.stringify(creditsReadout.textContent)}, expected 4.2 USD`);
       if (!creditsReadout.lastElementChild?.classList.contains('readout-when')) {
         throw new Error('the credits timestamp is not the readout\'s last field');
+      }
+      // #232: the credits box freezes the same way — the selection added only
+      // its trailing timestamp to an otherwise identical structure.
+      if (directShape(creditsReadout) !== `${idleCreditsBoxShape}|span.readout-when`) {
+        throw new Error(`a selection changed the credits readout's structure: ${directShape(creditsReadout)} vs idle ${idleCreditsBoxShape}`);
+      }
+      if (directShape(seriesOf(creditsReadout)) !== idleCreditsSeriesShape) {
+        throw new Error(`a selection changed the credits series region's structure: ${directShape(seriesOf(creditsReadout))} vs idle ${idleCreditsSeriesShape}`);
       }
       if (openrouter.querySelectorAll('.chart-dot').length !== 1) throw new Error('the credits point drew no single guide dot');
       // Changing the range clears every selection to the idle key — never an
