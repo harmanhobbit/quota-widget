@@ -987,8 +987,29 @@ select option {
    figures are the content, so the chrome stays out of the way the way the
    usage cards do. */
 .history {
+  /* The same flex scrolling sizing the .cards/.settings-form panes get:
+     .history is a flex child of main too, and a flex child's height
+     defaults to its content. Without this, the pane can grow instead of
+     becoming the actual scroll container — and the scrollbar-gutter
+     reservation below only applies to the pane's own scrollbar, never to
+     whatever scrolls in its place. flex: 1 + min-height: 0 pin the pane to
+     the window's remaining height, so a long history makes THIS element
+     the scroll container and the gutter reservation applies to the active
+     desktop scrollbar, with the graphs laid out clear of it. */
+  flex: 1;
+  min-height: 0;
   padding: 8px 12px 16px;
   overflow-y: auto;
+  /* Reserve the vertical scrollbar's gutter whether or not the scrollbar is
+     currently visible (#232). The charts lay out to this pane's content box,
+     so a classic scrollbar (the Windows 11 / Linux default) drew its track
+     and thumb OVER the right edge of the plots and the .chart-x labels once
+     the pane scrolled; `stable` lays the content clear of the gutter from
+     the start, so nothing is ever covered and the charts do not shift
+     sideways when scrolling begins. The Android surface reuses this element
+     (.mobile-history) and needs no override: WebView scrollbars are overlay
+     — they take no layout space and `stable` reserves nothing for them. */
+  scrollbar-gutter: stable;
 }
 
 .history-account h3 {
@@ -1028,8 +1049,11 @@ select option {
 
 /* History charts (shared HistoryView). Sparkline-style SVGs on a fixed
    viewBox, stretched to the pane; non-scaling strokes keep the lines 1px
-   whatever the stretch. Colours are presentation only — the legend text
-   carries the meaning. */
+   whatever the stretch. Line colours are assigned per series in the
+   component and carried on both the polyline and its swatch in the readout
+   box, so the two are one value by construction — the CSS deliberately sets
+   no stroke, because a CSS stroke would override the component's
+   attribute. */
 .history-view {
   display: flex;
   flex-direction: column;
@@ -1072,10 +1096,53 @@ select option {
   flex: 1;
   min-width: 0;
   height: 56px;
+  /* The svg is the scrub surface: press-drag must scrub, not scroll the
+     pane under the finger. */
+  touch-action: none;
+}
+
+/* Focusable scrub surface (desktop keyboard route): a visible focus ring,
+   no ring for pointer users. */
+.history-chart svg:focus-visible,
+.credits-chart svg:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Wraps the svg so the scrub dots can be positioned over the plot alone —
+   the y-label gutter is outside it. The dots are HTML rather than SVG
+   circles because the stretched viewBox would pull circles into ellipses. */
+.chart-svg {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
 }
 
 .chart-grid {
   stroke: var(--border);
+}
+
+.chart-guide {
+  stroke: var(--text);
+  opacity: 0.4;
+}
+
+.chart-dots {
+  position: absolute;
+  inset: 0;
+  pointer-events: none; /* press-drag must reach the svg underneath */
+}
+
+.chart-dot {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  /* A bg-coloured ring lifts the dot off the line it sits on, in either
+     theme — the ring follows --bg automatically. */
+  box-shadow: 0 0 0 2px var(--bg);
 }
 
 .chart-x {
@@ -1086,35 +1153,118 @@ select option {
   color: var(--muted);
 }
 
-.usage-line {
-  fill: none;
-  stroke: var(--muted);
-}
-
-.usage-line:nth-of-type(1) {
-  stroke: #4c9be8;
-}
-
-.usage-line:nth-of-type(2) {
-  stroke: #e6a817;
-}
-
-.usage-line:nth-of-type(3) {
-  stroke: #9a6dd7;
-}
-
+/* No stroke here on purpose: each polyline carries its series colour as a
+   stroke attribute from the component (#222), and any CSS stroke would
+   override it. */
+.usage-line,
 .credits-line {
   fill: none;
-  stroke: #2fa46a;
 }
 
-.history-legend {
+/* The [[scrub readout]] box: one always-present, always-populated box per
+   chart — the chart key while nothing is selected (each series' swatch,
+   label and latest in-range value), the values at the selected moment while
+   scrubbing, with the timestamp the only field that appears and disappears.
+   Fully opaque in both states: no fade, no height change, so entering or
+   leaving a chart with the pointer cannot move the page.
+   Two reserved regions (#230): the box is a two-track grid — the series
+   region in the left track, the timestamp in the right — and BOTH tracks
+   exist whether or not a timestamp is present, so the right half stays
+   reserved while idle and the left region's width, hence its wrapping, is
+   identical idle vs selected. minmax(0, 1fr) rather than a bare 1fr keeps
+   each track exactly half even where content would otherwise claim more,
+   so a series field can never spill into the reserved right region: the
+   wrap and gap that make the fields wrap live on .readout-series, which
+   wraps within its own half; the box no longer wraps as a whole.
+   Vertical freeze (#232): the box's track alignment is state-independent —
+   `start`, not the baseline that let the grid re-decide the row's height
+   whenever the left region wrapped differently — with a deterministic 1.4
+   line-height making one text line the same height in every state. The box
+   is content-fit: #232 originally reserved a four-line worst-case
+   min-height here, but that floor blanked every legend shorter than the
+   worst case — a two-entry legend sat on ~40px of empty box, the
+   user-reported defect. The floor is not what holds the freeze: idle and a
+   non-failed selection render the same entries and labels in the same
+   fixed-width value slots, so .readout-series wraps to the same line count
+   in both states and the content-sized box keeps one height; wider data
+   grows both states together. A failed selection (*unavailable* + no
+   entries) is the one deliberate shape change outside that guarantee. */
+.chart-readout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  /* A deterministic line-height: one text line is exactly 1.4em whatever a
+     platform's `normal` works out to, so idle and selected rows line up. */
+  line-height: 1.4;
+  margin: 4px 0 0;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+/* The box's left region: the series fields (or the failed-state
+   *unavailable*) wrap as one group here and can never reach the right
+   track. Top-aligned with the timestamp (#232) — the box's track alignment
+   is `start`, not the old baseline, so neither region's position depends on
+   how many lines the other wraps to. */
+.readout-series {
   display: flex;
   flex-wrap: wrap;
+  align-items: baseline;
   gap: 4px 12px;
-  margin: 2px 0 0;
-  font-size: 11px;
+  min-width: 0;
+}
+
+/* The reserved right region's occupant: pinned to the box's right edge,
+   wrapping within its half rather than overrunning it. */
+.readout-when {
+  justify-self: end;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.readout-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.readout-unavailable {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* One per-series entry inside the readout box: swatch (decorative, coloured
+   by the component's own inline style) + text label + the series' value.
+   The label, not the colour, is the identifier — WCAG 1.4.1. */
+.legend-swatch {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.legend-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The fixed value slot (#230), usage windows only: every quota figure sits
+   right-aligned in a slot with a min-width sufficient for "100%", so 0%,
+   42% and an absent-window dash all occupy the same width and nothing
+   drifts as a percentage grows. min-width can only fix widths BELOW it, so
+   the slot is sized with headroom over 100%'s width in any shipped UI font
+   rather than to one font's exact measure. Scoped by data-metric — the
+   credits entry carries none, so it is never forced into the percentage
+   slot; it instead carries the component's own data-derived min-width
+   (its widest plotted balance, see HistoryView), so a selected balance
+   wider than the idle one cannot wrap the entry and move the content-fit
+   box, while the balance keeps its natural left-aligned character. */
+.readout-item[data-metric] .legend-value {
+  min-width: 3em;
+  text-align: right;
 }
 
 /* Retention control + cleaning preview. The preview is louder than the rest
