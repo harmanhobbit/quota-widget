@@ -68,7 +68,11 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - uses: dtolnay/rust-toolchain@stable
+      # Exact pin, not @stable — same reason as build.yml's test job, whose
+      # -D warnings gate this repeats: upstream Clippy drift (e.g. 1.99's
+      # double_must_use in the async_trait expansion) must not break it with no
+      # change here. Bump deliberately, once the new toolchain passes.
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -116,7 +120,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - uses: dtolnay/rust-toolchain@stable
+      # Same exact toolchain pin as the test job above (and build.yml).
+      - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
@@ -186,7 +191,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - uses: dtolnay/rust-toolchain@stable
+      # Same exact toolchain pin as the test job above (and build.yml).
+      - uses: dtolnay/rust-toolchain@1.97.1
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
