@@ -608,6 +608,14 @@
   const codexView = (provider) => codex[provider] ?? newCodexFlow();
   const grokView = (provider) => grok[provider] ?? newGrokFlow();
 
+  // The account's current poll verdict is an expired built-in sign-in — the
+  // same AuthExpired gate the usage card's Reauthenticate… button uses. It
+  // must be read from the live snapshot, not from `signedIn`: that flag only
+  // means a secret is stored, and this is exactly the state where the stored
+  // one has been refused.
+  const authExpired = (id) =>
+    snapshots.find((snap) => snap.provider_id === id)?.error?.kind === 'AuthExpired';
+
   function ensureFlows() {
     for (const [id, account] of Object.entries(config.providers)) {
       const kind = account.kind ?? id;
@@ -635,6 +643,17 @@
     codexFor(provider).signedIn = false;
   }
 
+  // Reauthenticate a stored sign-in the snapshot just rejected (issue #234).
+  // The row drops its signed-in claim first — that claim only ever meant "a
+  // secret is stored", and this is the one state where it would lie about the
+  // session being usable — then runs the ordinary device flow. The stale
+  // secret itself is left alone for Rust to overwrite on success, so a failed
+  // or abandoned redo loses nothing and needs no cleanup here.
+  async function codexReauth(provider) {
+    codexFor(provider).signedIn = false;
+    await codexStart(provider);
+  }
+
   async function grokStart(provider) {
     const flow = grokFor(provider);
     flow.status = 'waiting';
@@ -651,6 +670,12 @@
   async function grokClear(provider) {
     await invoke('clear_secret', { provider: `${provider}_oauth` });
     grokFor(provider).signedIn = false;
+  }
+
+  // Codex's mirror (issue #234): same drop-the-claim, rerun-the-flow shape.
+  async function grokReauth(provider) {
+    grokFor(provider).signedIn = false;
+    await grokStart(provider);
   }
 
   async function oauthStart(provider) {
@@ -675,6 +700,12 @@
   async function oauthClear(provider) {
     await invoke('clear_secret', { provider: `${provider}_oauth` });
     oauthFor(provider).signedIn = false;
+  }
+
+  // Claude's mirror (issue #234): drop the claim, rerun the browser flow.
+  async function oauthReauth(provider) {
+    oauthFor(provider).signedIn = false;
+    await oauthStart(provider);
   }
 
   // Write settings without leaving the panel — used by Test, which needs the
@@ -1139,6 +1170,9 @@
                 {#if claudeFlow.signedIn}
                   <span class="test good">Built-in sign-in active ✓</span>
                   <button class="small" onclick={() => oauthClear(id)}>Sign out</button>
+                  {#if authExpired(id)}
+                    <button class="small" onclick={() => oauthReauth(id)}>Reauthenticate…</button>
+                  {/if}
                 {:else}
                   <button class="small" onclick={() => oauthStart(id)}>Sign in with Claude…</button>
                 {/if}
@@ -1173,6 +1207,9 @@
                 {#if codexFlow.signedIn}
                   <span class="test good">Built-in sign-in active ✓</span>
                   <button class="small" onclick={() => codexClear(id)}>Sign out</button>
+                  {#if authExpired(id)}
+                    <button class="small" onclick={() => codexReauth(id)}>Reauthenticate…</button>
+                  {/if}
                 {:else}
                   <button class="small" onclick={() => codexStart(id)}>Sign in with Codex…</button>
                 {/if}
@@ -1205,6 +1242,9 @@
                 {#if grokFlow.signedIn}
                   <span class="test good">Built-in sign-in active ✓</span>
                   <button class="small" onclick={() => grokClear(id)}>Sign out</button>
+                  {#if authExpired(id)}
+                    <button class="small" onclick={() => grokReauth(id)}>Reauthenticate…</button>
+                  {/if}
                 {:else}
                   <button class="small" onclick={() => grokStart(id)}>Sign in with Grok…</button>
                 {/if}
