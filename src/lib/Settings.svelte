@@ -18,7 +18,13 @@
   //
   // [[usage history]]: ../../CONTEXT.md
   // [[retention policy]]: ../../CONTEXT.md
-  let { onclose, initialConfig, snapshots = [], historyRetention = 'forever', onpreview, onapply, onpreviewopenchange } = $props();
+  //
+  // `focusAccount` asks the panel, on arrival, to reveal one configured
+  // account's row — the same reveal `addAccount` performs — so a
+  // Reauthenticate… click on an expired usage card lands with that account's
+  // sign-in control on screen rather than behind two collapsed disclosures.
+  // Consumed once at mount; it is an entry point, not state the panel keeps.
+  let { onclose, initialConfig, snapshots = [], historyRetention = 'forever', onpreview, onapply, onpreviewopenchange, focusAccount = null } = $props();
 
   const PROVIDERS = [
     { id: 'claude', name: 'Claude', secret: null, note: 'Uses the Claude Code CLI login if present, or the built-in browser sign-in below.' },
@@ -423,6 +429,15 @@
       account.usage_schedule ??= allDaysActive();
     }
     ensureFlows();
+    // A reauthenticate click (usage card → here) named one account: the same
+    // reveal `addAccount` performs, so its sign-in control is on screen
+    // instead of behind the Providers disclosure and a collapsed row. Only
+    // for an account that still exists — the click's snapshot can predate a
+    // removal.
+    if (focusAccount && config.providers[focusAccount]) {
+      expanded[focusAccount] = true;
+      openSections.providers = true;
+    }
     invoke('app_version').then((version) => (appVersion = version)).catch(() => {});
     invoke('update_status').then(setUpdateStatus).catch(() => {});
     for (const [id, account] of Object.entries(config.providers)) {

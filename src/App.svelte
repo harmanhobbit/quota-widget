@@ -20,6 +20,14 @@
   // sends its answer with the navigation, since only Rust can see that a mini
   // summary was up before the full window covered it.
   let settingsReturn = $state('popup');
+  // The account a Reauthenticate… click on an expired card asked Settings to
+  // focus, sharing the return state's lifecycle: captured when the click opens
+  // Settings, cleared where the visit ends or is replaced — Save & close /
+  // Escape, a fresh window-show, and tray entry, none of which asked for a
+  // focus. Back deliberately keeps it, like `settingsReturn`: Back is
+  // navigation within the visit rather than an exit, and re-entering Settings
+  // still points at the account the user was sent to sign in.
+  let reauthTarget = $state(null);
   let snapshots = $state([]);
   let appConfig = $state(null);
   let refreshing = $state(false);
@@ -176,15 +184,20 @@
     listen('navigate', (e) => {
       view = e.payload.view;
       settingsReturn = e.payload.return_to ?? 'popup';
+      // The tray asks for no focus; a stale one must not survive into a
+      // tray-opened visit.
+      reauthTarget = null;
     }).then((u) => unlisten.push(u));
     // Hiding to tray doesn't unload the page, so `view` would otherwise
     // persist: reopening after a visit to Settings would land back in
     // Settings instead of the usage list. Rust emits this on every show.
     // The captured return state goes with it — it belongs to the visit that
-    // just ended, and the next visit captures its own.
+    // just ended, and the next visit captures its own. The focus request is
+    // the visit's too.
     listen('window-shown', () => {
       view = 'popup';
       settingsReturn = 'popup';
+      reauthTarget = null;
       resetOpacity();
     }).then((u) => unlisten.push(u));
     const esc = (e) => {
@@ -207,6 +220,28 @@
       window.removeEventListener('keydown', esc);
     };
   });
+
+  // Which errored cards may offer Reauthenticate…: the built-in sign-in kinds
+  // whose flow Settings actually renders (matching those blocks' own
+  // `auth_mode !== 'cli'` guard — a CLI account's fix is running the CLI, not
+  // this button), and never a pasted-key provider whose fix is re-pasting.
+  // Resolved here rather than in the card because the card deliberately
+  // receives no config; an absent kind falls back to the account key, the
+  // first-account idiom Settings uses.
+  const REAUTH_KINDS = new Set(['claude', 'codex', 'grok']);
+  function reauthEligible(snap) {
+    const account = appConfig?.providers?.[snap.provider_id];
+    return REAUTH_KINDS.has(account?.kind ?? snap.provider_id)
+      && account?.settings?.auth_mode !== 'cli';
+  }
+
+  // A reauthenticate click is an offer, not a command: it only ever opens
+  // Settings on the account, whose own sign-in flow (and its device-code /
+  // paste-back UI) stays exactly where it lives.
+  function startReauth(providerId) {
+    reauthTarget = providerId;
+    openSettings();
+  }
 
   // Settings entered from the usage popup: the popup is on screen and is where
   // this visit returns to, so no shell involvement is needed either way.
@@ -236,6 +271,7 @@
     const to = settingsReturn;
     view = 'popup';
     settingsReturn = 'popup';
+    reauthTarget = null;
     if (to !== 'popup') invoke('exit_settings', { to });
   }
 
@@ -318,8 +354,16 @@
         {#each snapshots as snap (snap.provider_id)}
           <!-- hover: the desktop popup is a mouse surface, so it opts into the
                period-marker proximity growth and tooltip. MobileApp omits the
-               prop, which keeps Android's press-and-hold peek as shipped. -->
-          <ProviderCard {snap} schedule={appConfig?.providers?.[snap.provider_id]?.usage_schedule} hover />
+               prop, which keeps Android's press-and-hold peek as shipped.
+               onreauth follows the same opt-in shape, gated per account:
+               only an expired built-in sign-in Settings can actually redo
+               gets the button, and MobileApp omits it entirely. -->
+          <ProviderCard
+            {snap}
+            schedule={appConfig?.providers?.[snap.provider_id]?.usage_schedule}
+            hover
+            onreauth={reauthEligible(snap) ? startReauth : undefined}
+          />
         {/each}
       {/if}
     </div>
@@ -345,6 +389,7 @@
         onpreview={previewRetention}
         onapply={applyRetention}
         onpreviewopenchange={(open) => (escSuspended = open)}
+        focusAccount={reauthTarget}
       />
     {:else}
       <p class="empty">Loading…</p>

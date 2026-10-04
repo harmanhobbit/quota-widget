@@ -15,7 +15,18 @@
   // and arm the tooltip, changing the clean peek #124 shipped. The desktop
   // popup passes it; MobileApp omits it, and with it off the card renders
   // exactly as it always did.
-  let { snap, schedule, hover = false } = $props();
+  //
+  // `onreauth` opts the card into the reauthenticate affordance for an elapsed
+  // built-in sign-in: an `AuthExpired` card renders a Reauthenticate… button
+  // that hands back `snap.provider_id` for the parent to act on. Deliberately
+  // opt-in per surface, following the `hover` precedent: the card is shared
+  // with the Android foreground app, whose sign-in commands and flows are a
+  // different set entirely and whose expired accounts keep their stored
+  // session, so an OAuth button there could not work — MobileApp omits the
+  // prop, and with it off the card renders exactly as it always did. The card
+  // stays free of config and provider-kind knowledge (it receives no config):
+  // deciding *which* accounts may reauthenticate is the parent's job.
+  let { snap, schedule, hover = false, onreauth } = $props();
 
   // Ticks once a minute so "resets in …" countdowns stay fresh between polls.
   let now = $state(Date.now());
@@ -115,6 +126,9 @@
       {:else if snap.error.kind === 'Unavailable'}🔒 {snap.error.detail}
       {:else}⚠ {snap.error.detail}{/if}
     </p>
+    {#if snap.error.kind === 'AuthExpired' && onreauth}
+      <button class="small" onclick={() => onreauth(snap.provider_id)}>Reauthenticate…</button>
+    {/if}
   {/if}
   {#if !snap.error || snap.windows.length > 0 || snap.credits}
     {#each snap.windows as w (w.label)}
