@@ -864,6 +864,246 @@ const CASES = [
       }
     },
   },
+  // ---- Reauthenticate → focused Settings (issue #234), desktop wiring -----
+  //
+  // End to end through the shell: an expired claude#2 card offers the button
+  // (the healthy claude card must not), clicking it opens Settings with the
+  // Providers disclosure already revealed and claude#2's own row expanded —
+  // both rows read "Claude", so the expanded one being the second proves the
+  // exact account key travelled, not a label lookup — with the sign-in control
+  // the click was for on screen. No sign-in command runs here: the flow stays
+  // reachable only through Settings' own button.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    snapshots: [
+      {
+        provider_id: 'claude',
+        provider_name: 'Claude',
+        fetched_at: new Date().toISOString(),
+        error: null,
+        credits: null,
+        windows: [{ metric_id: 'five_hour', label: '5h', used_pct: 42, informational: false }],
+      },
+      {
+        provider_id: 'claude#2',
+        provider_name: 'Claude',
+        fetched_at: new Date().toISOString(),
+        error: { kind: 'AuthExpired', detail: 'token rejected — sign in again in Settings → Claude' },
+        credits: null,
+        windows: [],
+      },
+    ],
+    config: { ...CONFIG, providers: { claude: provider({ enabled: true }), 'claude#2': provider({ enabled: true, kind: 'claude' }) } },
+    verify: async ({ target, flushSync }) => {
+      const buttons = [...target.querySelectorAll('.card button')];
+      if (buttons.length !== 1 || !buttons[0].textContent.includes('Reauthenticate…')) {
+        throw new Error(`the expired card did not offer exactly one Reauthenticate button (got ${buttons.map((b) => b.textContent.trim()).join(',') || 'none'})`);
+      }
+      buttons[0].click();
+      flushSync();
+      if (!target.querySelector('.settings')) throw new Error('Reauthenticate did not open Settings');
+      await settle(flushSync);
+      // Providers must already be revealed — nobody clicked its heading.
+      if (target.querySelector('button#providers-toggle')?.getAttribute('aria-expanded') !== 'true') {
+        throw new Error('Settings did not open with the Providers section revealed');
+      }
+      if (!target.querySelector('#providers-panel')) throw new Error('the Providers section revealed no panel');
+      // Both rows read "Claude"; only claude#2's may be expanded.
+      const claudeRows = [...target.querySelectorAll('.provider')]
+        .filter((el) => el.querySelector('strong')?.textContent.trim() === 'Claude');
+      if (claudeRows.length !== 2) throw new Error(`expected 2 Claude rows, got ${claudeRows.length}`);
+      const expandedAt = claudeRows.findIndex((el) => el.querySelector('.provider-disclosure')?.getAttribute('aria-expanded') === 'true');
+      if (expandedAt !== 1) throw new Error(`claude#2's click expanded Claude row ${expandedAt}, expected the second (claude#2)`);
+      if (claudeRows[0].querySelector('.provider-disclosure')?.getAttribute('aria-expanded') !== 'false') {
+        throw new Error('claude#2 reauthenticated expanded the first Claude row as well');
+      }
+      if (!claudeRows[1].textContent.includes('Sign in with Claude…')) {
+        throw new Error("claude#2's expanded row did not show its sign-in control");
+      }
+      if (globalThis.__SMOKE_SHELL_CALLS__.some((c) => /oauth/.test(c))) {
+        throw new Error(`the button path started a sign-in itself: ${globalThis.__SMOKE_SHELL_CALLS__.join(',')}`);
+      }
+    },
+  },
+  // The gate is the parent's: a CLI-mode account's fix is running the CLI and
+  // a pasted-key provider's is re-pasting, so neither may offer the button —
+  // the 🔑 hint text stays as the only guidance.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    snapshots: [
+      {
+        provider_id: 'claude',
+        provider_name: 'Claude',
+        fetched_at: new Date().toISOString(),
+        error: { kind: 'AuthExpired', detail: 'token rejected — sign in again in Settings → Claude' },
+        credits: null,
+        windows: [],
+      },
+      {
+        provider_id: 'openrouter',
+        provider_name: 'OpenRouter',
+        fetched_at: new Date().toISOString(),
+        error: { kind: 'AuthExpired', detail: 'key rejected — paste a fresh key in Settings' },
+        credits: null,
+        windows: [],
+      },
+    ],
+    config: {
+      ...CONFIG,
+      providers: {
+        claude: provider({ enabled: true, settings: { auth_mode: 'cli' } }),
+        openrouter: provider({ enabled: true }),
+      },
+    },
+    verify: ({ target }) => {
+      if (target.querySelector('.card button')) {
+        throw new Error('a CLI-mode account or a pasted-key provider still rendered the reauthenticate button');
+      }
+      const expired = [...target.querySelectorAll('.card')].filter((c) => c.querySelector('.error'));
+      if (expired.length !== 2 || !expired.every((c) => c.querySelector('.error')?.textContent.includes('🔑'))) {
+        throw new Error('the gated accounts lost their 🔑 error hint');
+      }
+    },
+  },
+  // The Settings row half of the same fix (issue #234), driven through the
+  // mounted shell: the screenshot state — a Codex account on Built-in sign-in
+  // whose stored OAuth secret the poller just rejected — used to render
+  // "active ✓" with Sign out as the only action. Now the focused row must
+  // offer Reauthenticate… *alongside* the signed-in state, clicking it must
+  // dispatch the existing codex_oauth_start command (no new IPC, no card-side
+  // sign-in), reveal the ordinary device-code flow, and drop the "active ✓"
+  // claim for the secret that was refused — without ever touching Sign out's
+  // own branch. A healthy stored-secret Claude row in the same panel is the
+  // non-expired negative: signed in, but no redo to offer.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    snapshots: [
+      {
+        provider_id: 'codex',
+        provider_name: 'Codex',
+        fetched_at: new Date().toISOString(),
+        error: { kind: 'AuthExpired', detail: 'token rejected — run `codex` once to refresh the login' },
+        credits: null,
+        windows: [],
+      },
+      {
+        provider_id: 'claude',
+        provider_name: 'Claude',
+        fetched_at: new Date().toISOString(),
+        error: null,
+        credits: null,
+        windows: [{ metric_id: 'five_hour', label: '5h', used_pct: 42, informational: false }],
+      },
+    ],
+    config: {
+      ...CONFIG,
+      providers: {
+        codex: provider({ enabled: true, settings: { auth_mode: 'oauth' } }),
+        claude: provider({ enabled: true }),
+      },
+    },
+    // The stored-secret half of the screenshot state: both flows report
+    // signedIn at mount, which is exactly when the old row went dead-ended.
+    secrets: ['codex_oauth', 'claude_oauth'],
+    verify: async ({ target, flushSync, oauthCalls }) => {
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+      await settle(flushSync);
+      openSection(target, 'providers', flushSync);
+      const row = (name) => [...target.querySelectorAll('.provider')]
+        .find((el) => el.querySelector('strong')?.textContent.trim() === name);
+      const codex = row('Codex');
+      if (!codex) throw new Error('the Codex row did not render');
+      codex.querySelector('.provider-disclosure').click();
+      flushSync();
+      if (!codex.textContent.includes('Built-in sign-in active ✓')) {
+        throw new Error('a stored OAuth secret did not read as signed in');
+      }
+      const signOut = [...codex.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Sign out');
+      if (!signOut) throw new Error('the signed-in row lost its Sign out');
+      const reauth = [...codex.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'Reauthenticate…');
+      if (reauth.length !== 1) {
+        throw new Error(`the expired stored-secret row rendered ${reauth.length} Reauthenticate… buttons`);
+      }
+      // The healthy Claude row: signed in, not expired, so no redo.
+      const claude = row('Claude');
+      claude.querySelector('.provider-disclosure').click();
+      flushSync();
+      if (!claude.textContent.includes('Built-in sign-in active ✓')) {
+        throw new Error('the healthy Claude row did not read as signed in');
+      }
+      if (claude.textContent.includes('Reauthenticate…')) {
+        throw new Error('a non-expired account still offered Reauthenticate… in Settings');
+      }
+      // Click: the existing provider start command, not a new one.
+      reauth[0].click();
+      await settle(flushSync);
+      if (oauthCalls().join(',') !== 'codex_oauth_start:codex') {
+        throw new Error(`Reauthenticate… dispatched ${oauthCalls().join(',') || 'nothing'}`);
+      }
+      if (codex.textContent.includes('Built-in sign-in active ✓')) {
+        throw new Error('the row still claimed the refused session was active during reauth');
+      }
+      if (!codex.textContent.includes('SMOKE-CODE') || !codex.textContent.includes('Waiting for authorization…')) {
+        throw new Error('Reauthenticate… did not reveal the existing device-code flow');
+      }
+      if (![...codex.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Sign in with Codex…')) {
+        throw new Error('the reauth row lost the flow’s own sign-in control');
+      }
+    },
+  },
+  // The row-level negatives, in Settings itself (issue #234): a CLI-mode
+  // account's redo is running the CLI, and a pasted-key provider's is
+  // re-pasting — neither has a built-in sign-in to rerun, so neither row may
+  // offer Reauthenticate… even with an AuthExpired snapshot and a stored
+  // secret apiece. Mirrors the card gate's case above at the Settings seam.
+  {
+    file: 'src/App.svelte',
+    props: () => ({}),
+    snapshots: [
+      {
+        provider_id: 'claude',
+        provider_name: 'Claude',
+        fetched_at: new Date().toISOString(),
+        error: { kind: 'AuthExpired', detail: 'token rejected — run `claude` once to refresh the login' },
+        credits: null,
+        windows: [],
+      },
+      {
+        provider_id: 'openrouter',
+        provider_name: 'OpenRouter',
+        fetched_at: new Date().toISOString(),
+        error: { kind: 'AuthExpired', detail: 'key rejected — paste a fresh key in Settings' },
+        credits: null,
+        windows: [],
+      },
+    ],
+    config: {
+      ...CONFIG,
+      providers: {
+        claude: provider({ enabled: true, settings: { auth_mode: 'cli' } }),
+        openrouter: provider({ enabled: true }),
+      },
+    },
+    secrets: ['claude_oauth', 'openrouter'],
+    verify: async ({ target, flushSync, oauthCalls }) => {
+      target.querySelector('button[title="Settings"]').click();
+      flushSync();
+      await settle(flushSync);
+      openSection(target, 'providers', flushSync);
+      for (const el of target.querySelectorAll('.provider')) el.querySelector('.provider-disclosure').click();
+      flushSync();
+      if (target.querySelector('.settings').textContent.includes('Reauthenticate…')) {
+        throw new Error('a CLI-mode account or a pasted-key provider offered Reauthenticate… in Settings');
+      }
+      if (oauthCalls().length) {
+        throw new Error(`a gated row started a sign-in: ${oauthCalls().join(',')}`);
+      }
+    },
+  },
   // ---- Usage history (issue #211, Slice 1): the desktop History tab --------
   //
   // The tab mounts the shared HistoryView (Slice 2 replaced the plain list
@@ -2721,6 +2961,77 @@ const CASES = [
       if (balance !== '3.42 USD') throw new Error(`unlabelled balance rendered as ${balance}`);
     },
   },
+  // ---- Reauthenticate affordance (issue #234) ------------------------------
+  // The card knows nothing about config or provider kinds: the desktop popup
+  // opts an expired built-in sign-in in by passing `onreauth`, the same shape
+  // as `hover`. With the prop and an AuthExpired error the button renders and
+  // hands back the card's provider_id — the exact account key, `claude#2`
+  // included. With the prop omitted (MobileApp's shape) or any other error
+  // kind, the card renders exactly as it always did — no button, ever.
+  {
+    file: 'src/lib/shared/UsageCard.svelte',
+    props: () => ({
+      snap: {
+        provider_id: 'claude#2',
+        provider_name: 'Claude',
+        fetched_at: new Date().toISOString(),
+        error: { kind: 'AuthExpired', detail: 'token rejected — sign in again in Settings → Claude' },
+        credits: null,
+        windows: [],
+      },
+      onreauth: (id) => { globalThis.__SMOKE_REAUTH__ = id; },
+    }),
+    expect: ['🔑', 'token rejected', 'Reauthenticate…'],
+    verify: ({ target }) => {
+      const button = [...target.querySelectorAll('button')]
+        .find((b) => b.textContent.trim() === 'Reauthenticate…');
+      if (!button) throw new Error('an AuthExpired card with onreauth rendered no button');
+      button.click();
+      if (globalThis.__SMOKE_REAUTH__ !== 'claude#2') {
+        throw new Error(`Reauthenticate called back with ${JSON.stringify(globalThis.__SMOKE_REAUTH__)}, expected the exact provider_id claude#2`);
+      }
+      globalThis.__SMOKE_REAUTH__ = undefined;
+    },
+  },
+  {
+    file: 'src/lib/shared/UsageCard.svelte',
+    props: () => ({
+      snap: {
+        provider_id: 'codex',
+        provider_name: 'Codex',
+        fetched_at: new Date().toISOString(),
+        error: { kind: 'AuthExpired', detail: 'token rejected — run `codex` once to refresh the login' },
+        credits: null,
+        windows: [],
+      },
+    }),
+    expect: ['🔑', 'token rejected'],
+    verify: ({ target }) => {
+      if (target.querySelector('button')) {
+        throw new Error('an omitted onreauth (MobileApp\'s shape) still rendered the reauthenticate button');
+      }
+    },
+  },
+  {
+    file: 'src/lib/shared/UsageCard.svelte',
+    props: () => ({
+      snap: {
+        provider_id: 'openrouter',
+        provider_name: 'OpenRouter',
+        fetched_at: new Date().toISOString(),
+        error: { kind: 'Unavailable', detail: 'secure storage could not return the key' },
+        credits: null,
+        windows: [],
+      },
+      onreauth: () => { globalThis.__SMOKE_REAUTH__ = 'called'; },
+    }),
+    expect: ['🔒'],
+    verify: ({ target }) => {
+      if (target.querySelector('button')) {
+        throw new Error('a non-AuthExpired error still rendered the reauthenticate button');
+      }
+    },
+  },
   // Thresholds: the shared warn/critical percent editor, reflecting whatever
   // object it is handed.
   {
@@ -3745,7 +4056,25 @@ export async function invoke(cmd, args) {
       globalThis.__SMOKE_LAST_RETENTION__ = args.policy;
       return { removed_count: 0, removed_bytes: null, oldest_kept: null, newest_removed: null };
     }
-    case 'has_secret': return false;
+    // has_secret answers from the per-case __SMOKE_SECRETS__ list, so a case
+    // can mount the "stored OAuth secret" half of the screenshot state
+    // (issue #234) while every other case keeps reading the honest empty
+    // store it always saw.
+    case 'has_secret': return (globalThis.__SMOKE_SECRETS__ ?? []).includes(args.provider);
+    // Desktop built-in sign-in starts (issue #234). Recorded so a case can
+    // prove a row's Reauthenticate… dispatched the *existing* start command
+    // for the right provider; the return shapes are what Settings reads back
+    // (a URL string for Claude, {user_code, verification_url} for the device
+    // flows).
+    case 'claude_oauth_start':
+      (globalThis.__SMOKE_OAUTH_CALLS__ ??= []).push(\`claude_oauth_start:\${args.provider}\`);
+      return 'https://claude.ai/oauth/authorize?smoke=1';
+    case 'codex_oauth_start':
+      (globalThis.__SMOKE_OAUTH_CALLS__ ??= []).push(\`codex_oauth_start:\${args.provider}\`);
+      return { user_code: 'SMOKE-CODE', verification_url: 'https://auth.openai.com/codex/device' };
+    case 'grok_oauth_start':
+      (globalThis.__SMOKE_OAUTH_CALLS__ ??= []).push(\`grok_oauth_start:\${args.provider}\`);
+      return { user_code: 'SMOKE-CODE', verification_url: 'https://accounts.x.ai/device' };
     case 'on_wayland': return true;
     case 'set_config':
       if (globalThis.__SMOKE_SAVE_ERROR__) throw new Error(globalThis.__SMOKE_SAVE_ERROR__);
@@ -4095,6 +4424,8 @@ for (const c of CASES) {
     globalThis.__SMOKE_SIZES__ = [];
     globalThis.__SMOKE_PENDING_SIGNINS__ = c.pendingSignins ?? [];
     globalThis.__SMOKE_SIGNIN_CALLS__ = [];
+    globalThis.__SMOKE_OAUTH_CALLS__ = [];
+    globalThis.__SMOKE_SECRETS__ = c.secrets ?? [];
     globalThis.__SMOKE_TRANSFER_CALLS__ = [];
     globalThis.__SMOKE_DIALOG_SAVE__ = null;
     globalThis.__SMOKE_DIALOG_OPEN__ = null;
@@ -4125,7 +4456,8 @@ for (const c of CASES) {
     const shellCalls = () => globalThis.__SMOKE_SHELL_CALLS__;
     const sizes = () => globalThis.__SMOKE_SIZES__;
     const signinCalls = () => globalThis.__SMOKE_SIGNIN_CALLS__;
-    await c.verify?.({ target, flushSync, emit, shellCalls, sizes, signinCalls });
+    const oauthCalls = () => globalThis.__SMOKE_OAUTH_CALLS__ ?? [];
+    await c.verify?.({ target, flushSync, emit, shellCalls, sizes, signinCalls, oauthCalls });
   } catch (e) {
     console.error(`FAIL ${c.file}\n      ${String(e.message).split('\n')[0]}`);
     failed++;
